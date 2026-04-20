@@ -208,3 +208,29 @@ class MySelectionStrategy(StockSelectionStrategy):
 - 增加更多因子和策略模板
 - 优化回测性能
 - 完善风险管理功能
+
+
+
+
+---
+
+## 免责声明
+
+本项目仅供学习和研究使用，不构成任何投资建议。使用者应自行承担使用本项目的全部风险和责任。
+
+## 风险提示
+
+1. **市场风险**：金融市场存在不可预测的风险，过往表现不代表未来收益
+2. **技术风险**：自动化交易系统可能存在技术故障、网络延迟等问题
+3. **合规风险**：请确保您的交易行为符合当地法律法规要求
+4. **资金风险**：实盘交易可能导致资金损失，请谨慎投资
+
+**投资有风险，入市需谨慎！**
+
+## 联系作者
+
+如果您对项目有任何问题或建议，欢迎添加作者微信交流：
+
+![微信二维码](https://mmbiz.qpic.cn/sz_mmbiz_jpg/bibrY3tFKMBH9VM46EcxmAIG1rwQR3ZEibueW40mJb38Fib4RU7AzrSqfYxLH0pAibHiaYUxbwQtQrv1iaticN7JmRRiaQ/640?wx_fmt=other&from=appmsg#imgIndex=7)
+
+扫描上方二维码添加好友，获取更多项目更新和技术支持。
