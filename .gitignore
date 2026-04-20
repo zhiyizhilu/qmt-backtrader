@@ -1,0 +1,4 @@
+.trae/documents
+
+__pycache__/
+logs/*
