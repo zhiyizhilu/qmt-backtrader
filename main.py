@@ -54,7 +54,9 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
                  start_date=None, end_date=None, data_source='qmt'):
     """运行回测"""
     _setup_debug_logging()
+    log_file = Logger.setup_global_file_handler(strategy_name)
     logger = Logger.get_default_logger(strategy_name)
+    logger.info(f"日志文件: {log_file}")
     logger.info(f"开始回测 (周期: {period}, 数据源: {data_source})")
 
     strategy_class, default_kwargs, backtest_config = _resolve_strategy(strategy_name)
@@ -88,7 +90,9 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
 
 def run_sim_trade(strategy_name='double_ma', path=r'D:\qmt\userdata_mini', account_id=None):
     """运行模拟交易"""
+    log_file = Logger.setup_global_file_handler(strategy_name)
     logger = Logger.get_default_logger(strategy_name)
+    logger.info(f"日志文件: {log_file}")
     logger.info("开始模拟交易")
 
     strategy_class, default_kwargs, _ = _resolve_strategy(strategy_name)
@@ -105,7 +109,9 @@ def run_sim_trade(strategy_name='double_ma', path=r'D:\qmt\userdata_mini', accou
 
 def run_real_trade(strategy_name='double_ma', path=r'D:\qmt\userdata_mini', account_id=None):
     """运行实盘交易"""
+    log_file = Logger.setup_global_file_handler(strategy_name)
     logger = Logger.get_default_logger(strategy_name)
+    logger.info(f"日志文件: {log_file}")
     logger.info("开始实盘交易")
 
     strategy_class, default_kwargs, _ = _resolve_strategy(strategy_name)
