@@ -319,25 +319,61 @@ class BacktestAPI(BaseAPI):
         if not stock_list:
             raise ValueError("必须指定 stock_list 或 sector")
 
-        # ── 阶段2：下载财务数据到本地 ──
-        self.logger.info(f"[阶段2/5] 下载财务数据到本地缓存，共 {len(stock_list)} 只股票...")
-        self._financial_data_processor.download_financial_data(
-            stock_list, table_list, start_time, end_time
-        )
+        tables = table_list or ['Balance', 'Income', 'CashFlow', 'Capital',
+                                'Holdernum', 'Top10holder', 'Top10flowholder', 'Pershareindex']
 
-        # ── 阶段3：读取并缓存财务数据 ──
-        self.logger.info(f"[阶段3/5] 读取财务数据，共 {len(stock_list)} 只股票...")
-        raw_data = self._financial_data_processor.get_financial_data(
-            stock_list, table_list, start_time, end_time, report_type
-        )
+        # ── 阶段2：检查磁盘缓存覆盖情况，只下载缺失的数据 ──
+        from core.cache import cache_manager
+        namespace = f"{self._financial_data_processor.__class__.__name__}_Financial"
+        time_suffix = f"_{start_time}_{end_time}" if start_time or end_time else ""
+        ns_dir = cache_manager.disk_cache.cache_dir / namespace
 
-        cache = FinancialDataCache(raw_data)
+        cached_stocks = set()
+        uncached_stocks = []
+
+        for stock in stock_list:
+            all_tables_cached = True
+            for table in tables:
+                cache_key = f"{stock}{time_suffix}_{table}_{report_type}"
+                file_path = ns_dir / f"{cache_key}.parquet"
+                if not file_path.exists():
+                    # 也检查旧格式 pkl
+                    pkl_path = ns_dir / f"{cache_key}.pkl"
+                    if not pkl_path.exists():
+                        all_tables_cached = False
+                        break
+            if all_tables_cached:
+                cached_stocks.add(stock)
+            else:
+                uncached_stocks.append(stock)
+
+        if uncached_stocks:
+            self.logger.info(
+                f"[阶段2/5] 下载缺失的财务数据: "
+                f"{len(uncached_stocks)} 只股票缺少缓存 (已有 {len(cached_stocks)} 只缓存)"
+            )
+            self._financial_data_processor.download_financial_data(
+                uncached_stocks, table_list, start_time, end_time
+            )
+            # 对刚下载的股票，读取并存入磁盘 parquet 缓存
+            self._financial_data_processor.get_financial_data(
+                uncached_stocks, table_list, start_time, end_time, report_type
+            )
+        else:
+            self.logger.info(f"[阶段2/5] 全部 {len(stock_list)} 只股票已有磁盘缓存，跳过下载")
+
+        # ── 阶段3：创建按需加载的财务数据适配器 ──
+        cache = FinancialDataCache(
+            data_processor=self._financial_data_processor,
+            report_type=report_type,
+            start_time=start_time,
+            end_time=end_time,
+        )
         self._financial_adapter = FinancialDataAdapter(cache)
         self._stock_pool = stock_list
 
-        loaded_stocks = len(cache.get_stocks())
         self.logger.info(
-            f"[阶段3/5] 财务数据适配器创建完成: {loaded_stocks}/{len(stock_list)} 只股票有数据"
+            f"[阶段3/5] 财务数据适配器创建完成(按需加载模式): {len(stock_list)} 只股票待查询"
         )
 
         # ── 阶段4：获取行业映射 ──
@@ -368,7 +404,7 @@ class BacktestAPI(BaseAPI):
 
         overall_elapsed = _time.time() - overall_start
         self.logger.info(
-            f"财务数据加载全部完成: {loaded_stocks}/{len(stock_list)} 只股票有数据, "
+            f"财务数据加载全部完成: {len(stock_list)} 只股票(按需加载), "
             f"总耗时 {overall_elapsed:.1f}秒"
         )
 

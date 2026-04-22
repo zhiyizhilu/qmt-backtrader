@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any
 import logging
 import time
+import hashlib
 from tqdm import tqdm
 from core.cache import smart_cache, cache_manager
 
@@ -20,9 +21,12 @@ def _merged_dict_to_parquet(data: dict, mode: str = 'dividend') -> Optional[pd.D
     Returns:
         合并后的 DataFrame，带 _stock_code (和 _table_name) 列
     """
+    _logger = logging.getLogger('_merged_dict_to_parquet')
     try:
         frames = []
         if mode == 'financial':
+            # 按 table_name 分组拼接，避免不同表列名不同导致 concat 失败
+            table_frames: Dict[str, list] = {}
             for stock, tables in data.items():
                 if not isinstance(tables, dict):
                     continue
@@ -30,14 +34,19 @@ def _merged_dict_to_parquet(data: dict, mode: str = 'dividend') -> Optional[pd.D
                     if not isinstance(df, pd.DataFrame) or df.empty:
                         continue
                     df = df.copy()
-                    # 保留 DatetimeIndex 为列，以便 parquet 存储
                     if isinstance(df.index, pd.DatetimeIndex):
                         df = df.reset_index()
                     elif df.index.name and df.index.name != 'index':
                         df = df.reset_index()
                     df['_stock_code'] = stock
                     df['_table_name'] = table_name
-                    frames.append(df)
+                    table_frames.setdefault(table_name, []).append(df)
+            for table_name, tframes in table_frames.items():
+                if tframes:
+                    try:
+                        frames.append(pd.concat(tframes, ignore_index=True))
+                    except Exception as e:
+                        _logger.warning(f"合并表 {table_name} 失败，跳过: {e}")
         else:  # dividend
             for stock, df in data.items():
                 if not isinstance(df, pd.DataFrame) or df.empty:
@@ -50,9 +59,22 @@ def _merged_dict_to_parquet(data: dict, mode: str = 'dividend') -> Optional[pd.D
                 df['_stock_code'] = stock
                 frames.append(df)
         if not frames:
+            _logger.warning(f"无有效数据可合并 (mode={mode})")
             return None
-        return pd.concat(frames, ignore_index=True)
-    except Exception:
+        try:
+            result = pd.concat(frames, ignore_index=True)
+            _logger.info(f"合并缓存构建成功 (mode={mode}): {len(result)} 行, {len(result.columns)} 列")
+            return result
+        except Exception as e:
+            _logger.warning(f"最终 concat 失败: {e}, 尝试逐表拼接")
+            # 最后的 fallback：用 outer join 确保不丢失数据
+            try:
+                return pd.concat(frames, ignore_index=True, sort=False)
+            except Exception as e2:
+                _logger.error(f"合并缓存构建彻底失败: {e2}")
+                return None
+    except Exception as e:
+        _logger.error(f"合并缓存构建异常: {e}")
         return None
 
 
@@ -349,6 +371,54 @@ class QMTDataProcessor(DataProcessor):
         except Exception as e:
             self.logger.error(f"财务数据下载失败: {e}")
 
+    def _try_load_merged_financial_cache(self, stock_list: List[str],
+                                          table_list: Optional[List[str]] = None,
+                                          start_time: str = '', end_time: str = '',
+                                          report_type: str = 'announce_time') -> Optional[Dict[str, Any]]:
+        """尝试从合并缓存加载财务数据，命中则返回数据，未命中返回 None
+
+        此方法用于在外部（如 backtest_api）判断是否可以跳过下载阶段。
+        只检查合并缓存（单个文件快速加载），不做逐只缓存检查。
+        """
+        import hashlib as _hashlib
+        namespace = 'QMTDataProcessor_Financial'
+        sorted_stocks = sorted(stock_list)
+        stocks_hash = _hashlib.md5(','.join(sorted_stocks).encode()).hexdigest()[:12]
+
+        # 1. 精确匹配
+        merged_cache_key = f"merged_{stocks_hash}_{start_time}_{end_time}_{report_type}"
+        merged_cached = cache_manager.disk_cache.get(namespace, merged_cache_key, 'parquet')
+        if merged_cached is not None and isinstance(merged_cached, pd.DataFrame) and not merged_cached.empty:
+            merged_cached = _parquet_to_merged_dict(merged_cached, mode='financial')
+            if merged_cached and len(merged_cached) >= len(stock_list):
+                self.logger.info(f"合并缓存(精确)命中: {len(merged_cached)} 只股票")
+                return merged_cached
+
+        # 2. 子集匹配
+        request_set = set(sorted_stocks)
+        ns_dir = cache_manager.disk_cache.cache_dir / namespace
+        if ns_dir.exists():
+            for cache_file in ns_dir.glob('merged_*.parquet'):
+                if cache_file.name == f"{merged_cache_key}.parquet":
+                    continue
+                try:
+                    candidate = pd.read_parquet(cache_file)
+                    if candidate is not None and isinstance(candidate, pd.DataFrame) and not candidate.empty:
+                        if '_stock_code' in candidate.columns:
+                            cached_stocks = set(candidate['_stock_code'].unique())
+                            if request_set.issubset(cached_stocks):
+                                candidate_dict = _parquet_to_merged_dict(candidate, mode='financial')
+                                result_subset = {s: candidate_dict[s] for s in stock_list if s in candidate_dict}
+                                if len(result_subset) == len(stock_list):
+                                    self.logger.info(
+                                        f"合并缓存(子集)命中: 缓存{len(cached_stocks)}只, 请求{len(stock_list)}只"
+                                    )
+                                    return result_subset
+                except Exception:
+                    continue
+
+        return None
+
     def get_financial_data(self, stock_list: List[str],
                            table_list: Optional[List[str]] = None,
                            start_time: str = '', end_time: str = '',
@@ -379,13 +449,42 @@ class QMTDataProcessor(DataProcessor):
         tables = table_list or self.FINANCIAL_TABLES
         namespace = 'QMTDataProcessor_Financial'
 
-        # 尝试从合并缓存加载
-        merged_cache_key = f"merged_{len(stock_list)}_{start_time}_{end_time}_{report_type}"
+        # 尝试从合并缓存加载（基于股票列表内容hash，支持子集匹配）
+        sorted_stocks = sorted(stock_list)
+        stocks_hash = hashlib.md5(','.join(sorted_stocks).encode()).hexdigest()[:12]
+        merged_cache_key = f"merged_{stocks_hash}_{start_time}_{end_time}_{report_type}"
+
+        # 1. 精确匹配：股票列表完全相同
         merged_cached = cache_manager.disk_cache.get(namespace, merged_cache_key, 'parquet')
         if merged_cached is not None and isinstance(merged_cached, pd.DataFrame) and not merged_cached.empty:
             merged_cached = _parquet_to_merged_dict(merged_cached, mode='financial')
-            self.logger.info(f"从合并缓存加载财务数据: {len(merged_cached)} 只股票")
+            self.logger.info(f"从合并缓存(精确)加载财务数据: {len(merged_cached)} 只股票")
             return merged_cached
+
+        # 2. 子集匹配：已有缓存包含请求的全部股票
+        request_set = set(sorted_stocks)
+        ns_dir = cache_manager.disk_cache.cache_dir / namespace
+        if ns_dir.exists():
+            for cache_file in ns_dir.glob('merged_*.parquet'):
+                if cache_file.name == f"{merged_cache_key}.parquet":
+                    continue  # 已尝试精确匹配
+                try:
+                    candidate = pd.read_parquet(cache_file)
+                    if candidate is not None and isinstance(candidate, pd.DataFrame) and not candidate.empty:
+                        if '_stock_code' in candidate.columns:
+                            cached_stocks = set(candidate['_stock_code'].unique())
+                            if request_set.issubset(cached_stocks):
+                                candidate_dict = _parquet_to_merged_dict(candidate, mode='financial')
+                                # 过滤只保留请求的股票
+                                result_subset = {s: candidate_dict[s] for s in stock_list if s in candidate_dict}
+                                if len(result_subset) == len(stock_list):
+                                    self.logger.info(
+                                        f"从合并缓存(子集)加载财务数据: "
+                                        f"缓存{len(cached_stocks)}只, 请求{len(stock_list)}只"
+                                    )
+                                    return result_subset
+                except Exception:
+                    continue
 
         # 逐只股票缓存（每只股票的每个表单独存为 parquet）
         result = {}
@@ -623,13 +722,39 @@ class QMTDataProcessor(DataProcessor):
 
         namespace = 'QMTDataProcessor_Financial'
 
-        # 尝试从合并缓存加载
-        merged_cache_key = f"dividend_merged_{len(stock_list)}"
+        # 尝试从合并缓存加载（基于股票列表内容hash，支持子集匹配）
+        sorted_stocks = sorted(stock_list)
+        stocks_hash = hashlib.md5(','.join(sorted_stocks).encode()).hexdigest()[:12]
+        merged_cache_key = f"dividend_merged_{stocks_hash}"
         merged_cached = cache_manager.disk_cache.get(namespace, merged_cache_key, 'parquet')
         if merged_cached is not None and isinstance(merged_cached, pd.DataFrame) and not merged_cached.empty:
             merged_cached = _parquet_to_merged_dict(merged_cached, mode='dividend')
-            self.logger.info(f"从合并缓存加载分红数据: {len(merged_cached)} 只股票")
+            self.logger.info(f"从合并缓存(精确)加载分红数据: {len(merged_cached)} 只股票")
             return merged_cached
+
+        # 子集匹配
+        request_set = set(sorted_stocks)
+        ns_dir = cache_manager.disk_cache.cache_dir / namespace
+        if ns_dir.exists():
+            for cache_file in ns_dir.glob('dividend_merged_*.parquet'):
+                if cache_file.name == f"{merged_cache_key}.parquet":
+                    continue
+                try:
+                    candidate = pd.read_parquet(cache_file)
+                    if candidate is not None and isinstance(candidate, pd.DataFrame) and not candidate.empty:
+                        if '_stock_code' in candidate.columns:
+                            cached_stocks = set(candidate['_stock_code'].unique())
+                            if request_set.issubset(cached_stocks):
+                                candidate_dict = _parquet_to_merged_dict(candidate, mode='dividend')
+                                result_subset = {s: candidate_dict[s] for s in stock_list if s in candidate_dict}
+                                if len(result_subset) == len(stock_list):
+                                    self.logger.info(
+                                        f"从合并缓存(子集)加载分红数据: "
+                                        f"缓存{len(cached_stocks)}只, 请求{len(stock_list)}只"
+                                    )
+                                    return result_subset
+                except Exception:
+                    continue
         result = {}
         cache_hits = 0
         download_hits = 0
@@ -1077,13 +1202,39 @@ class AKShareDataProcessor(DataProcessor):
         tables = table_list or self.FINANCIAL_TABLES
         namespace = 'AKShareDataProcessor_Financial'
 
-        # 尝试从合并缓存加载
-        merged_cache_key = f"merged_{len(stock_list)}_{start_time}_{end_time}"
+        # 尝试从合并缓存加载（基于股票列表内容hash，支持子集匹配）
+        sorted_stocks = sorted(stock_list)
+        stocks_hash = hashlib.md5(','.join(sorted_stocks).encode()).hexdigest()[:12]
+        merged_cache_key = f"merged_{stocks_hash}_{start_time}_{end_time}"
         merged_cached = cache_manager.disk_cache.get(namespace, merged_cache_key, 'parquet')
         if merged_cached is not None and isinstance(merged_cached, pd.DataFrame) and not merged_cached.empty:
             merged_cached = _parquet_to_merged_dict(merged_cached, mode='financial')
-            self.logger.info(f"从合并缓存加载财务数据: {len(merged_cached)} 只股票")
+            self.logger.info(f"从合并缓存(精确)加载财务数据: {len(merged_cached)} 只股票")
             return merged_cached
+
+        # 子集匹配
+        request_set = set(sorted_stocks)
+        ns_dir = cache_manager.disk_cache.cache_dir / namespace
+        if ns_dir.exists():
+            for cache_file in ns_dir.glob('merged_*.parquet'):
+                if cache_file.name == f"{merged_cache_key}.parquet":
+                    continue
+                try:
+                    candidate = pd.read_parquet(cache_file)
+                    if candidate is not None and isinstance(candidate, pd.DataFrame) and not candidate.empty:
+                        if '_stock_code' in candidate.columns:
+                            cached_stocks = set(candidate['_stock_code'].unique())
+                            if request_set.issubset(cached_stocks):
+                                candidate_dict = _parquet_to_merged_dict(candidate, mode='financial')
+                                result_subset = {s: candidate_dict[s] for s in stock_list if s in candidate_dict}
+                                if len(result_subset) == len(stock_list):
+                                    self.logger.info(
+                                        f"从合并缓存(子集)加载财务数据: "
+                                        f"缓存{len(cached_stocks)}只, 请求{len(stock_list)}只"
+                                    )
+                                    return result_subset
+                except Exception:
+                    continue
 
         # 逐只股票逐表缓存
         result = {}
@@ -1374,13 +1525,39 @@ class AKShareDataProcessor(DataProcessor):
 
         namespace = 'AKShareDataProcessor_Financial'
 
-        # 尝试从合并缓存加载
-        merged_cache_key = f"dividend_merged_{len(stock_list)}"
+        # 尝试从合并缓存加载（基于股票列表内容hash，支持子集匹配）
+        sorted_stocks = sorted(stock_list)
+        stocks_hash = hashlib.md5(','.join(sorted_stocks).encode()).hexdigest()[:12]
+        merged_cache_key = f"dividend_merged_{stocks_hash}"
         merged_cached = cache_manager.disk_cache.get(namespace, merged_cache_key, 'parquet')
         if merged_cached is not None and isinstance(merged_cached, pd.DataFrame) and not merged_cached.empty:
             merged_cached = _parquet_to_merged_dict(merged_cached, mode='dividend')
-            self.logger.info(f"从合并缓存加载分红数据: {len(merged_cached)} 只股票")
+            self.logger.info(f"从合并缓存(精确)加载分红数据: {len(merged_cached)} 只股票")
             return merged_cached
+
+        # 子集匹配
+        request_set = set(sorted_stocks)
+        ns_dir = cache_manager.disk_cache.cache_dir / namespace
+        if ns_dir.exists():
+            for cache_file in ns_dir.glob('dividend_merged_*.parquet'):
+                if cache_file.name == f"{merged_cache_key}.parquet":
+                    continue
+                try:
+                    candidate = pd.read_parquet(cache_file)
+                    if candidate is not None and isinstance(candidate, pd.DataFrame) and not candidate.empty:
+                        if '_stock_code' in candidate.columns:
+                            cached_stocks = set(candidate['_stock_code'].unique())
+                            if request_set.issubset(cached_stocks):
+                                candidate_dict = _parquet_to_merged_dict(candidate, mode='dividend')
+                                result_subset = {s: candidate_dict[s] for s in stock_list if s in candidate_dict}
+                                if len(result_subset) == len(stock_list):
+                                    self.logger.info(
+                                        f"从合并缓存(子集)加载分红数据: "
+                                        f"缓存{len(cached_stocks)}只, 请求{len(stock_list)}只"
+                                    )
+                                    return result_subset
+                except Exception:
+                    continue
 
         # 逐只股票缓存
         result = {}
@@ -1800,25 +1977,51 @@ class BaoStockDataProcessor(DataProcessor):
         namespace = 'BaoStockDataProcessor_Financial'
         can_query = self._bs is not None and self._ensure_login()
 
-        # 尝试从合并缓存加载（遍历不同长度的缓存键）
-        for try_len in [len(stock_list), 300, 500, 50]:
-            merged_cache_key = f"merged_{try_len}_{start_time}_{end_time}"
-            merged_cached = cache_manager.disk_cache.get(
-                namespace, merged_cache_key, 'parquet'
-            )
-            if merged_cached is not None and isinstance(merged_cached, pd.DataFrame) and not merged_cached.empty:
-                merged_cached = _parquet_to_merged_dict(merged_cached, mode='financial')
-                # 只保留 stock_list 中需要的股票
-                filtered = {k: v for k, v in merged_cached.items() if k in stock_list}
-                if filtered:
-                    self.logger.info(f"从合并缓存加载财务数据: {len(filtered)}/{len(stock_list)} 只股票")
-                    if len(filtered) >= len(stock_list):
-                        return filtered
-                    # 补充缺失的为空数据
-                    for stock in stock_list:
-                        if stock not in filtered:
-                            filtered[stock] = {}
+        # 尝试从合并缓存加载（基于股票列表内容hash，支持子集匹配）
+        sorted_stocks = sorted(stock_list)
+        stocks_hash = hashlib.md5(','.join(sorted_stocks).encode()).hexdigest()[:12]
+        merged_cache_key = f"merged_{stocks_hash}_{start_time}_{end_time}"
+        merged_cached = cache_manager.disk_cache.get(namespace, merged_cache_key, 'parquet')
+        if merged_cached is not None and isinstance(merged_cached, pd.DataFrame) and not merged_cached.empty:
+            merged_cached = _parquet_to_merged_dict(merged_cached, mode='financial')
+            filtered = {k: v for k, v in merged_cached.items() if k in stock_list}
+            if filtered:
+                self.logger.info(f"从合并缓存(精确)加载财务数据: {len(filtered)}/{len(stock_list)} 只股票")
+                if len(filtered) >= len(stock_list):
                     return filtered
+                for stock in stock_list:
+                    if stock not in filtered:
+                        filtered[stock] = {}
+                return filtered
+
+        # 子集匹配：遍历已有合并缓存文件
+        request_set = set(sorted_stocks)
+        ns_dir = cache_manager.disk_cache.cache_dir / namespace
+        if ns_dir.exists():
+            for cache_file in ns_dir.glob('merged_*.parquet'):
+                if cache_file.name == f"{merged_cache_key}.parquet":
+                    continue
+                try:
+                    candidate = pd.read_parquet(cache_file)
+                    if candidate is not None and isinstance(candidate, pd.DataFrame) and not candidate.empty:
+                        if '_stock_code' in candidate.columns:
+                            cached_stocks = set(candidate['_stock_code'].unique())
+                            if request_set.issubset(cached_stocks):
+                                candidate_dict = _parquet_to_merged_dict(candidate, mode='financial')
+                                filtered = {s: candidate_dict[s] for s in stock_list if s in candidate_dict}
+                                if filtered:
+                                    self.logger.info(
+                                        f"从合并缓存(子集)加载财务数据: "
+                                        f"缓存{len(cached_stocks)}只, 请求{len(stock_list)}只"
+                                    )
+                                    if len(filtered) >= len(stock_list):
+                                        return filtered
+                                    for stock in stock_list:
+                                        if stock not in filtered:
+                                            filtered[stock] = {}
+                                    return filtered
+                except Exception:
+                    continue
 
         yq_list = self._get_year_quarter_range(start_time, end_time)
         if not yq_list:
@@ -1870,7 +2073,7 @@ class BaoStockDataProcessor(DataProcessor):
         if result:
             merged_df = _merged_dict_to_parquet(result, mode='financial')
             if merged_df is not None:
-                save_cache_key = f"merged_{len(stock_list)}_{start_time}_{end_time}"
+                save_cache_key = f"merged_{stocks_hash}_{start_time}_{end_time}"
                 cache_manager.disk_cache.put(
                     'BaoStockDataProcessor_Financial', save_cache_key, merged_df, 'parquet'
                 )
@@ -2045,26 +2248,48 @@ class BaoStockDataProcessor(DataProcessor):
         namespace = 'BaoStockDataProcessor_Financial'
         can_query = self._bs is not None and self._ensure_login()
 
-        # 尝试从合并缓存加载（遍历不同长度的缓存键，因为缓存时的stock_list长度可能与当前不同）
-        for try_len in [len(stock_list), 300, 500, 50]:
-            merged_cache_key = f"dividend_merged_{try_len}"
-            merged_cached = cache_manager.disk_cache.get(namespace, merged_cache_key, 'parquet')
-            if merged_cached is not None and isinstance(merged_cached, pd.DataFrame) and not merged_cached.empty:
-                merged_cached = _parquet_to_merged_dict(merged_cached, mode='dividend')
-                # 只保留 stock_list 中需要的股票
-                filtered = {k: v for k, v in merged_cached.items() if k in stock_list}
-                if filtered:
-                    self.logger.info(f"从合并缓存加载分红数据: {len(filtered)}/{len(stock_list)} 只股票 (缓存键=dividend_merged_{try_len})")
-                    # 如果缓存覆盖了请求的所有股票，直接返回
-                    if len(filtered) == len(stock_list):
-                        return filtered
-                    # 否则继续尝试从逐只缓存补充
-                    if can_query:
-                        break  # 合并缓存部分命中，退出去逐只查询
-                    # 无法在线查询，直接返回部分缓存
+        # 尝试从合并缓存加载（基于股票列表内容hash，支持子集匹配）
+        sorted_stocks = sorted(stock_list)
+        stocks_hash = hashlib.md5(','.join(sorted_stocks).encode()).hexdigest()[:12]
+        merged_cache_key = f"dividend_merged_{stocks_hash}"
+        merged_cached = cache_manager.disk_cache.get(namespace, merged_cache_key, 'parquet')
+        if merged_cached is not None and isinstance(merged_cached, pd.DataFrame) and not merged_cached.empty:
+            merged_cached = _parquet_to_merged_dict(merged_cached, mode='dividend')
+            filtered = {k: v for k, v in merged_cached.items() if k in stock_list}
+            if filtered:
+                self.logger.info(f"从合并缓存(精确)加载分红数据: {len(filtered)}/{len(stock_list)} 只股票")
+                if len(filtered) >= len(stock_list):
                     return filtered
-                # 合并缓存中的股票不在 stock_list 中，继续尝试其他键
-                continue
+                if not can_query:
+                    return filtered
+
+        # 子集匹配：遍历已有合并缓存文件
+        request_set = set(sorted_stocks)
+        ns_dir = cache_manager.disk_cache.cache_dir / namespace
+        if ns_dir.exists():
+            for cache_file in ns_dir.glob('dividend_merged_*.parquet'):
+                if cache_file.name == f"{merged_cache_key}.parquet":
+                    continue
+                try:
+                    candidate = pd.read_parquet(cache_file)
+                    if candidate is not None and isinstance(candidate, pd.DataFrame) and not candidate.empty:
+                        if '_stock_code' in candidate.columns:
+                            cached_stocks = set(candidate['_stock_code'].unique())
+                            if request_set.issubset(cached_stocks):
+                                candidate_dict = _parquet_to_merged_dict(candidate, mode='dividend')
+                                filtered = {s: candidate_dict[s] for s in stock_list if s in candidate_dict}
+                                if filtered:
+                                    self.logger.info(
+                                        f"从合并缓存(子集)加载分红数据: "
+                                        f"缓存{len(cached_stocks)}只, 请求{len(stock_list)}只"
+                                    )
+                                    if len(filtered) >= len(stock_list):
+                                        return filtered
+                                    if not can_query:
+                                        return filtered
+                                    break  # 部分命中，退出去逐只查询补充
+                except Exception:
+                    continue
 
         result = {}
         current_year = pd.Timestamp.now().year
@@ -2134,7 +2359,7 @@ class BaoStockDataProcessor(DataProcessor):
         if result:
             merged_df = _merged_dict_to_parquet(result, mode='dividend')
             if merged_df is not None:
-                save_cache_key = f"dividend_merged_{len(stock_list)}"
+                save_cache_key = f"dividend_merged_{stocks_hash}"
                 cache_manager.disk_cache.put(namespace, save_cache_key, merged_df, 'parquet')
                 self.logger.info(f"分红数据合并缓存已创建: {len(result)} 只股票")
 

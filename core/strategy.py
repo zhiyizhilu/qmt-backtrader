@@ -66,10 +66,10 @@ class BaseStrategy(bt.Strategy):
         if not self.datas:
             return
         data = self.datas[0]
-        if hasattr(data, 'lines') and len(data.lines) > 0:
-            self._total_bars = len(data.lines)
-        elif hasattr(data, 'buflen'):
+        if hasattr(data, 'buflen'):
             self._total_bars = data.buflen()
+        elif hasattr(data, 'lines') and len(data.lines) > 0:
+            self._total_bars = len(data.lines)
         else:
             self._total_bars = 0
 
@@ -110,7 +110,8 @@ class BaseStrategy(bt.Strategy):
             self._strategy_logic.on_bar(bar)
 
         if self._total_bars > 0 and self._current_bar % max(1, self._total_bars // 100) == 0:
-            print(f"[ {self._current_bar} / {self._total_bars} ] 回测日期: {dt}")
+            print(f"回测日期: {dt}")
+
 
     def _build_bar_data(self) -> BarData:
         """从backtrader数据源构建BarData"""

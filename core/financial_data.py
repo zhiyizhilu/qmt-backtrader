@@ -6,10 +6,10 @@ import logging
 
 
 class FinancialDataCache:
-    """财务数据缓存
+    """财务数据缓存 - 按需加载（Lazy Loading）
 
-    预加载所有需要的财务数据，按披露日期排序，
-    支持快速查询指定日期前已披露的最新财报。
+    不再预加载所有财务数据，而是在首次访问某只股票的某个表时才从磁盘缓存读取。
+    如果磁盘缓存也没有，则通过 data_processor 从 API 下载并缓存到磁盘。
 
     数据结构:
         _data: {
@@ -19,18 +19,28 @@ class FinancialDataCache:
             },
             ...
         }
+        _loaded_tables: { (stock, table): True }  已从磁盘/网络加载的标记
     """
 
-    def __init__(self, financial_data: Dict[str, Any] = None):
+    def __init__(self, financial_data: Dict[str, Any] = None,
+                 data_processor=None,
+                 report_type: str = 'announce_time',
+                 start_time: str = '', end_time: str = ''):
         self._data: Dict[str, Dict[str, pd.DataFrame]] = {}
+        self._loaded_tables: Dict[tuple, bool] = {}
+        self._data_processor = data_processor
+        self._report_type = report_type
+        self._start_time = start_time
+        self._end_time = end_time
         self._loaded = False
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
 
+        # 预加载的数据直接注入（兼容旧调用方式）
         if financial_data:
             self.load(financial_data)
 
     def load(self, financial_data: Dict[str, Any]) -> None:
-        """加载财务数据
+        """加载财务数据（兼容旧接口，直接注入已加载的数据）
 
         Args:
             financial_data: xtdata.get_financial_data 返回的原始数据
@@ -53,6 +63,7 @@ class FinancialDataCache:
                         self._data[stock_code][table_name] = sorted_df
                     else:
                         self._data[stock_code][table_name] = df
+                    self._loaded_tables[(stock_code, table_name)] = True
                 else:
                     try:
                         converted = pd.DataFrame(df)
@@ -60,12 +71,95 @@ class FinancialDataCache:
                         if not converted.empty:
                             converted = converted.sort_index()
                         self._data[stock_code][table_name] = converted
+                        self._loaded_tables[(stock_code, table_name)] = True
                     except Exception:
                         continue
 
         self._loaded = True
         stock_count = len(self._data)
         self.logger.info(f"财务数据缓存加载完成: {stock_count} 只股票")
+
+    def _ensure_table_loaded(self, stock_code: str, table_name: str) -> None:
+        """确保指定股票的指定表已加载到内存
+
+        按需加载策略：
+        1. 如果已在内存中，直接返回
+        2. 如果不在内存，尝试从磁盘 parquet 缓存读取
+        3. 如果磁盘也没有，通过 data_processor 从 API 下载并缓存到磁盘
+        """
+        if self._loaded_tables.get((stock_code, table_name)):
+            return
+
+        # 尝试从磁盘缓存加载
+        from core.cache import cache_manager
+
+        if self._data_processor is not None:
+            namespace = f"{self._data_processor.__class__.__name__}_Financial"
+        else:
+            namespace = 'QMTDataProcessor_Financial'
+
+        time_suffix = f"_{self._start_time}_{self._end_time}" if self._start_time or self._end_time else ""
+        cache_key = f"{stock_code}{time_suffix}_{table_name}_{self._report_type}"
+
+        # 尝试 parquet 格式缓存
+        cached = cache_manager.disk_cache.get(namespace, cache_key, 'parquet')
+        if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
+            cached = self._ensure_datetime_index(cached, stock_code, table_name)
+            if not cached.empty:
+                cached = cached.sort_index()
+            self._data[stock_code][table_name] = cached
+            self._loaded_tables[(stock_code, table_name)] = True
+            self.logger.debug(f"从磁盘缓存加载: {stock_code}.{table_name}")
+            return
+
+        # 尝试 pkl 格式缓存（向后兼容）
+        cached_pkl = cache_manager.disk_cache.get(namespace, cache_key, 'pkl')
+        if cached_pkl is not None and isinstance(cached_pkl, pd.DataFrame) and not cached_pkl.empty:
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
+            cached_pkl = self._ensure_datetime_index(cached_pkl, stock_code, table_name)
+            if not cached_pkl.empty:
+                cached_pkl = cached_pkl.sort_index()
+            self._data[stock_code][table_name] = cached_pkl
+            self._loaded_tables[(stock_code, table_name)] = True
+            # 转存为 parquet 格式
+            cache_manager.disk_cache.put(namespace, cache_key, cached_pkl, 'parquet')
+            self.logger.debug(f"从pkl缓存加载并转存parquet: {stock_code}.{table_name}")
+            return
+
+        # 磁盘缓存也没有，从 API 下载
+        if self._data_processor is not None:
+            try:
+                self.logger.info(f"按需下载: {stock_code}.{table_name}")
+                data = self._data_processor.xtdata.get_financial_data(
+                    [stock_code], [table_name],
+                    start_time=self._start_time, end_time=self._end_time,
+                    report_type=self._report_type,
+                )
+                if data and stock_code in data and table_name in data[stock_code]:
+                    df = data[stock_code][table_name]
+                    if isinstance(df, pd.DataFrame) and not df.empty:
+                        # 规范化并缓存到磁盘
+                        df = self._data_processor._normalize_qmt_financial_df(df, self._report_type)
+                        df = self._ensure_datetime_index(df, stock_code, table_name)
+                        if not df.empty:
+                            df = df.sort_index()
+                        cache_manager.disk_cache.put(namespace, cache_key, df, 'parquet')
+                        if stock_code not in self._data:
+                            self._data[stock_code] = {}
+                        self._data[stock_code][table_name] = df
+                        self._loaded_tables[(stock_code, table_name)] = True
+                        self.logger.debug(f"从API下载并缓存: {stock_code}.{table_name}")
+                        return
+            except Exception as e:
+                self.logger.warning(f"按需下载失败: {stock_code}.{table_name}: {e}")
+
+        # 所有尝试失败，标记为已尝试（避免反复重试）
+        self._loaded_tables[(stock_code, table_name)] = True
+        if stock_code not in self._data:
+            self._data[stock_code] = {}
 
     def _ensure_datetime_index(self, df: pd.DataFrame,
                                 stock_code: str = '', table_name: str = '') -> pd.DataFrame:
@@ -88,10 +182,6 @@ class FinancialDataCache:
                     if valid.any():
                         df = df[valid].copy()
                         df.index = dt_values[valid]
-                        # 删除已用作索引的日期列，避免重复
-                        # 但保留非索引用途的日期列（如 announce_date 仅用于索引时删除，
-                        # 但如果数据源本来就将其作为数据列，则保留）
-                        # 安全策略：仅删除 parquet 还原时产生的 'index' 列
                         if col == 'index':
                             df = df.drop(columns=['index'], errors='ignore')
                         return df
@@ -133,6 +223,7 @@ class FinancialDataCache:
         """获取指定日期前已披露的最新财报数据
 
         关键：只返回 date 之前已披露的数据，避免未来数据（look-ahead bias）。
+        如果数据尚未加载，会按需从磁盘缓存或API获取。
 
         Args:
             stock_code: 股票代码
@@ -143,6 +234,9 @@ class FinancialDataCache:
         Returns:
             字段值或整行Series，无数据返回None
         """
+        # 按需加载
+        self._ensure_table_loaded(stock_code, table_name)
+
         stock_data = self._data.get(stock_code, {})
         table_df = stock_data.get(table_name)
 
@@ -165,13 +259,6 @@ class FinancialDataCache:
         available = table_df[mask]
 
         if available.empty:
-            # 调试：输出数据范围与查询日期的关系
-            if not table_df.empty:
-                self.logger.debug(
-                    f'[get_latest] {stock_code}.{table_name} 无可用数据: '
-                    f'查询日期={date}, 数据日期范围={table_df.index[0].date()}~{table_df.index[-1].date()}, '
-                    f'数据行数={len(table_df)}'
-                )
             return None
 
         latest_row = available.iloc[-1]
@@ -199,6 +286,9 @@ class FinancialDataCache:
         Returns:
             { field1: value1, field2: value2, ... }
         """
+        # 按需加载
+        self._ensure_table_loaded(stock_code, table_name)
+
         result = {}
         stock_data = self._data.get(stock_code, {})
         table_df = stock_data.get(table_name)
@@ -245,6 +335,9 @@ class FinancialDataCache:
         Returns:
             field非空时返回list，否则返回DataFrame
         """
+        # 按需加载
+        self._ensure_table_loaded(stock_code, table_name)
+
         stock_data = self._data.get(stock_code, {})
         table_df = stock_data.get(table_name)
 
@@ -272,6 +365,31 @@ class FinancialDataCache:
 
         return available
 
+    def preload_stock(self, stock_code: str, tables: List[str] = None) -> None:
+        """预加载指定股票的所有/指定表到内存
+
+        Args:
+            stock_code: 股票代码
+            tables: 表名列表，为空则加载所有已知表
+        """
+        if tables is None:
+            # 使用 QMT 默认的 8 个财务表
+            tables = ['Balance', 'Income', 'CashFlow', 'Capital',
+                      'Holdernum', 'Top10holder', 'Top10flowholder', 'Pershareindex']
+
+        for table_name in tables:
+            self._ensure_table_loaded(stock_code, table_name)
+
+    def preload_stocks(self, stock_list: List[str], tables: List[str] = None) -> None:
+        """预加载多只股票的财务数据到内存
+
+        Args:
+            stock_list: 股票代码列表
+            tables: 表名列表
+        """
+        for stock_code in stock_list:
+            self.preload_stock(stock_code, tables)
+
 
 class FinancialDataAdapter:
     """财务数据适配器 - 提供策略层面的财报数据访问
@@ -282,11 +400,11 @@ class FinancialDataAdapter:
     3. 与 StrategyLogic 集成：通过 set_financial_data_adapter 注入
 
     使用方式：
-        cache = FinancialDataCache(raw_data)
+        cache = FinancialDataCache(data_processor=processor)
         adapter = FinancialDataAdapter(cache)
         strategy.set_financial_data_adapter(adapter)
 
-        # 在策略中
+        # 在策略中（按需加载，无需预下载全部数据）
         pe = self.get_financial_field('000001.SZ', 'Pershareindex', 'eps_diluted')
         selected = self.screen_stocks(lambda s: adapter.get_financial_field(s, 'Income', 'total_operate_income') > 1e10)
     """
