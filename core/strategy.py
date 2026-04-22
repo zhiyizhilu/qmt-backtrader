@@ -74,6 +74,10 @@ class BaseStrategy(bt.Strategy):
             self._total_bars = 0
 
     def next(self):
+        self._current_bar += 1
+        if self._current_bar == 1:
+            self._init_progress_bar()
+
         if self._strategy_logic:
             self._strategy_logic.update_data()
 
@@ -87,7 +91,7 @@ class BaseStrategy(bt.Strategy):
                 self._equity_history[-1] = (dt, value)
 
         # 首个bar输出数据状态
-        if self._current_bar == 0:
+        if self._current_bar == 1:
             self.log(f'[DEBUG] 首个bar: 日期={dt}, 数据源数量={len(self.datas)}, 资金={value:.2f}')
             for i, data in enumerate(self.datas):
                 name = data._name if hasattr(data, '_name') else f'data[{i}]'
@@ -97,7 +101,7 @@ class BaseStrategy(bt.Strategy):
             current_date_str = dt.isoformat()
             if current_date_str < self.params.trade_start_date:
                 # 仅前3个bar输出跳过日志，避免刷屏
-                if self._current_bar < 3:
+                if self._current_bar <= 3:
                     self.log(f'[DEBUG] 跳过(未到交易起始日): 当前={current_date_str}, 交易起始日={self.params.trade_start_date}')
                 return
 
@@ -105,9 +109,6 @@ class BaseStrategy(bt.Strategy):
             bar = self._build_bar_data()
             self._strategy_logic.on_bar(bar)
 
-        self._current_bar += 1
-        if self._current_bar == 1:
-            self._init_progress_bar()
         if self._total_bars > 0 and self._current_bar % max(1, self._total_bars // 100) == 0:
             print(f"[ {self._current_bar} / {self._total_bars} ] 回测日期: {dt}")
 

@@ -218,13 +218,42 @@ class BacktestAPI(BaseAPI):
         self._data_end_date = end_date
         self._period = period
 
-    def add_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d"):
+    def add_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d",
+                 skip_if_late_start: bool = False):
+        """加载标的数据到回测引擎
+
+        Args:
+            symbol: 标的代码
+            start_date: 数据起始日
+            end_date: 数据结束日
+            period: 数据周期
+            skip_if_late_start: 如果数据实际起始日晚于trade_start_date，是否跳过该标的。
+                在多数据源模式下，一个起始日期较晚的标的会导致backtrader对齐延迟，
+                从而使整个回测的实际起始日被推迟。
+        """
         self._period = period
         self._data_start_date = start_date
         self._data_end_date = end_date
         data = self.data_processor.get_data(symbol, start_date, end_date, period)
 
         if not data.empty:
+            # 检查数据实际起始日期是否晚于交易起始日
+            if skip_if_late_start and self._trade_start_date:
+                try:
+                    actual_start = data.index[0]
+                    if hasattr(actual_start, 'strftime'):
+                        actual_start_str = actual_start.strftime('%Y-%m-%d')
+                    else:
+                        actual_start_str = str(actual_start)[:10]
+                    if actual_start_str > self._trade_start_date:
+                        self.logger.debug(
+                            f'[add_data] {symbol}: 跳过(数据起始日 {actual_start_str} '
+                            f'晚于交易起始日 {self._trade_start_date})'
+                        )
+                        return
+                except Exception:
+                    pass
+
             bt_data = bt.feeds.PandasData(
                 dataname=data,
                 datetime='datetime' if 'datetime' in data.columns else None,
@@ -421,7 +450,8 @@ class BacktestAPI(BaseAPI):
         for i, symbol in enumerate(pool, 1):
             if symbol not in self._symbols:
                 try:
-                    self.add_data(symbol, self._data_start_date, self._data_end_date, self._period)
+                    self.add_data(symbol, self._data_start_date, self._data_end_date, self._period,
+                                  skip_if_late_start=True)
                     loaded_count += 1
                     if i % 20 == 0 or i == total:
                         elapsed = _time.time() - load_start
