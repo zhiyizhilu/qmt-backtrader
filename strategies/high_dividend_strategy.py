@@ -32,6 +32,7 @@ class HighDividendStrategy(StockSelectionStrategy):
         ('min_profit_growth', 0.0),
         ('min_operate_cashflow', 0.0),
         ('use_avg_dividend', True),
+        ('skip_fundamental_if_missing', True),  # 财务数据缺失时跳过基本面过滤
     )
 
     def select_stocks(self) -> List[str]:
@@ -71,22 +72,39 @@ class HighDividendStrategy(StockSelectionStrategy):
     def _filter_fundamentals(self, pool: List[str]) -> List[str]:
         """基本面三重过滤：ROE、归母净利润增速、经营现金流"""
         result = []
+        debug_logged = 0
+        missing_count = 0
+
         for stock in pool:
             roe = self.get_financial_field(stock, 'Pershareindex', 'du_return_on_equity')
-            if roe is None or roe <= self.params.min_roe:
-                continue
-
             profit_growth = self.get_financial_field(
                 stock, 'Pershareindex', 'inc_net_profit_rate'
             )
+            ocf = self.get_financial_field(stock, 'Pershareindex', 's_fa_ocfps')
+
+            # 记录前3条缺失调试信息
+            if debug_logged < 3 and roe is None:
+                self.log(f'[DEBUG] {stock} ROE=None (Pershareindex.du_return_on_equity)')
+                debug_logged += 1
+
+            # 统计缺失情况
+            if roe is None and profit_growth is None and ocf is None:
+                missing_count += 1
+
+            # 正常过滤逻辑
+            if roe is None or roe <= self.params.min_roe:
+                continue
             if profit_growth is None or profit_growth <= self.params.min_profit_growth:
                 continue
-
-            ocf = self.get_financial_field(stock, 'Pershareindex', 's_fa_ocfps')
             if ocf is None or ocf <= self.params.min_operate_cashflow:
                 continue
 
             result.append(stock)
+
+        # 降级逻辑：如果全部股票都缺少财务数据，且允许跳过，则返回整个池子
+        if not result and missing_count == len(pool) and self.params.skip_fundamental_if_missing:
+            self.log(f'[WARN] 所有股票财务数据缺失({missing_count}/{len(pool)})，跳过基本面过滤')
+            return pool
 
         return result
 

@@ -163,11 +163,13 @@ class QMTAPI(BaseAPI):
     - 持续模式: run_loop() 持续接收行情并定时触发 on_bar
     """
 
-    def __init__(self, is_sim: bool = True):
+    def __init__(self, is_sim: bool = True, path: str = r'D:\qmt\userdata_mini', account_id: str = None):
         """初始化QMT API"""
         super().__init__()
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
         self.is_sim = is_sim
+        self.path = path
+        self.account_id = account_id
         self.xttrader = None
         self.xtaccount = None
         self.trader: Optional[QMTTrader] = None
@@ -180,25 +182,59 @@ class QMTAPI(BaseAPI):
     def _init_api(self):
         """初始化API"""
         try:
-            from xtquant import xttrader
+            import time
+            from xtquant.xttrader import XtQuantTrader, XtQuantTraderCallback
             from xtquant.xttype import StockAccount
+            from xtquant import xtconstant
 
-            self.xttrader = xttrader.XTTrader()
+            # 动态生成 session_id 以避免 -1 连接错误
+            session_id = int(time.time() * 1000) % 1000000
+            self.xttrader = XtQuantTrader(self.path, session_id)
 
-            if self.is_sim:
-                self.xttrader.start('simulation')
+            # 注册回调以接收交易主推
+            class MyXtQuantTraderCallback(XtQuantTraderCallback):
+                def __init__(self, api_instance):
+                    self.api = api_instance
+
+                def on_disconnected(self):
+                    self.api.logger.warning("MiniQMT 交易服务器连接断开")
+
+                def on_stock_order(self, order):
+                    self.api.logger.info(f"收到委托主推: {order.stock_code} {order.order_status}")
+
+                def on_stock_trade(self, trade):
+                    self.api.logger.info(f"收到成交主推: {trade.stock_code} {trade.traded_volume}@{trade.traded_price}")
+
+            self.callback = MyXtQuantTraderCallback(self)
+            self.xttrader.register_callback(self.callback)
+
+            self.xttrader.start()
+            connect_result = self.xttrader.connect()
+            if connect_result == 0:
+                self.logger.info("连接MiniQMT成功")
             else:
-                self.xttrader.start('real')
+                self.logger.error(f"连接MiniQMT失败, 错误码: {connect_result}")
 
-            accounts = self.xttrader.query_account_list()
-            if accounts:
-                self.xtaccount = accounts[0]
-                self.logger.info(f"连接账户成功: {self.xtaccount.account_id}")
+            if self.account_id:
+                self.xtaccount = StockAccount(self.account_id)
             else:
-                self.logger.error("未找到账户")
+                accounts = self.xttrader.query_account_list()
+                if accounts:
+                    self.xtaccount = accounts[0]
+                    self.logger.info(f"自动获取并连接账户成功: {self.xtaccount.account_id}")
+                else:
+                    self.logger.error("未找到账户")
+                    
+            if self.xtaccount:
+                # 订阅账户以接收主推
+                subscribe_result = self.xttrader.subscribe(self.xtaccount)
+                if subscribe_result == 0:
+                    self.logger.info("订阅账户主推成功")
+                else:
+                    self.logger.warning(f"订阅账户主推失败, 错误码: {subscribe_result}")
 
         except ImportError:
-            self.logger.error("xtquant not installed, please install it from QMT官网")
+            self.logger.error("xtquant 未安装，请从QMT官网下载安装")
         except Exception as e:
             self.logger.error(f"初始化QMT API失败: {e}")
 
@@ -268,20 +304,11 @@ class QMTAPI(BaseAPI):
         self.strategy.on_bar(bar)
 
     def run_loop(self, interval: float = 60.0, on_bar_callback: Optional[Callable] = None):
-        """持续运行策略 - 定时获取行情并触发 on_bar
+        """持续运行策略 - 使用订阅回调 (Push) 机制获取行情并触发策略
 
         Args:
-            interval: 轮询间隔（秒），默认60秒
-            on_bar_callback: 每次on_bar后的回调函数，可用于自定义处理
-
-        使用方式：
-            api = QMTAPI(is_sim=True)
-            api.add_strategy(MyStrategy, **params)
-            api.run_loop(interval=60)  # 每60秒触发一次
-
-            # 在另一个线程中停止:
-            time.sleep(3600)
-            api.stop_loop()
+            interval: 轮询间隔（秒），在此模式下仅用于控制保活线程的睡眠间隔
+            on_bar_callback: 每次行情到达后的回调函数
         """
         if not self.strategy:
             self.logger.error("未添加策略")
@@ -291,48 +318,73 @@ class QMTAPI(BaseAPI):
         self.strategy.set_data_adapter(adapter)
 
         self._running = True
-        self.logger.info(f"策略循环启动，轮询间隔: {interval}秒")
+        self.logger.info("策略实时数据订阅启动...")
 
-        def _loop():
-            while self._running:
-                try:
-                    now = datetime.datetime.now()
+        try:
+            from xtquant import xtdata
+            symbols = self.strategy.get_symbols()
 
-                    if now.weekday() >= 5:
-                        time.sleep(min(interval, 60))
-                        continue
+            def on_data(datas):
+                """处理行情推送回调"""
+                if not self._running:
+                    return
+                
+                now = datetime.datetime.now()
+                # 过滤非交易时间：早于9点，11点半到13点之间，以及15点之后
+                hour, minute = now.hour, now.minute
+                if hour < 9 or (hour == 11 and minute >= 30) or hour == 12 or hour >= 15:
+                    return
+                if now.weekday() >= 5:
+                    return
 
-                    hour, minute = now.hour, now.minute
-                    if hour < 9 or (hour == 11 and minute > 35) or (hour >= 13 and hour < 13) or hour >= 15:
-                        if hour >= 15 or hour < 9:
-                            time.sleep(min(interval, 300))
-                            continue
+                for symbol, data in datas.items():
+                    # 兼容不同数据结构的解析
+                    close_price = None
+                    if isinstance(data, list) and len(data) > 0:
+                        close_price = data[-1].get('lastPrice', data[-1].get('close', 0))
+                    elif isinstance(data, dict):
+                        close_price = data.get('lastPrice', data.get('close', 0))
+                    else:
+                        try:
+                            close_price = getattr(data, 'lastPrice', getattr(data, 'close', 0))
+                        except AttributeError:
+                            pass
+                            
+                    if close_price and close_price > 0:
+                        if self.strategy._data_adapter:
+                            self.strategy._data_adapter.update({
+                                symbol: {'close': [close_price]}
+                            })
+                            self.strategy._data_adapter.set_current_date(now.date())
+                            
+                        # 构造BarData并触发策略
+                        bar = BarData(
+                            symbol=symbol,
+                            close=close_price,
+                            datetime=now
+                        )
+                        self.strategy.on_bar(bar)
 
-                    bar = self._fetch_realtime_bar()
+                if on_bar_callback:
+                    on_bar_callback(self.strategy)
 
-                    if self.strategy._data_adapter:
-                        for symbol in self.strategy.get_symbols():
-                            price = bar.close if bar.symbol == symbol else None
-                            if price and price > 0:
-                                self.strategy._data_adapter.update({
-                                    symbol: {'close': [price]}
-                                })
-                        self.strategy._data_adapter.set_current_date(now.date())
+            for symbol in symbols:
+                # 订阅实时行情，设置 callback 以 Push 模式接收数据
+                xtdata.subscribe_quote(symbol, period='tick', count=-1, callback=on_data)
 
-                    self.strategy.on_bar(bar)
+            self.logger.info(f"已成功订阅 {len(symbols)} 个标的的实时行情")
 
-                    if on_bar_callback:
-                        on_bar_callback(self.strategy)
+            # 保活线程，维持 _running 状态
+            def _loop():
+                while self._running:
+                    time.sleep(interval)
+                self.logger.info("策略运行已停止")
 
-                except Exception as e:
-                    self.logger.error(f"策略循环异常: {e}")
+            self._loop_thread = threading.Thread(target=_loop, daemon=True)
+            self._loop_thread.start()
 
-                time.sleep(interval)
-
-            self.logger.info("策略循环已停止")
-
-        self._loop_thread = threading.Thread(target=_loop, daemon=True)
-        self._loop_thread.start()
+        except Exception as e:
+            self.logger.error(f"实时行情订阅异常: {e}")
 
     def stop_loop(self):
         """停止策略循环"""

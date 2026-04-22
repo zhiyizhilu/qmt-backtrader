@@ -4,6 +4,7 @@ import datetime
 import logging
 import pandas as pd
 from typing import Dict, List, Optional, Any, Type
+from tqdm import tqdm
 from core.data import DataProcessor, QMTDataProcessor, create_data_processor
 from core.executor import BacktestExecutor
 from core.data_adapter import BacktraderDataAdapter
@@ -69,10 +70,24 @@ class BacktestStrategyAdapter(BaseStrategy):
         executor = BacktestExecutor(self)
         adapter = BacktraderDataAdapter(period=period)
 
+        logging.getLogger(__name__).debug(
+            f'[BacktestStrategyAdapter] 初始化: symbols={symbols}, period={period}, '
+            f'datas数量={len(self.datas) if hasattr(self, "datas") else 0}'
+        )
+
         for i, sym in enumerate(symbols):
             if i < len(self.datas):
                 adapter.register_data(sym, self.datas[i])
                 executor.register_data(sym, self.datas[i])
+                logging.getLogger(__name__).debug(
+                    f'[BacktestStrategyAdapter] 映射: {sym} -> datas[{i}], '
+                    f'name={self.datas[i]._name if hasattr(self.datas[i], "_name") else "N/A"}'
+                )
+            else:
+                logging.getLogger(__name__).warning(
+                    f'[BacktestStrategyAdapter] 无法映射: {sym}, datas数量不足 '
+                    f'(需要索引{i}, 只有{len(self.datas)}个数据源)'
+                )
 
         logic.set_data_adapter(adapter)
         logic.executor = executor
@@ -114,8 +129,8 @@ class BacktestAPI(BaseAPI):
         self.cerebro = bt.Cerebro()
         self.data_processor = create_data_processor(data_source, fallback_to_simulated=True)
         self._data_source = data_source
-        # 财务数据始终优先使用QMT（akshare/baostock不支持QMT格式的财务数据）
-        self._financial_data_processor = QMTDataProcessor(fallback_to_simulated=True)
+        # 财务数据处理器根据数据源选择
+        self._financial_data_processor = create_data_processor(data_source, fallback_to_simulated=True)
         self._symbols: List[str] = []
         self._strategy_logic_class: Optional[Type[StrategyLogic]] = None
         self._strategy_kwargs: Dict[str, Any] = {}
@@ -163,23 +178,30 @@ class BacktestAPI(BaseAPI):
         self._period = period
 
         if start_date and end_date:
-            # QMT 数据源：自动限制回测起始日，确保数据完整
             start_dt = datetime.datetime.strptime(start_date, '%Y-%m-%d')
             end_dt = datetime.datetime.strptime(end_date, '%Y-%m-%d')
-            min_start_dt = end_dt - datetime.timedelta(days=self.QMT_MAX_DATA_DAYS)
 
-            if start_dt < min_start_dt:
-                old_start = start_date
-                start_date = min_start_dt.strftime('%Y-%m-%d')
-                self.logger.warning(
-                    f"数据源 '{self._data_source}' 最多支持最近 {self.QMT_MAX_DATA_DAYS} 天数据，"
-                    f"回测起始日已从 {old_start} 调整为 {start_date}"
-                )
+            # QMT 数据源：自动限制回测起始日，确保数据完整
+            if self._data_source == 'qmt':
+                min_start_dt = end_dt - datetime.timedelta(days=self.QMT_MAX_DATA_DAYS)
+                if start_dt < min_start_dt:
+                    old_start = start_date
+                    start_date = min_start_dt.strftime('%Y-%m-%d')
+                    self.logger.warning(
+                        f"数据源 '{self._data_source}' 最多支持最近 {self.QMT_MAX_DATA_DAYS} 天数据，"
+                        f"回测起始日已从 {old_start} 调整为 {start_date}"
+                    )
+                    start_dt = datetime.datetime.strptime(start_date, '%Y-%m-%d')
 
-            data_start_dt = datetime.datetime.strptime(start_date, '%Y-%m-%d') - datetime.timedelta(days=data_lookback_days)
+            data_start_dt = start_dt - datetime.timedelta(days=data_lookback_days)
             data_start_date = data_start_dt.strftime('%Y-%m-%d')
             self.set_data_range(data_start_date, end_date, period=period)
-            self.set_trade_start_date(trade_start_date or start_date)
+            trade_start = trade_start_date or start_date
+            self.set_trade_start_date(trade_start)
+            self.logger.info(
+                f'[configure] 数据范围={data_start_date}~{end_date}, '
+                f'交易起始日={trade_start}, 前移天数={data_lookback_days}'
+            )
 
     def set_data_range(self, start_date: str, end_date: str, period: str = '1d'):
         """设置数据加载范围
@@ -216,6 +238,13 @@ class BacktestAPI(BaseAPI):
 
             self.cerebro.adddata(bt_data, name=symbol)
             self._symbols.append(symbol)
+            self.logger.debug(
+                f'[add_data] {symbol}: 加载成功, {len(data)}行, '
+                f'日期范围={data.index[0]}~{data.index[-1]}, '
+                f'列={list(data.columns)}'
+            )
+        else:
+            self.logger.warning(f'[add_data] {symbol}: 数据为空! start={start_date}, end={end_date}, period={period}')
 
     def load_financial_data(self, stock_list: Optional[List[str]] = None,
                             table_list: Optional[List[str]] = None,
@@ -247,17 +276,28 @@ class BacktestAPI(BaseAPI):
             # 方式2：指定板块
             adapter = api.load_financial_data(sector='沪深300')
         """
+        import time as _time
+        overall_start = _time.time()
+
+        # ── 阶段1：获取股票池 ──
         if stock_list is None and sector:
+            self.logger.info(f"[阶段1/5] 获取板块 '{sector}' 成分股...")
             stock_list = self._financial_data_processor.get_stock_list(sector)
-            self.logger.info(f"从板块 '{sector}' 获取到 {len(stock_list)} 只股票")
+            self.logger.info(f"[阶段1/5] 板块 '{sector}' 获取到 {len(stock_list)} 只股票")
+        else:
+            self.logger.info(f"[阶段1/5] 使用指定股票列表: {len(stock_list or [])} 只")
 
         if not stock_list:
             raise ValueError("必须指定 stock_list 或 sector")
 
+        # ── 阶段2：下载财务数据到本地 ──
+        self.logger.info(f"[阶段2/5] 下载财务数据到本地缓存，共 {len(stock_list)} 只股票...")
         self._financial_data_processor.download_financial_data(
             stock_list, table_list, start_time, end_time
         )
 
+        # ── 阶段3：读取并缓存财务数据 ──
+        self.logger.info(f"[阶段3/5] 读取财务数据，共 {len(stock_list)} 只股票...")
         raw_data = self._financial_data_processor.get_financial_data(
             stock_list, table_list, start_time, end_time, report_type
         )
@@ -267,25 +307,41 @@ class BacktestAPI(BaseAPI):
         self._stock_pool = stock_list
 
         loaded_stocks = len(cache.get_stocks())
-        self.logger.info(f"财务数据适配器创建完成: {loaded_stocks}/{len(stock_list)} 只股票有数据")
+        self.logger.info(
+            f"[阶段3/5] 财务数据适配器创建完成: {loaded_stocks}/{len(stock_list)} 只股票有数据"
+        )
 
+        # ── 阶段4：获取行业映射 ──
+        self.logger.info(f"[阶段4/5] 获取申万行业分类映射...")
         try:
             industry_mapping = self._financial_data_processor.get_industry_mapping(
                 level=1, stock_pool=stock_list
             )
             if industry_mapping:
                 self._financial_adapter.set_industry_mapping(industry_mapping)
-                self.logger.info(f"行业分类映射已加载: {len(industry_mapping)} 只股票")
+                self.logger.info(f"[阶段4/5] 行业分类映射已加载: {len(industry_mapping)} 只股票, {len(set(industry_mapping.values()))} 个行业")
+            else:
+                self.logger.warning(f"[阶段4/5] 行业分类映射为空")
         except Exception as e:
-            self.logger.warning(f"行业分类映射加载失败: {e}，策略将无法使用行业筛选")
+            self.logger.warning(f"[阶段4/5] 行业分类映射加载失败: {e}，策略将无法使用行业筛选")
 
+        # ── 阶段5：获取分红数据 ──
+        self.logger.info(f"[阶段5/5] 获取分红数据，共 {len(stock_list)} 只股票...")
         try:
             dividend_data = self._financial_data_processor.get_dividend_data(stock_list)
             if dividend_data:
                 self._financial_adapter.set_dividend_data(dividend_data)
-                self.logger.info(f"分红数据已加载: {len(dividend_data)} 只股票")
+                self.logger.info(f"[阶段5/5] 分红数据已加载: {len(dividend_data)} 只股票")
+            else:
+                self.logger.warning(f"[阶段5/5] 分红数据为空，策略将无法计算股息率")
         except Exception as e:
-            self.logger.warning(f"分红数据加载失败: {e}，策略将无法计算股息率")
+            self.logger.warning(f"[阶段5/5] 分红数据加载失败: {e}，策略将无法计算股息率")
+
+        overall_elapsed = _time.time() - overall_start
+        self.logger.info(
+            f"财务数据加载全部完成: {loaded_stocks}/{len(stock_list)} 只股票有数据, "
+            f"总耗时 {overall_elapsed:.1f}秒"
+        )
 
         return self._financial_adapter
 
@@ -352,22 +408,40 @@ class BacktestAPI(BaseAPI):
         self._strategy_logic_class = strategy_class
         self._strategy_kwargs = kwargs
 
+        import time as _time
+        load_start = _time.time()
+
         loaded_count = 0
         failed_count = 0
-        for symbol in pool:
+        skipped_count = 0
+        total = len(pool)
+
+        self.logger.info(f"开始加载股票池行情数据: {total} 只股票, 周期={self._period}")
+
+        for i, symbol in enumerate(pool, 1):
             if symbol not in self._symbols:
                 try:
                     self.add_data(symbol, self._data_start_date, self._data_end_date, self._period)
                     loaded_count += 1
+                    if i % 20 == 0 or i == total:
+                        elapsed = _time.time() - load_start
+                        self.logger.info(
+                            f"[ {i} / {total} ] 行情加载进度: "
+                            f"{loaded_count} 已加载, {failed_count} 失败, "
+                            f"{skipped_count} 已存在, 耗时 {elapsed:.1f}秒"
+                        )
                 except Exception as e:
                     failed_count += 1
                     if failed_count <= 5:
                         self.logger.debug(f"加载 {symbol} 行情数据失败: {e}")
+            else:
+                skipped_count += 1
 
-        if failed_count > 5:
-            self.logger.info(f"... 共 {failed_count} 只股票行情数据加载失败")
-
-        self.logger.info(f"股票池行情数据加载: 成功 {loaded_count}, 失败 {failed_count}")
+        load_elapsed = _time.time() - load_start
+        self.logger.info(
+            f"股票池行情数据加载完成: 成功 {loaded_count}, 失败 {failed_count}, "
+            f"已存在 {skipped_count}, 耗时 {load_elapsed:.1f}秒"
+        )
 
         self._ensure_default_analyzers()
 
@@ -442,6 +516,20 @@ class BacktestAPI(BaseAPI):
     def run(self):
         if self._initial_cash == 0.0:
             self.set_cash(200000)
+
+        self.logger.info(
+            f'[run] 回测启动: symbols={self._symbols}, period={self._period}, '
+            f'数据范围={self._data_start_date}~{self._data_end_date}, '
+            f'交易起始日={self._trade_start_date}, '
+            f'初始资金={self._initial_cash}, '
+            f'策略={self._strategy_logic_class.__name__ if self._strategy_logic_class else "N/A"}, '
+            f'数据源数量={len(self.cerebro.datas)}'
+        )
+
+        # 检查数据源
+        for i, data in enumerate(self.cerebro.datas):
+            name = data._name if hasattr(data, '_name') else f'data[{i}]'
+            self.logger.debug(f'[run] cerebro.datas[{i}]: {name}')
 
         results = self.cerebro.run()
         self.cerebro.runstrats = [results]

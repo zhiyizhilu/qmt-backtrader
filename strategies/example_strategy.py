@@ -35,6 +35,8 @@ class DoubleMAStrategy(StrategyLogic):
         close_prices = self.get_close_prices(symbol)
 
         if len(close_prices) < self.params.slow_period:
+            if len(close_prices) <= 3:  # 只在前几个bar输出
+                self.log(f'[DEBUG] {symbol} 收盘价不足: 有{len(close_prices)}条, 需要{self.params.slow_period}条')
             return
 
         fast_ma, slow_ma, crossover = self._calculate_indicators(close_prices)
@@ -56,6 +58,10 @@ class DoubleMAStrategy(StrategyLogic):
                 if buy_volume >= 100:
                     self.log(f'买入信号: {symbol}, 价格: {current_price:.2f}, 数量: {buy_volume}')
                     self.buy(symbol, current_price, buy_volume)
+                else:
+                    self.log(f'[DEBUG] 买入量不足100股: 现金={cash:.2f}, 价格={current_price:.2f}, 计算量={buy_volume}')
+            else:
+                self.log(f'[DEBUG] 无法获取价格: {symbol}, price={current_price}')
         elif crossover == -1 and pos_size > 0:
             current_price = self.get_current_price(symbol)
             if current_price:

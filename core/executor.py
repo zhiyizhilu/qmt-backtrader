@@ -58,14 +58,30 @@ class BacktestExecutor(StrategyExecutor):
         """执行买入操作"""
         data = self._symbol_data_map.get(symbol)
         if data:
-            return self.strategy.buy(data=data, size=volume)
+            result = self.strategy.buy(data=data, size=volume)
+            logging.getLogger(__name__).debug(
+                f'[BacktestExecutor] 买入: {symbol}, 价格={price:.2f}, 数量={volume}, '
+                f'数据源={data._name if hasattr(data, "_name") else "N/A"}'
+            )
+            return result
+        logging.getLogger(__name__).warning(
+            f'[BacktestExecutor] 买入失败-未找到数据源: {symbol}, 可用={list(self._symbol_data_map.keys())}'
+        )
         return self.strategy.buy(size=volume)
 
     def execute_sell(self, symbol: str, price: float, volume: int) -> Any:
         """执行卖出操作"""
         data = self._symbol_data_map.get(symbol)
         if data:
-            return self.strategy.sell(data=data, size=volume)
+            result = self.strategy.sell(data=data, size=volume)
+            logging.getLogger(__name__).debug(
+                f'[BacktestExecutor] 卖出: {symbol}, 价格={price:.2f}, 数量={volume}, '
+                f'数据源={data._name if hasattr(data, "_name") else "N/A"}'
+            )
+            return result
+        logging.getLogger(__name__).warning(
+            f'[BacktestExecutor] 卖出失败-未找到数据源: {symbol}, 可用={list(self._symbol_data_map.keys())}'
+        )
         return self.strategy.sell(size=volume)
 
     def cancel_order(self, order_id: str) -> bool:

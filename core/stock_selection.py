@@ -56,6 +56,7 @@ class StockSelectionStrategy(StrategyLogic):
             return
 
         if self.is_rebalance_day(current_date):
+            self.log(f'[选股] 调仓日: {current_date}')
             self._execute_rebalance(current_date)
 
     def is_rebalance_day(self, current_date: dt_module.date) -> bool:

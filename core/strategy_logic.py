@@ -289,6 +289,7 @@ class StrategyLogic:
             return None
         if self.executor:
             return self.executor.execute_buy(symbol, price, volume)
+        self.log(f'[WARNING] 买入失败: executor未设置!')
         return None
 
     def sell(self, symbol: str, price: float, volume: int):
@@ -308,6 +309,7 @@ class StrategyLogic:
             return None
         if self.executor:
             return self.executor.execute_sell(symbol, price, volume)
+        self.log(f'[WARNING] 卖出失败: executor未设置!')
         return None
 
     def cancel(self, order_id: str):

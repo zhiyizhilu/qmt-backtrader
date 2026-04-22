@@ -37,6 +37,9 @@ class BaseStrategy(bt.Strategy):
         self._trade_records: list = []
         self._last_equity_date = None
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
+        self._total_bars: int = 0
+        self._current_bar: int = 0
+        self._progress_bar = None
 
     def set_strategy_logic(self, strategy_logic: StrategyLogic) -> None:
         """设置策略逻辑实例"""
@@ -58,6 +61,18 @@ class BaseStrategy(bt.Strategy):
         """
         return list(self._trade_records)
 
+    def _init_progress_bar(self):
+        """初始化进度条 - 根据数据长度估算总bar数"""
+        if not self.datas:
+            return
+        data = self.datas[0]
+        if hasattr(data, 'lines') and len(data.lines) > 0:
+            self._total_bars = len(data.lines)
+        elif hasattr(data, 'buflen'):
+            self._total_bars = data.buflen()
+        else:
+            self._total_bars = 0
+
     def next(self):
         if self._strategy_logic:
             self._strategy_logic.update_data()
@@ -71,14 +86,30 @@ class BaseStrategy(bt.Strategy):
             if self._equity_history:
                 self._equity_history[-1] = (dt, value)
 
+        # 首个bar输出数据状态
+        if self._current_bar == 0:
+            self.log(f'[DEBUG] 首个bar: 日期={dt}, 数据源数量={len(self.datas)}, 资金={value:.2f}')
+            for i, data in enumerate(self.datas):
+                name = data._name if hasattr(data, '_name') else f'data[{i}]'
+                self.log(f'[DEBUG]   数据源[{i}]: {name}, close={data.close[0]:.3f}, volume={data.volume[0]:.0f}')
+
         if self.params.trade_start_date:
             current_date_str = dt.isoformat()
             if current_date_str < self.params.trade_start_date:
+                # 仅前3个bar输出跳过日志，避免刷屏
+                if self._current_bar < 3:
+                    self.log(f'[DEBUG] 跳过(未到交易起始日): 当前={current_date_str}, 交易起始日={self.params.trade_start_date}')
                 return
 
         if self._strategy_logic:
             bar = self._build_bar_data()
             self._strategy_logic.on_bar(bar)
+
+        self._current_bar += 1
+        if self._current_bar == 1:
+            self._init_progress_bar()
+        if self._total_bars > 0 and self._current_bar % max(1, self._total_bars // 100) == 0:
+            print(f"[ {self._current_bar} / {self._total_bars} ] 回测日期: {dt}")
 
     def _build_bar_data(self) -> BarData:
         """从backtrader数据源构建BarData"""
@@ -100,6 +131,10 @@ class BaseStrategy(bt.Strategy):
 
     def stop(self):
         """回测结束时调用 - 处理未卖出的持仓"""
+        if self._progress_bar is not None:
+            self._progress_bar.close()
+            self._progress_bar = None
+
         # 检查是否有未卖出的持仓
         has_position = False
         for data in self.datas:
@@ -111,7 +146,7 @@ class BaseStrategy(bt.Strategy):
                 price = data.close[0]
                 value = size * price
                 self.log(f'回测结束时仍有持仓: {symbol}, 数量: {size}, 价格: {price:.3f}, 市值: {value:.2f}')
-        
+
         if has_position:
             # 触发策略的回测结束回调
             if self._strategy_logic and hasattr(self._strategy_logic, 'on_backtest_end'):

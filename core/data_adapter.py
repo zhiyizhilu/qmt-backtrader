@@ -103,7 +103,14 @@ class BacktraderDataAdapter(MarketDataAdapter):
             if self._current_day_close.get(symbol) is not None:
                 prices.append(self._current_day_close[symbol])
         if period is not None:
-            return prices[-period:] if len(prices) >= period else prices
+            result = prices[-period:] if len(prices) >= period else prices
+            # 调试日志：数据不足时输出
+            if len(prices) < period and len(prices) > 0:
+                import logging
+                logging.getLogger(__name__).debug(
+                    f'[DataAdapter] {symbol} 收盘价数量不足: 有{len(prices)}条, 需要{period}条'
+                )
+            return result
         return prices
 
     def get_current_date(self) -> Optional[datetime.date]:
@@ -124,14 +131,16 @@ class BacktraderDataAdapter(MarketDataAdapter):
 class LiveDataAdapter(MarketDataAdapter):
     """实时数据适配器 - 实盘/模拟盘模式下使用"""
 
+    MAX_CLOSE_PRICES = 5000
+
     def __init__(self):
-        self._close_prices: Dict[str, List[float]] = {}
+        self._close_prices: Dict[str, deque] = {}
         self._current_prices: Dict[str, float] = {}
         self._current_date: Optional[datetime.date] = None
 
     def load_history(self, symbol: str, close_prices: List[float]) -> None:
         """加载历史收盘价数据"""
-        self._close_prices[symbol] = list(close_prices)
+        self._close_prices[symbol] = deque(close_prices, maxlen=self.MAX_CLOSE_PRICES)
         if close_prices:
             self._current_prices[symbol] = close_prices[-1]
 
@@ -140,7 +149,7 @@ class LiveDataAdapter(MarketDataAdapter):
         for symbol, symbol_data in data.items():
             close = symbol_data['close'][-1]
             if symbol not in self._close_prices:
-                self._close_prices[symbol] = []
+                self._close_prices[symbol] = deque(maxlen=self.MAX_CLOSE_PRICES)
             self._close_prices[symbol].append(close)
             self._current_prices[symbol] = close
 

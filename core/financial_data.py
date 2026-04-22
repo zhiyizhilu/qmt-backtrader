@@ -47,6 +47,7 @@ class FinancialDataCache:
                 if df is None:
                     continue
                 if isinstance(df, pd.DataFrame):
+                    df = self._ensure_datetime_index(df, stock_code, table_name)
                     if not df.empty:
                         sorted_df = df.sort_index()
                         self._data[stock_code][table_name] = sorted_df
@@ -55,6 +56,7 @@ class FinancialDataCache:
                 else:
                     try:
                         converted = pd.DataFrame(df)
+                        converted = self._ensure_datetime_index(converted, stock_code, table_name)
                         if not converted.empty:
                             converted = converted.sort_index()
                         self._data[stock_code][table_name] = converted
@@ -64,6 +66,58 @@ class FinancialDataCache:
         self._loaded = True
         stock_count = len(self._data)
         self.logger.info(f"财务数据缓存加载完成: {stock_count} 只股票")
+
+    def _ensure_datetime_index(self, df: pd.DataFrame,
+                                stock_code: str = '', table_name: str = '') -> pd.DataFrame:
+        """确保 DataFrame 的索引是 DatetimeIndex
+
+        如果索引不是 DatetimeIndex，尝试从已知的日期列中构建。
+        这对从 parquet 缓存加载的旧格式数据尤其重要。
+        """
+        if isinstance(df.index, pd.DatetimeIndex):
+            return df
+
+        # 尝试从常见日期列构建 DatetimeIndex
+        # 优先使用公告日期列（避免未来数据），其次使用报告期列
+        for col in ['announce_date', 'm_anntime', 'pubDate', '公告日期',
+                     'report_date', 'm_timetag', 'statDate', '报告期', 'index']:
+            if col in df.columns:
+                try:
+                    dt_values = pd.to_datetime(df[col], errors='coerce')
+                    valid = dt_values.notna()
+                    if valid.any():
+                        df = df[valid].copy()
+                        df.index = dt_values[valid]
+                        # 删除已用作索引的日期列，避免重复
+                        # 但保留非索引用途的日期列（如 announce_date 仅用于索引时删除，
+                        # 但如果数据源本来就将其作为数据列，则保留）
+                        # 安全策略：仅删除 parquet 还原时产生的 'index' 列
+                        if col == 'index':
+                            df = df.drop(columns=['index'], errors='ignore')
+                        return df
+                except Exception:
+                    continue
+
+        # 尝试将整数索引转为日期（如 20231231 格式）
+        if len(df) > 0 and df.index.dtype in ('int64', 'object'):
+            try:
+                dt_values = pd.to_datetime(df.index.astype(str), format='%Y%m%d', errors='coerce')
+                if dt_values.notna().any():
+                    valid = dt_values.notna()
+                    df = df[valid].copy()
+                    df.index = dt_values[valid]
+                    return df
+            except Exception:
+                pass
+
+        # 所有尝试失败，记录警告
+        if stock_code and table_name:
+            self.logger.debug(
+                f'[_ensure_datetime_index] {stock_code}.{table_name} '
+                f'无法构建DatetimeIndex, index类型={type(df.index).__name__}'
+            )
+
+        return df
 
     def get_stocks(self) -> List[str]:
         """获取已缓存的股票列表"""
@@ -99,13 +153,25 @@ class FinancialDataCache:
             try:
                 table_df.index = pd.to_datetime(table_df.index)
                 self._data[stock_code][table_name] = table_df
-            except Exception:
+            except Exception as e:
+                self.logger.debug(
+                    f'[get_latest] {stock_code}.{table_name} 索引转DatetimeIndex失败: {e}, '
+                    f'index类型={type(table_df.index).__name__}, '
+                    f'前3个值={table_df.index[:3].tolist() if len(table_df) > 0 else "empty"}'
+                )
                 return None
 
         mask = table_df.index.date <= date
         available = table_df[mask]
 
         if available.empty:
+            # 调试：输出数据范围与查询日期的关系
+            if not table_df.empty:
+                self.logger.debug(
+                    f'[get_latest] {stock_code}.{table_name} 无可用数据: '
+                    f'查询日期={date}, 数据日期范围={table_df.index[0].date()}~{table_df.index[-1].date()}, '
+                    f'数据行数={len(table_df)}'
+                )
             return None
 
         latest_row = available.iloc[-1]
@@ -274,6 +340,60 @@ class FinancialDataAdapter:
         """
         self._dividend_data = dividend_data or {}
 
+    def _ensure_dividend_datetime_index(self, df: pd.DataFrame,
+                                         stock_code: str = '') -> Optional[pd.DataFrame]:
+        """确保分红数据 DataFrame 的索引是 DatetimeIndex
+
+        支持多种分红数据来源：
+        - BaoStock: 索引已经是 DatetimeIndex 或 YYYYMMDD 字符串
+        - QMT: time 列是毫秒时间戳，索引是 RangeIndex
+        - AKShare: 索引可能是其他格式
+        """
+        if isinstance(df.index, pd.DatetimeIndex):
+            return df
+
+        # QMT 格式：time 列是毫秒时间戳
+        if 'time' in df.columns and df['time'].dtype in ('float64', 'int64'):
+            try:
+                dt_values = pd.to_datetime(df['time'], unit='ms', errors='coerce')
+                valid = dt_values.notna()
+                if valid.any():
+                    df = df[valid].copy()
+                    df.index = dt_values[valid]
+                    df = df.sort_index()
+                    return df
+            except Exception:
+                pass
+
+        # BaoStock 格式：索引是 YYYYMMDD 字符串或整数
+        try:
+            dt_values = pd.to_datetime(df.index, format='%Y%m%d', errors='coerce')
+            valid = dt_values.notna()
+            if valid.any():
+                df = df[valid].copy()
+                df.index = dt_values[valid]
+                return df
+        except Exception:
+            pass
+
+        # 通用格式：直接尝试 to_datetime
+        try:
+            dt_values = pd.to_datetime(df.index, errors='coerce')
+            valid = dt_values.notna()
+            if valid.any():
+                df = df[valid].copy()
+                df.index = dt_values[valid]
+                return df
+        except Exception:
+            pass
+
+        if stock_code:
+            self.logger.debug(
+                f'[_ensure_dividend_datetime_index] {stock_code} '
+                f'无法构建DatetimeIndex, index类型={type(df.index).__name__}'
+            )
+        return None
+
     def get_latest_dvps(self, stock_code: str,
                         date: Optional[datetime.date] = None) -> Optional[float]:
         """获取指定日期前最近一次每股派息金额
@@ -294,9 +414,10 @@ class FinancialDataAdapter:
             return None
 
         try:
-            if not isinstance(df.index, pd.DatetimeIndex):
-                df.index = pd.to_datetime(df.index, format='%Y%m%d')
-                self._dividend_data[stock_code] = df
+            df = self._ensure_dividend_datetime_index(df, stock_code)
+            if df is None:
+                return None
+            self._dividend_data[stock_code] = df
 
             mask = df.index.date <= query_date
             available = df[mask]
@@ -332,9 +453,10 @@ class FinancialDataAdapter:
             return []
 
         try:
-            if not isinstance(df.index, pd.DatetimeIndex):
-                df.index = pd.to_datetime(df.index, format='%Y%m%d')
-                self._dividend_data[stock_code] = df
+            df = self._ensure_dividend_datetime_index(df, stock_code)
+            if df is None:
+                return []
+            self._dividend_data[stock_code] = df
 
             mask = df.index.date <= query_date
             available = df[mask].tail(count)

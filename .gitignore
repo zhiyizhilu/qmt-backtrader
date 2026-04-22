@@ -2,3 +2,11 @@
 
 __pycache__/
 logs/*
+
+.cache
+
+*.txt
+
+.codebuddy
+
+test.*
