@@ -228,31 +228,51 @@ class BacktestAPI(BaseAPI):
             end_date: 数据结束日
             period: 数据周期
             skip_if_late_start: 如果数据实际起始日晚于trade_start_date，是否跳过该标的。
-                在多数据源模式下，一个起始日期较晚的标的会导致backtrader对齐延迟，
-                从而使整个回测的实际起始日被推迟。
+                已废弃：现在不再跳过，而是用 NaN 填充前置日期，使该标的数据与其它
+                数据源对齐。策略层通过检测 NaN 价格自动跳过无数据的交易日。
+                保留此参数仅为向后兼容，实际不再生效。
         """
+        import numpy as np
+
         self._period = period
         self._data_start_date = start_date
         self._data_end_date = end_date
         data = self.data_processor.get_data(symbol, start_date, end_date, period)
 
         if not data.empty:
-            # 检查数据实际起始日期是否晚于交易起始日
-            if skip_if_late_start and self._trade_start_date:
+            # 如果数据实际起始日晚于请求的起始日，用 NaN 行补齐前置日期
+            # 这样 backtrader 的时间对齐不会因晚起始数据而推迟整个回测
+            actual_start = data.index[0]
+            if hasattr(actual_start, 'strftime'):
+                actual_start_str = actual_start.strftime('%Y-%m-%d')
+            else:
+                actual_start_str = str(actual_start)[:10]
+
+            if actual_start_str > start_date:
                 try:
-                    actual_start = data.index[0]
-                    if hasattr(actual_start, 'strftime'):
-                        actual_start_str = actual_start.strftime('%Y-%m-%d')
-                    else:
-                        actual_start_str = str(actual_start)[:10]
-                    if actual_start_str > self._trade_start_date:
-                        self.logger.debug(
-                            f'[add_data] {symbol}: 跳过(数据起始日 {actual_start_str} '
-                            f'晚于交易起始日 {self._trade_start_date})'
-                        )
-                        return
-                except Exception:
-                    pass
+                    # 生成从 start_date 到 actual_start 之前的交易日
+                    import pandas as pd
+                    fill_start_dt = pd.to_datetime(start_date)
+                    fill_end_dt = pd.to_datetime(actual_start_str) - pd.Timedelta(days=1)
+                    if fill_start_dt <= fill_end_dt:
+                        fill_dates = pd.bdate_range(start=fill_start_dt, end=fill_end_dt)
+                        if len(fill_dates) > 0:
+                            # 构建全 NaN 的填充行
+                            fill_rows = pd.DataFrame(
+                                np.nan,
+                                index=fill_dates,
+                                columns=data.columns
+                            )
+                            # 拼接：前置 NaN 行 + 实际数据
+                            data = pd.concat([fill_rows, data])
+                            self.logger.debug(
+                                f'[add_data] {symbol}: 前置填充 {len(fill_dates)} 个NaN行 '
+                                f'({fill_dates[0].strftime("%Y-%m-%d")} ~ '
+                                f'{fill_dates[-1].strftime("%Y-%m-%d")}), '
+                                f'实际数据起始日={actual_start_str}'
+                            )
+                except Exception as e:
+                    self.logger.debug(f'[add_data] {symbol}: 前置填充失败: {e}')
 
             bt_data = bt.feeds.PandasData(
                 dataname=data,

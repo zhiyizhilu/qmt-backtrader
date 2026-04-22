@@ -125,6 +125,7 @@ class StockSelectionStrategy(StrategyLogic):
         """调仓到目标持仓
 
         自动计算需要卖出和买入的标的，等权重分配资金。
+        跳过当前无数据（价格为None）的标的，避免对NaN数据执行交易。
 
         Args:
             target_stocks: 目标持仓股票列表
@@ -154,13 +155,25 @@ class StockSelectionStrategy(StrategyLogic):
         position_ratio = getattr(self.params, 'position_ratio', 0.95)
         available_cash = cash * position_ratio
 
-        all_buy_symbols = list(buy_symbols | hold_symbols)
-        if not all_buy_symbols:
+        # 过滤掉当前无数据的股票（价格为None表示该日期尚无实际行情）
+        tradeable_symbols = []
+        skipped_symbols = []
+        for symbol in buy_symbols | hold_symbols:
+            price = self.get_current_price(symbol)
+            if price is not None and price > 0:
+                tradeable_symbols.append(symbol)
+            else:
+                skipped_symbols.append(symbol)
+
+        if skipped_symbols:
+            self.log(f'调仓跳过无数据股票: {skipped_symbols}')
+
+        if not tradeable_symbols:
             return
 
-        per_stock_cash = available_cash / len(all_buy_symbols)
+        per_stock_cash = available_cash / len(tradeable_symbols)
 
-        for symbol in all_buy_symbols:
+        for symbol in tradeable_symbols:
             price = self.get_current_price(symbol)
             if price and price > 0:
                 volume = int(per_stock_cash / price / 100) * 100

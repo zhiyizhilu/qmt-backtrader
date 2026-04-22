@@ -56,8 +56,16 @@ class BacktestExecutor(StrategyExecutor):
 
     def execute_buy(self, symbol: str, price: float, volume: int) -> Any:
         """执行买入操作"""
+        import math
         data = self._symbol_data_map.get(symbol)
         if data:
+            # 如果当前价格为 NaN（前置填充行），拒绝下单
+            current_close = data.close[0]
+            if math.isnan(current_close):
+                logging.getLogger(__name__).warning(
+                    f'[BacktestExecutor] 买入拒绝-数据为NaN: {symbol}'
+                )
+                return None
             result = self.strategy.buy(data=data, size=volume)
             logging.getLogger(__name__).debug(
                 f'[BacktestExecutor] 买入: {symbol}, 价格={price:.2f}, 数量={volume}, '
@@ -71,8 +79,16 @@ class BacktestExecutor(StrategyExecutor):
 
     def execute_sell(self, symbol: str, price: float, volume: int) -> Any:
         """执行卖出操作"""
+        import math
         data = self._symbol_data_map.get(symbol)
         if data:
+            # 如果当前价格为 NaN（前置填充行），拒绝下单
+            current_close = data.close[0]
+            if math.isnan(current_close):
+                logging.getLogger(__name__).warning(
+                    f'[BacktestExecutor] 卖出拒绝-数据为NaN: {symbol}'
+                )
+                return None
             result = self.strategy.sell(data=data, size=volume)
             logging.getLogger(__name__).debug(
                 f'[BacktestExecutor] 卖出: {symbol}, 价格={price:.2f}, 数量={volume}, '

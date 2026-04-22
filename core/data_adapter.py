@@ -68,8 +68,15 @@ class BacktraderDataAdapter(MarketDataAdapter):
 
     def update_from_backtrader(self) -> None:
         """从backtrader数据源更新当前bar的数据"""
+        import math
+
         for symbol, data_feed in self._symbol_data_map.items():
             close = data_feed.close[0]
+
+            # 跳过 NaN 数据（前置填充行），不加入收盘价队列
+            if math.isnan(close):
+                continue
+
             self._close_prices[symbol].append(close)
 
             if self._is_daily():
@@ -92,7 +99,11 @@ class BacktraderDataAdapter(MarketDataAdapter):
     def get_current_price(self, symbol: str) -> Optional[float]:
         data = self._symbol_data_map.get(symbol)
         if data:
-            return data.close[0]
+            price = data.close[0]
+            # NaN 表示该日期尚无实际数据（前置填充行），返回 None
+            if price != price:  # NaN != NaN is True
+                return None
+            return price
         return None
 
     def get_close_prices(self, symbol: str, period: int = None) -> List[float]:
