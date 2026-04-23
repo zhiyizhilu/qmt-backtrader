@@ -629,6 +629,7 @@ class BacktestAPI(BaseAPI):
             self._backtest_result = self._analyzer.build_result(
                 strategy_params=strategy_params,
                 show_kline=True,
+                trade_start_date=self._trade_start_date,
             )
 
             self._fetch_benchmark_data()

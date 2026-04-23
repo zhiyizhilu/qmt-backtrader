@@ -28,6 +28,7 @@ class PerformanceAnalyzer:
         self,
         strategy_params: Optional[Dict[str, Any]] = None,
         show_kline: bool = True,
+        trade_start_date: Optional[str] = None,
     ) -> BacktestingResult:
         if self._strategy is None:
             return BacktestingResult()
@@ -46,6 +47,7 @@ class PerformanceAnalyzer:
             trade_log=trade_log,
             df=df,
             instruments_data=instruments_data,
+            trade_start_date=trade_start_date,
         )
 
         result.turnover = self._calc_turnover(trade_log)
@@ -75,17 +77,29 @@ class PerformanceAnalyzer:
         if not equity_history or len(equity_history) == 0:
             return None
 
+        trade_start_date = getattr(strat.params, 'trade_start_date', None)
+
+        filtered_history = []
+        for dt, value in equity_history:
+            if trade_start_date and hasattr(dt, 'isoformat'):
+                if dt.isoformat() < trade_start_date:
+                    continue
+            filtered_history.append((dt, value))
+
+        if not filtered_history:
+            return None
+
         dates = []
         portfolio_values = []
         daily_pnls = []
 
-        for i, (dt, value) in enumerate(equity_history):
+        for i, (dt, value) in enumerate(filtered_history):
             dates.append(pd.Timestamp(dt))
             portfolio_values.append(value)
             if i == 0:
                 daily_pnls.append(0.0)
             else:
-                daily_pnls.append(value - equity_history[i - 1][1])
+                daily_pnls.append(value - filtered_history[i - 1][1])
 
         df = pd.DataFrame({
             "datetime": dates,

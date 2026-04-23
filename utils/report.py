@@ -203,6 +203,11 @@ class BacktestReportWindow(QMainWindow):
         self.setWindowTitle("回测报告")
         self.setGeometry(100, 100, 1858, 1082)
         self.result.prepare_data()
+        self.plot_df = self.result.df
+        if self.result.trade_start_date and self.result.df is not None and not self.result.df.empty:
+            trade_start_dt = pd.to_datetime(self.result.trade_start_date)
+            dt_series = pd.to_datetime(self.result.df["datetime"])
+            self.plot_df = self.result.df[dt_series >= trade_start_dt].reset_index(drop=True)
         self.trade_markers: dict[int, dict] = {}
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -1055,7 +1060,7 @@ class BacktestReportWindow(QMainWindow):
         return panel
 
     def _create_equity_chart_panel(self, parent_layout: QGridLayout):
-        df = self.result.df
+        df = self.plot_df
         if df is None or df.empty:
             return
         date_strings = df["datetime"].dt.strftime("%Y-%m-%d").tolist()
@@ -1192,7 +1197,7 @@ class BacktestReportWindow(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(10, 20, 10, 10)
-        df = self.result.df
+        df = self.plot_df
         if df is None or df.empty:
             layout.addWidget(
                 QLabel(
@@ -1745,7 +1750,7 @@ class BacktestReportWindow(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(10, 20, 10, 10)
-        df = self.result.df
+        df = self.plot_df
         if df is None or df.empty:
             layout.addWidget(
                 QLabel(
@@ -1757,6 +1762,9 @@ class BacktestReportWindow(QMainWindow):
             return tab
 
         benchmark_df = self.result.benchmark_df
+        if self.result.trade_start_date and benchmark_df is not None and not benchmark_df.empty:
+            trade_start_dt = pd.to_datetime(self.result.trade_start_date)
+            benchmark_df = benchmark_df[benchmark_df.index >= trade_start_dt].copy()
         benchmark_symbol = self.result.benchmark_symbol or "000300.SH"
 
         benchmark_name_map = {
