@@ -173,7 +173,7 @@ class AKShareDataProcessor(DataProcessor):
             self.logger.info(f"从合并缓存(精确)加载财务数据: {len(merged_cached)} 只股票")
             return merged_cached
         request_set = set(sorted_stocks)
-        ns_dir = cache_manager.disk_cache.cache_dir / namespace
+        ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
         if ns_dir.exists():
             for cache_file in ns_dir.glob('merged_*.parquet'):
                 if cache_file.name == f"{merged_cache_key}.parquet":
@@ -372,7 +372,7 @@ class AKShareDataProcessor(DataProcessor):
             self.logger.info(f"从合并缓存(精确)加载分红数据: {len(merged_cached)} 只股票")
             return merged_cached
         request_set = set(sorted_stocks)
-        ns_dir = cache_manager.disk_cache.cache_dir / namespace
+        ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
         if ns_dir.exists():
             for cache_file in ns_dir.glob('dividend_merged_*.parquet'):
                 if cache_file.name == f"{merged_cache_key}.parquet":

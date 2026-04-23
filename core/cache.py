@@ -49,8 +49,16 @@ class MemCache:
 
 class DiskCache:
     """支持 Parquet 和 Pickle 的磁盘持久化缓存"""
+    NAMESPACE_MAP = {
+        'QMTDataProcessor': 'market',
+        'QMTDataProcessor_Financial': 'financial',
+        'QMTDataProcessor_Industry': 'industry',
+        'QMTDataProcessor_Sector': 'sector',
+    }
+
     def __init__(self, cache_dir: str):
         self.cache_dir = Path(cache_dir)
+        self.qmt_data_dir = self.cache_dir / 'QMTData'
         self.lock = threading.RLock()
         self.logger = logging.getLogger(self.__class__.__name__)
         self._ensure_dir()
@@ -58,8 +66,23 @@ class DiskCache:
     def _ensure_dir(self):
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
+    def _resolve_namespace(self, namespace: str) -> str:
+        return self.NAMESPACE_MAP.get(namespace, namespace)
+
+    def _is_qmt_namespace(self, namespace: str) -> bool:
+        return namespace in self.NAMESPACE_MAP
+
+    def _get_base_dir(self, namespace: str) -> Path:
+        return self.qmt_data_dir if self._is_qmt_namespace(namespace) else self.cache_dir
+
+    def get_namespace_dir(self, namespace: str) -> Path:
+        """返回映射后的 namespace 目录路径"""
+        ns_dir = self._get_base_dir(namespace) / self._resolve_namespace(namespace)
+        ns_dir.mkdir(parents=True, exist_ok=True)
+        return ns_dir
+
     def _get_file_path(self, namespace: str, key: str, format_type: str) -> Path:
-        ns_dir = self.cache_dir / namespace
+        ns_dir = self._get_base_dir(namespace) / self._resolve_namespace(namespace)
         ns_dir.mkdir(parents=True, exist_ok=True)
         ext = '.parquet' if format_type == 'parquet' else '.pkl'
         illegal_chars = '<>:"/\\|?*'
@@ -87,7 +110,7 @@ class DiskCache:
 
     def find_by_prefix(self, namespace: str, prefix: str, format_type: str) -> Optional[Tuple[str, Any]]:
         """按前缀查找缓存文件，返回 (完整key, 数据) 或 None"""
-        ns_dir = self.cache_dir / namespace
+        ns_dir = self._get_base_dir(namespace) / self._resolve_namespace(namespace)
         if not ns_dir.exists():
             return None
         ext = '.parquet' if format_type == 'parquet' else '.pkl'

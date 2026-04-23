@@ -263,7 +263,7 @@ class BaoStockDataProcessor(DataProcessor):
                         filtered[stock] = {}
                 return filtered
         request_set = set(sorted_stocks)
-        ns_dir = cache_manager.disk_cache.cache_dir / namespace
+        ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
         if ns_dir.exists():
             for cache_file in ns_dir.glob('merged_*.parquet'):
                 if cache_file.name == f"{merged_cache_key}.parquet":
@@ -440,7 +440,7 @@ class BaoStockDataProcessor(DataProcessor):
                 if not can_query:
                     return filtered
         request_set = set(sorted_stocks)
-        ns_dir = cache_manager.disk_cache.cache_dir / namespace
+        ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
         if ns_dir.exists():
             for cache_file in ns_dir.glob('dividend_merged_*.parquet'):
                 if cache_file.name == f"{merged_cache_key}.parquet":

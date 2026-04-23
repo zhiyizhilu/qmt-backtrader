@@ -245,7 +245,7 @@ class QMTDataProcessor(DataProcessor):
 
         # 2. 子集匹配
         request_set = set(sorted_stocks)
-        ns_dir = cache_manager.disk_cache.cache_dir / namespace
+        ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
         if ns_dir.exists():
             for cache_file in ns_dir.glob('merged_*.parquet'):
                 if cache_file.name == f"{merged_cache_key}.parquet":
@@ -312,7 +312,7 @@ class QMTDataProcessor(DataProcessor):
 
         # 2. 子集匹配：已有缓存包含请求的全部股票
         request_set = set(sorted_stocks)
-        ns_dir = cache_manager.disk_cache.cache_dir / namespace
+        ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
         if ns_dir.exists():
             for cache_file in ns_dir.glob('merged_*.parquet'):
                 if cache_file.name == f"{merged_cache_key}.parquet":
@@ -666,7 +666,7 @@ class QMTDataProcessor(DataProcessor):
 
         # 子集匹配
         request_set = set(sorted_stocks)
-        ns_dir = cache_manager.disk_cache.cache_dir / namespace
+        ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
         if ns_dir.exists():
             for cache_file in ns_dir.glob('dividend_merged_*.parquet'):
                 if cache_file.name == f"{merged_cache_key}.parquet":

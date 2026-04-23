@@ -346,7 +346,7 @@ class BacktestAPI(BaseAPI):
         from core.cache import cache_manager
         namespace = f"{self._financial_data_processor.__class__.__name__}_Financial"
         time_suffix = f"_{start_time}_{end_time}" if start_time or end_time else ""
-        ns_dir = cache_manager.disk_cache.cache_dir / namespace
+        ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
 
         cached_stocks = set()
         uncached_stocks = []
