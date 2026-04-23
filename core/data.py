@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Any
 import logging
 import time
 import hashlib
+from datetime import datetime
 from tqdm import tqdm
 from core.cache import smart_cache, cache_manager
 
@@ -577,8 +578,36 @@ class QMTDataProcessor(DataProcessor):
 
         return result
 
+    def _get_stock_list_cache_key(self, sector: str) -> str:
+        """生成成分股缓存key，按日期区分"""
+        today = datetime.now().strftime('%Y%m%d')
+        return f"sector_{sector}_{today}"
+
+    def _load_stock_list_from_cache(self, sector: str) -> Optional[List[str]]:
+        """尝试从本地缓存加载成分股列表"""
+        namespace = 'QMTDataProcessor_Sector'
+        cache_key = self._get_stock_list_cache_key(sector)
+        cached = cache_manager.disk_cache.get(namespace, cache_key, 'parquet')
+        if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
+            if 'stock_code' in cached.columns:
+                stock_list = cached['stock_code'].astype(str).tolist()
+                self.logger.info(f"从本地缓存加载 {sector} 成分股: {len(stock_list)} 只")
+                return stock_list
+        return None
+
+    def _save_stock_list_to_cache(self, sector: str, stock_list: List[str]) -> None:
+        """将成分股列表保存到本地缓存"""
+        namespace = 'QMTDataProcessor_Sector'
+        cache_key = self._get_stock_list_cache_key(sector)
+        df = pd.DataFrame({'stock_code': stock_list})
+        cache_manager.disk_cache.put(namespace, cache_key, df, 'parquet')
+        self.logger.info(f"成分股列表已缓存: {sector} ({len(stock_list)} 只)")
+
     def get_stock_list(self, sector: str = '沪深A股') -> List[str]:
         """获取板块成分股列表
+
+        优先从本地缓存加载，缓存按日期区分。若缓存不存在且QMT可用，
+        则从QMT获取并保存到本地缓存，供后续离线使用。
 
         Args:
             sector: 板块名称，如 '沪深A股', '上证50', '沪深300'
@@ -586,6 +615,11 @@ class QMTDataProcessor(DataProcessor):
         Returns:
             股票代码列表
         """
+        # 1. 尝试从本地缓存加载（支持离线回测）
+        cached = self._load_stock_list_from_cache(sector)
+        if cached is not None:
+            return cached
+
         if not self.xtdata:
             if self._fallback_to_simulated:
                 self.logger.warning("xtquant 未安装，返回模拟股票列表")
@@ -595,12 +629,15 @@ class QMTDataProcessor(DataProcessor):
         try:
             stock_list = self.xtdata.get_stock_list_in_sector(sector)
             if stock_list:
+                self._save_stock_list_to_cache(sector, stock_list)
                 return stock_list
             try:
                 self.xtdata.download_sector_data()
             except Exception:
                 pass
             stock_list = self.xtdata.get_stock_list_in_sector(sector)
+            if stock_list:
+                self._save_stock_list_to_cache(sector, stock_list)
             return stock_list if stock_list else []
         except Exception as e:
             if self._fallback_to_simulated:
@@ -624,9 +661,49 @@ class QMTDataProcessor(DataProcessor):
         except Exception:
             return []
 
+    def _get_industry_mapping_cache_key(self, level: int, stock_pool: Optional[List[str]]) -> str:
+        """生成行业映射缓存key，按日期和股票池区分"""
+        today = datetime.now().strftime('%Y%m%d')
+        if stock_pool:
+            pool_hash = hashlib.md5(','.join(sorted(stock_pool)).encode()).hexdigest()[:8]
+            return f"industry_sw{level}_{pool_hash}_{today}"
+        return f"industry_sw{level}_all_{today}"
+
+    def _load_industry_mapping_from_cache(self, level: int,
+                                          stock_pool: Optional[List[str]]) -> Optional[Dict[str, str]]:
+        """尝试从本地缓存加载行业映射"""
+        namespace = 'QMTDataProcessor_Industry'
+        cache_key = self._get_industry_mapping_cache_key(level, stock_pool)
+        cached = cache_manager.disk_cache.get(namespace, cache_key, 'parquet')
+        if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
+            if 'stock_code' in cached.columns and 'industry_name' in cached.columns:
+                mapping = dict(zip(
+                    cached['stock_code'].astype(str).tolist(),
+                    cached['industry_name'].astype(str).tolist()
+                ))
+                self.logger.info(f"从本地缓存加载申万{level}级行业映射: {len(mapping)} 只股票")
+                return mapping
+        return None
+
+    def _save_industry_mapping_to_cache(self, level: int,
+                                        stock_pool: Optional[List[str]],
+                                        mapping: Dict[str, str]) -> None:
+        """将行业映射保存到本地缓存"""
+        namespace = 'QMTDataProcessor_Industry'
+        cache_key = self._get_industry_mapping_cache_key(level, stock_pool)
+        df = pd.DataFrame({
+            'stock_code': list(mapping.keys()),
+            'industry_name': list(mapping.values())
+        })
+        cache_manager.disk_cache.put(namespace, cache_key, df, 'parquet')
+        self.logger.info(f"行业映射已缓存: 申万{level}级 ({len(mapping)} 只股票)")
+
     def get_industry_mapping(self, level: int = 1,
                              stock_pool: Optional[List[str]] = None) -> Dict[str, str]:
         """获取申万行业分类映射
+
+        优先从本地缓存加载，缓存按日期和股票池区分。若缓存不存在且QMT可用，
+        则从QMT获取并保存到本地缓存，供后续离线使用。
 
         Args:
             level: 行业级别，1=一级行业，2=二级行业，3=三级行业
@@ -635,6 +712,11 @@ class QMTDataProcessor(DataProcessor):
         Returns:
             { stock_code: industry_name, ... } 映射字典
         """
+        # 1. 尝试从本地缓存加载（支持离线回测）
+        cached = self._load_industry_mapping_from_cache(level, stock_pool)
+        if cached is not None:
+            return cached
+
         if not self.xtdata:
             if self._fallback_to_simulated:
                 self.logger.warning("xtquant 未安装，返回模拟行业映射")
@@ -689,6 +771,8 @@ class QMTDataProcessor(DataProcessor):
                     )
 
             self.logger.info(f"申万{level}级行业映射加载完成: {len(sw_sectors)} 个行业, {len(mapping)} 只股票")
+            # 保存到本地缓存供离线使用
+            self._save_industry_mapping_to_cache(level, stock_pool, mapping)
             return mapping
         except RuntimeError:
             raise
