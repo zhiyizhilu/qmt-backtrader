@@ -54,11 +54,25 @@ class DiskCache:
         'QMTDataProcessor_Financial': 'financial',
         'QMTDataProcessor_Industry': 'industry',
         'QMTDataProcessor_Sector': 'sector',
+        'AKShareDataProcessor': 'market',
+        'AKShareDataProcessor_Financial': 'financial',
+        'BaoStockDataProcessor': 'market',
+        'BaoStockDataProcessor_Financial': 'financial',
+    }
+
+    BASE_DIR_MAP = {
+        'QMTDataProcessor': 'QMTData',
+        'QMTDataProcessor_Financial': 'QMTData',
+        'QMTDataProcessor_Industry': 'QMTData',
+        'QMTDataProcessor_Sector': 'QMTData',
+        'AKShareDataProcessor': 'AKShareData',
+        'AKShareDataProcessor_Financial': 'AKShareData',
+        'BaoStockDataProcessor': 'BaoStockData',
+        'BaoStockDataProcessor_Financial': 'BaoStockData',
     }
 
     def __init__(self, cache_dir: str):
         self.cache_dir = Path(cache_dir)
-        self.qmt_data_dir = self.cache_dir / 'QMTData'
         self.lock = threading.RLock()
         self.logger = logging.getLogger(self.__class__.__name__)
         self._ensure_dir()
@@ -69,11 +83,11 @@ class DiskCache:
     def _resolve_namespace(self, namespace: str) -> str:
         return self.NAMESPACE_MAP.get(namespace, namespace)
 
-    def _is_qmt_namespace(self, namespace: str) -> bool:
-        return namespace in self.NAMESPACE_MAP
-
     def _get_base_dir(self, namespace: str) -> Path:
-        return self.qmt_data_dir if self._is_qmt_namespace(namespace) else self.cache_dir
+        base_name = self.BASE_DIR_MAP.get(namespace)
+        if base_name:
+            return self.cache_dir / base_name
+        return self.cache_dir
 
     def get_namespace_dir(self, namespace: str) -> Path:
         """返回映射后的 namespace 目录路径"""
