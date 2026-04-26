@@ -12,8 +12,8 @@ from core.data.base import DataProcessor, _merged_dict_to_parquet, _parquet_to_m
 class QMTDataProcessor(DataProcessor):
     """QMT数据处理器
     
-    当QMT不可用时，自动降级为模拟数据，方便策略测试。
-    可通过 fallback_to_simulated=False 禁用降级行为。
+    以QMT为主数据源，当QMT数据不足时自动用OpenData补充。
+    对策略层完全透明，无需修改策略代码。
     """
     
     FINANCIAL_TABLES = [
@@ -31,6 +31,13 @@ class QMTDataProcessor(DataProcessor):
         self._fallback_to_simulated = fallback_to_simulated
         self._financial_data_cache: Dict[str, Any] = {}
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
+        
+        # 增加 OpenData 处理器用于数据补充
+        try:
+            from core.data.opendata import OpenDataProcessor
+            self._opendata = OpenDataProcessor(fallback_to_simulated=fallback_to_simulated)
+        except ImportError:
+            self._opendata = None
     
     def check_connection(self) -> bool:
         """检查QMT数据服务是否可用"""
@@ -44,12 +51,63 @@ class QMTDataProcessor(DataProcessor):
 
     @smart_cache(cache_type='market', incremental=True)
     def get_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> pd.DataFrame:
-        """从QMT获取数据，QMT不可用时降级为模拟数据"""
+        """从QMT获取数据，当QMT数据不足时自动用OpenData补充"""
+        
+        # 1. 先尝试从 QMT 获取数据
+        qmt_df = self._get_data_from_qmt(symbol, start_date, end_date, period, **kwargs)
+        
+        # 2. 检查 QMT 数据是否完整
+        if qmt_df is not None and not qmt_df.empty:
+            qmt_start = qmt_df.index.min()
+            requested_start = pd.Timestamp(start_date)
+            
+            # 如果 QMT 数据覆盖了整个请求范围，直接返回
+            if qmt_start <= requested_start + pd.Timedelta(days=7):  # 允许 7 天缓冲
+                return qmt_df
+            
+            # 3. QMT 数据不足，用 OpenData 补充早期数据
+            self.logger.info(f"QMT数据不足，使用OpenData补充: {symbol} "
+                            f"QMT最早={qmt_start.date()}, 请求起始={requested_start.date()}")
+            
+            if self._opendata:
+                try:
+                    # 计算需要补充的时间范围
+                    opendata_end = (qmt_start - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+                    opendata_df = self._opendata.get_data(symbol, start_date, opendata_end, period, **kwargs)
+                    
+                    # 合并数据
+                    if opendata_df is not None and not opendata_df.empty:
+                        combined = pd.concat([opendata_df, qmt_df])
+                        combined = combined[~combined.index.duplicated(keep='last')]
+                        combined = combined.sort_index()
+                        
+                        self.logger.info(f"数据合并完成: {symbol} "
+                                        f"OpenData={len(opendata_df)}条, QMT={len(qmt_df)}条, "
+                                        f"合并后={len(combined)}条")
+                        return combined
+                except Exception as e:
+                    self.logger.warning(f"OpenData补充失败: {e}，仅使用QMT数据")
+            
+            # OpenData 失败，返回 QMT 数据（部分）
+            return qmt_df
+        
+        # 4. QMT 完全失败，尝试用 OpenData 兜底
+        if self._opendata:
+            self.logger.warning(f"QMT数据获取失败，尝试使用OpenData: {symbol}")
+            try:
+                return self._opendata.get_data(symbol, start_date, end_date, period, **kwargs)
+            except Exception as e:
+                self.logger.warning(f"OpenData兜底也失败: {e}")
+        
+        # 5. 全部失败
+        if self._fallback_to_simulated:
+            return self._generate_simulated_data(start_date, end_date, symbol)
+        raise RuntimeError(f"无法获取数据: {symbol}")
+
+    def _get_data_from_qmt(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> Optional[pd.DataFrame]:
+        """从QMT获取数据（内部方法），失败返回None而非抛异常"""
         if not self.xtdata:
-            if self._fallback_to_simulated:
-                self.logger.warning(f"xtquant 未安装，使用模拟数据: {symbol}")
-                return self._generate_simulated_data(start_date, end_date, symbol)
-            raise RuntimeError("xtquant 未安装，请安装 xtquant 后重试")
+            return None
 
         try:
             start_time = start_date.replace('-', '')
@@ -70,10 +128,7 @@ class QMTDataProcessor(DataProcessor):
                 
                 # Check if data is empty
                 if df.empty:
-                    if self._fallback_to_simulated:
-                        self.logger.warning(f"{symbol} 数据为空，使用模拟数据")
-                        return self._generate_simulated_data(start_date, end_date, symbol)
-                    raise ValueError(f"{symbol} 在 {start_date} 到 {end_date} 期间没有数据，请检查QMT数据是否同步")
+                    return None
 
                 if not isinstance(df.index, pd.DatetimeIndex):
                     try:
@@ -82,34 +137,19 @@ class QMTDataProcessor(DataProcessor):
                         try:
                             df.index = pd.to_datetime(df.index, format='%Y%m%d')
                         except (ValueError, TypeError):
-                            if self._fallback_to_simulated:
-                                self.logger.warning(f"{symbol} 索引转换失败，使用模拟数据")
-                                return self._generate_simulated_data(start_date, end_date, symbol)
-                            raise ValueError(f"{symbol} 索引转换失败")
+                            return None
 
                 df = df[(df.index >= start_date) & (df.index <= end_date)]
 
                 if df.empty:
-                    if self._fallback_to_simulated:
-                        self.logger.warning(f"{symbol} 数据为空，使用模拟数据")
-                        return self._generate_simulated_data(start_date, end_date, symbol)
-                    raise ValueError(f"{symbol} 在 {start_date} 到 {end_date} 期间没有数据，请检查QMT数据是否同步")
+                    return None
 
                 return self.preprocess_data(df)
             else:
-                if self._fallback_to_simulated:
-                    self.logger.warning(f"{symbol} 未在返回数据中，使用模拟数据")
-                    return self._generate_simulated_data(start_date, end_date, symbol)
-                raise ValueError(f"{symbol} 未在返回数据中，请检查QMT数据是否同步")
-        except RuntimeError:
-            raise
-        except ValueError:
-            raise
+                return None
         except Exception as e:
-            if self._fallback_to_simulated:
-                self.logger.warning(f"获取QMT数据失败: {e}，使用模拟数据: {symbol}")
-                return self._generate_simulated_data(start_date, end_date, symbol)
-            raise RuntimeError(f"获取QMT数据失败: {e}，请检查QMT是否已启动并登录")
+            self.logger.debug(f"QMT获取数据失败: {e}")
+            return None
     
     def _normalize_qmt_financial_df(self, df: pd.DataFrame,
                                       report_type: str = 'announce_time') -> pd.DataFrame:
@@ -272,7 +312,7 @@ class QMTDataProcessor(DataProcessor):
                            table_list: Optional[List[str]] = None,
                            start_time: str = '', end_time: str = '',
                            report_type: str = 'announce_time') -> Dict[str, Any]:
-        """获取财务数据
+        """获取财务数据，QMT失败时尝试OpenData补充
 
         逐只股票逐表查询并缓存为 parquet，避免中断后重复下载。
         全部下载完成后合并为总缓存(pkl)，提升后续加载速度。
@@ -289,6 +329,39 @@ class QMTDataProcessor(DataProcessor):
         Returns:
             dict: { stock1: { table1: DataFrame, ... }, ... }
         """
+        # 1. 先尝试从 QMT 获取
+        result = self._get_financial_data_from_qmt(stock_list, table_list, start_time, end_time, report_type)
+        
+        # 2. 检查是否有失败的股票，用 OpenData 补充
+        if self._opendata and result:
+            failed_stocks = [s for s in stock_list if s not in result or not result[s]]
+            if failed_stocks:
+                self.logger.info(f"QMT财务数据缺失，使用OpenData补充: {len(failed_stocks)}只股票")
+                try:
+                    opendata_result = self._opendata.get_financial_data(
+                        failed_stocks, table_list, start_time, end_time, report_type
+                    )
+                    result.update(opendata_result)
+                except Exception as e:
+                    self.logger.warning(f"OpenData财务数据补充失败: {e}")
+        
+        # 3. QMT 完全失败时，尝试用 OpenData 兜底
+        if not result and self._opendata:
+            self.logger.warning("QMT财务数据获取完全失败，尝试使用OpenData")
+            try:
+                result = self._opendata.get_financial_data(
+                    stock_list, table_list, start_time, end_time, report_type
+                )
+            except Exception as e:
+                self.logger.warning(f"OpenData财务数据兜底失败: {e}")
+        
+        return result
+
+    def _get_financial_data_from_qmt(self, stock_list: List[str],
+                                      table_list: Optional[List[str]] = None,
+                                      start_time: str = '', end_time: str = '',
+                                      report_type: str = 'announce_time') -> Dict[str, Any]:
+        """从QMT获取财务数据（原有逻辑提取）"""
         if not self.xtdata:
             if self._fallback_to_simulated:
                 self.logger.warning("xtquant 未安装，返回空财务数据")

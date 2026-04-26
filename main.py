@@ -51,13 +51,15 @@ def _resolve_strategy(strategy_name: str):
 
 
 def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
-                 start_date=None, end_date=None, data_source='qmt'):
+                 start_date=None, end_date=None, proxy=''):
     """运行回测"""
     _setup_debug_logging()
     log_file = Logger.setup_global_file_handler(strategy_name)
     logger = Logger.get_default_logger(strategy_name)
     logger.info(f"日志文件: {log_file}")
-    logger.info(f"开始回测 (周期: {period}, 数据源: {data_source})")
+    logger.info(f"开始回测 (周期: {period})")
+    if proxy:
+        logger.info(f"使用代理: {proxy}")
 
     strategy_class, default_kwargs, backtest_config = _resolve_strategy(strategy_name)
 
@@ -68,7 +70,7 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
     if end_date:
         config['end_date'] = end_date
 
-    api = BacktestAPI(data_source=data_source)
+    api = BacktestAPI(proxy=proxy)
 
     if issubclass(strategy_class, StockSelectionStrategy):
         api.configure(**config)
@@ -137,7 +139,7 @@ def main():
     parser.add_argument('--pool', type=str, default='沪深A股', help='股票池板块名称')
     parser.add_argument('--start', type=str, default=None, help='回测起始日期，如 2016-01-01')
     parser.add_argument('--end', type=str, default=None, help='回测结束日期，如 2026-04-17')
-    parser.add_argument('--data-source', type=str, default='qmt', choices=['qmt', 'akshare', 'baostock'], help='数据源: qmt(需QMT客户端), akshare(免费在线), baostock(免费在线)')
+    parser.add_argument('--proxy', type=str, default='', help='代理地址，格式 host:port（已弃用，保留参数用于兼容性）')
     parser.add_argument('--qmt-path', type=str, default=r'D:\qmt\userdata_mini', help='QMT userdata_mini 路径')
     parser.add_argument('--account', type=str, default=None, help='QMT 资金账号，不传则自动获取第一个')
 
@@ -162,7 +164,7 @@ def main():
         cache_manager.configure(cache_dir=args.cache_dir, mem_limit=args.mem_limit)
 
     if args.mode == 'backtest':
-        run_backtest(args.strategy, args.period, args.pool, args.start, args.end, args.data_source)
+        run_backtest(args.strategy, args.period, args.pool, args.start, args.end, args.proxy)
     elif args.mode == 'sim':
         run_sim_trade(args.strategy, args.qmt_path, args.account)
     elif args.mode == 'real':

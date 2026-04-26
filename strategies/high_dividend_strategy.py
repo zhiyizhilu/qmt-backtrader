@@ -81,6 +81,8 @@ class HighDividendStrategy(StockSelectionStrategy):
                 stock, 'Pershareindex', 'inc_net_profit_rate'
             )
             ocf = self.get_financial_field(stock, 'Pershareindex', 's_fa_ocfps')
+            
+            self.log(f'  {stock} ROE={roe}% 归母净利润增速={profit_growth}% 经营现金流={ocf}')
 
             # 记录前3条缺失调试信息
             if debug_logged < 3 and roe is None:
@@ -90,6 +92,7 @@ class HighDividendStrategy(StockSelectionStrategy):
             # 统计缺失情况
             if roe is None and profit_growth is None and ocf is None:
                 missing_count += 1
+
 
             # 正常过滤逻辑
             if roe is None or roe <= self.params.min_roe:

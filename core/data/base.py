@@ -32,9 +32,17 @@ def _merged_dict_to_parquet(data: dict, mode: str = 'dividend') -> Optional[pd.D
                         continue
                     df = df.copy()
                     if isinstance(df.index, pd.DatetimeIndex):
-                        df = df.reset_index()
+                        # 检查索引名是否已经是普通列，避免重复
+                        if df.index.name in df.columns:
+                            df = df.reset_index(drop=True)
+                        else:
+                            df = df.reset_index()
                     elif df.index.name and df.index.name != 'index':
-                        df = df.reset_index()
+                        # 检查索引名是否已经是普通列，避免重复
+                        if df.index.name in df.columns:
+                            df = df.reset_index(drop=True)
+                        else:
+                            df = df.reset_index()
                     df['_stock_code'] = stock
                     df['_table_name'] = table_name
                     table_frames.setdefault(table_name, []).append(df)
@@ -50,9 +58,17 @@ def _merged_dict_to_parquet(data: dict, mode: str = 'dividend') -> Optional[pd.D
                     continue
                 df = df.copy()
                 if isinstance(df.index, pd.DatetimeIndex):
-                    df = df.reset_index()
+                    # 检查索引名是否已经是普通列，避免重复
+                    if df.index.name in df.columns:
+                        df = df.reset_index(drop=True)
+                    else:
+                        df = df.reset_index()
                 elif df.index.name and df.index.name != 'index':
-                    df = df.reset_index()
+                    # 检查索引名是否已经是普通列，避免重复
+                    if df.index.name in df.columns:
+                        df = df.reset_index(drop=True)
+                    else:
+                        df = df.reset_index()
                 df['_stock_code'] = stock
                 frames.append(df)
         if not frames:

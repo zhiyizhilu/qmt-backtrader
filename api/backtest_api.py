@@ -124,13 +124,12 @@ class BacktestAPI(BaseAPI):
         api.run()
     """
 
-    def __init__(self, data_source: str = 'qmt'):
+    def __init__(self, proxy: str = ''):
         super().__init__()
         self.cerebro = bt.Cerebro()
-        self.data_processor = create_data_processor(data_source, fallback_to_simulated=True)
-        self._data_source = data_source
-        # 财务数据处理器根据数据源选择
-        self._financial_data_processor = create_data_processor(data_source, fallback_to_simulated=True)
+        self.data_processor = create_data_processor(fallback_to_simulated=True, proxy=proxy)
+        # 财务数据处理器（QMT为主，OpenData补充）
+        self._financial_data_processor = create_data_processor(fallback_to_simulated=True, proxy=proxy)
         self._symbols: List[str] = []
         self._strategy_logic_class: Optional[Type[StrategyLogic]] = None
         self._strategy_kwargs: Dict[str, Any] = {}
@@ -147,9 +146,6 @@ class BacktestAPI(BaseAPI):
         self._stock_pool: Optional[List[str]] = None
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
 
-    # QMT 数据源最多只能获取最近一年的数据
-    QMT_MAX_DATA_DAYS = 365
-
     def configure(self, cash: float = 200000, commission: float = 0.0001,
                   start_date: Optional[str] = None, end_date: Optional[str] = None,
                   data_lookback_days: int = 40, benchmark: str = '000300.SH',
@@ -159,8 +155,8 @@ class BacktestAPI(BaseAPI):
         将 start_date 自动前移 data_lookback_days 天作为数据加载起始日，
         start_date 本身作为交易起始日（trade_start_date）。
 
-        当数据源为 QMT 时，自动将回测起始日限制在最近一年内，
-        以确保 QMT 数据完整（QMT 只能获取最近约一年的行情数据）。
+        数据源以QMT为主，QMT数据不足时自动用OpenData补充，
+        因此支持任意长度的历史数据回测。
 
         Args:
             cash: 初始资金
@@ -179,19 +175,6 @@ class BacktestAPI(BaseAPI):
 
         if start_date and end_date:
             start_dt = datetime.datetime.strptime(start_date, '%Y-%m-%d')
-            end_dt = datetime.datetime.strptime(end_date, '%Y-%m-%d')
-
-            # QMT 数据源：自动限制回测起始日，确保数据完整
-            if self._data_source == 'qmt':
-                min_start_dt = end_dt - datetime.timedelta(days=self.QMT_MAX_DATA_DAYS)
-                if start_dt < min_start_dt:
-                    old_start = start_date
-                    start_date = min_start_dt.strftime('%Y-%m-%d')
-                    self.logger.warning(
-                        f"数据源 '{self._data_source}' 最多支持最近 {self.QMT_MAX_DATA_DAYS} 天数据，"
-                        f"回测起始日已从 {old_start} 调整为 {start_date}"
-                    )
-                    start_dt = datetime.datetime.strptime(start_date, '%Y-%m-%d')
 
             data_start_dt = start_dt - datetime.timedelta(days=data_lookback_days)
             data_start_date = data_start_dt.strftime('%Y-%m-%d')
@@ -328,6 +311,12 @@ class BacktestAPI(BaseAPI):
         import time as _time
         overall_start = _time.time()
 
+        # 如果未指定时间范围，使用回测配置的时间范围
+        if not start_time and self._data_start_date:
+            start_time = self._data_start_date
+        if not end_time and self._data_end_date:
+            end_time = self._data_end_date
+
         # ── 阶段1：获取股票池 ──
         if stock_list is None and sector:
             self.logger.info(f"[阶段1/5] 获取板块 '{sector}' 成分股...")
@@ -399,9 +388,25 @@ class BacktestAPI(BaseAPI):
         # ── 阶段4：获取行业映射 ──
         self.logger.info(f"[阶段4/5] 获取申万行业分类映射...")
         try:
-            industry_mapping = self._financial_data_processor.get_industry_mapping(
-                level=1, stock_pool=stock_list
-            )
+            # 优先使用历史行业数据（如果数据源支持）
+            if hasattr(self._financial_data_processor, 'get_historical_industry_mapping'):
+                # 使用回测开始日期作为历史行业数据的基准日期
+                hist_date = start_time if start_time else end_time
+                if not hist_date:
+                    hist_date = pd.Timestamp.now().strftime('%Y-%m-%d')
+
+                self.logger.info(f"[阶段4/5] 使用历史行业数据 (基准日期: {hist_date})...")
+                industry_mapping = self._financial_data_processor.get_historical_industry_mapping(
+                    stock_list=stock_list,
+                    date=hist_date,
+                    classification='申银万国行业分类标准'
+                )
+            else:
+                # 回退到最新行业数据
+                industry_mapping = self._financial_data_processor.get_industry_mapping(
+                    level=1, stock_pool=stock_list
+                )
+
             if industry_mapping:
                 self._financial_adapter.set_industry_mapping(industry_mapping)
                 self.logger.info(f"[阶段4/5] 行业分类映射已加载: {len(industry_mapping)} 只股票, {len(set(industry_mapping.values()))} 个行业")

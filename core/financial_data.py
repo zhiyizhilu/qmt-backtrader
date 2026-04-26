@@ -87,7 +87,11 @@ class FinancialDataCache:
         2. 如果不在内存，尝试从磁盘 parquet 缓存读取
         3. 如果磁盘也没有，通过 data_processor 从 API 下载并缓存到磁盘
         """
-        if self._loaded_tables.get((stock_code, table_name)):
+        # 检查是否已经尝试过加载（无论成功与否）
+        if (stock_code, table_name) in self._loaded_tables:
+            # 已经尝试过加载，不再重复尝试
+            loaded_status = self._loaded_tables[(stock_code, table_name)]
+            self.logger.debug(f"[加载跳过] {stock_code}.{table_name} 已尝试加载，状态: {loaded_status}")
             return
 
         # 尝试从磁盘缓存加载
@@ -101,65 +105,111 @@ class FinancialDataCache:
         time_suffix = f"_{self._start_time}_{self._end_time}" if self._start_time or self._end_time else ""
         cache_key = f"{stock_code}{time_suffix}_{table_name}_{self._report_type}"
 
-        # 尝试 parquet 格式缓存
-        cached = cache_manager.disk_cache.get(namespace, cache_key, 'parquet')
-        if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
-            if stock_code not in self._data:
-                self._data[stock_code] = {}
-            cached = self._ensure_datetime_index(cached, stock_code, table_name)
-            if not cached.empty:
-                cached = cached.sort_index()
-            self._data[stock_code][table_name] = cached
-            self._loaded_tables[(stock_code, table_name)] = True
-            self.logger.debug(f"从磁盘缓存加载: {stock_code}.{table_name}")
-            return
+        # 如果 data_processor 是 OpenDataProcessor，跳过 FinancialDataCache 自己的缓存逻辑
+        # 这样可以确保数据经过正确的列名映射
+        if self._data_processor is not None and 'OpenData' in self._data_processor.__class__.__name__:
+            self.logger.debug(f"[加载流程] {stock_code}.{table_name} 使用 OpenDataProcessor，跳过本地缓存逻辑")
+            pass  # 直接进入下面的 API 下载逻辑
+        else:
+            # 对于其他 data_processor，使用传统的缓存逻辑
+            # 尝试 parquet 格式缓存
+            cached = cache_manager.disk_cache.get(namespace, cache_key, 'parquet')
+            if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
+                if stock_code not in self._data:
+                    self._data[stock_code] = {}
+                cached = self._ensure_datetime_index(cached, stock_code, table_name)
+                if not cached.empty:
+                    cached = cached.sort_index()
+                self._data[stock_code][table_name] = cached
+                self._loaded_tables[(stock_code, table_name)] = True
+                self.logger.debug(f"从磁盘缓存加载: {stock_code}.{table_name}")
+                return
 
-        # 尝试 pkl 格式缓存（向后兼容）
-        cached_pkl = cache_manager.disk_cache.get(namespace, cache_key, 'pkl')
-        if cached_pkl is not None and isinstance(cached_pkl, pd.DataFrame) and not cached_pkl.empty:
-            if stock_code not in self._data:
-                self._data[stock_code] = {}
-            cached_pkl = self._ensure_datetime_index(cached_pkl, stock_code, table_name)
-            if not cached_pkl.empty:
-                cached_pkl = cached_pkl.sort_index()
-            self._data[stock_code][table_name] = cached_pkl
-            self._loaded_tables[(stock_code, table_name)] = True
-            # 转存为 parquet 格式
-            cache_manager.disk_cache.put(namespace, cache_key, cached_pkl, 'parquet')
-            self.logger.debug(f"从pkl缓存加载并转存parquet: {stock_code}.{table_name}")
-            return
+            # 尝试 pkl 格式缓存（向后兼容）
+            cached_pkl = cache_manager.disk_cache.get(namespace, cache_key, 'pkl')
+            if cached_pkl is not None and isinstance(cached_pkl, pd.DataFrame) and not cached_pkl.empty:
+                if stock_code not in self._data:
+                    self._data[stock_code] = {}
+                cached_pkl = self._ensure_datetime_index(cached_pkl, stock_code, table_name)
+                if not cached_pkl.empty:
+                    cached_pkl = cached_pkl.sort_index()
+                self._data[stock_code][table_name] = cached_pkl
+                self._loaded_tables[(stock_code, table_name)] = True
+                # 转存为 parquet 格式
+                cache_manager.disk_cache.put(namespace, cache_key, cached_pkl, 'parquet')
+                self.logger.debug(f"从pkl缓存加载并转存parquet: {stock_code}.{table_name}")
+                return
 
-        # 磁盘缓存也没有，从 API 下载
+        # 磁盘缓存也没有，从 data_processor 获取
         if self._data_processor is not None:
             try:
-                self.logger.info(f"按需下载: {stock_code}.{table_name}")
-                data = self._data_processor.xtdata.get_financial_data(
+                self.logger.info(f"请求数据: {stock_code}.{table_name}")
+                self.logger.debug(f"[加载参数] start_time={self._start_time}, end_time={self._end_time}")
+                # 调用 data_processor 的通用接口，而不是直接访问 xtdata
+                data = self._data_processor.get_financial_data(
                     [stock_code], [table_name],
                     start_time=self._start_time, end_time=self._end_time,
                     report_type=self._report_type,
                 )
+                self.logger.debug(f"[加载结果] data_processor返回: {type(data)}, 是否为空: {not data}")
                 if data and stock_code in data and table_name in data[stock_code]:
                     df = data[stock_code][table_name]
-                    if isinstance(df, pd.DataFrame) and not df.empty:
-                        # 规范化并缓存到磁盘
-                        df = self._data_processor._normalize_qmt_financial_df(df, self._report_type)
-                        df = self._ensure_datetime_index(df, stock_code, table_name)
+                    is_empty = df.empty if isinstance(df, pd.DataFrame) else (not df if df is not None else True)
+                    self.logger.debug(f"[加载结果] {stock_code}.{table_name} df类型: {type(df)}, 是否为空: {is_empty}")
+
+                    if isinstance(df, pd.DataFrame):
                         if not df.empty:
-                            df = df.sort_index()
-                        cache_manager.disk_cache.put(namespace, cache_key, df, 'parquet')
-                        if stock_code not in self._data:
-                            self._data[stock_code] = {}
-                        self._data[stock_code][table_name] = df
-                        self._loaded_tables[(stock_code, table_name)] = True
-                        self.logger.debug(f"从API下载并缓存: {stock_code}.{table_name}")
-                        return
+                            # 确保 DatetimeIndex
+                            df = self._ensure_datetime_index(df, stock_code, table_name)
+                            if not df.empty:
+                                df = df.sort_index()
+                            # 对于OpenDataProcessor，data_processor已经保存了原始数据缓存，这里只保存到FinancialDataCache的命名空间
+                            if 'OpenData' not in self._data_processor.__class__.__name__:
+                                cache_manager.disk_cache.put(namespace, cache_key, df, 'parquet')
+                            
+                            # 保险机制：确保字段名已转换（处理OpenDataProcessor可能未转换的情况）
+                            if 'OpenData' in self._data_processor.__class__.__name__:
+                                df = self._ensure_column_mapping(df, table_name)
+                            
+                            if stock_code not in self._data:
+                                self._data[stock_code] = {}
+                            self._data[stock_code][table_name] = df
+                            self._loaded_tables[(stock_code, table_name)] = True
+                            # 根据data_processor类型显示不同的日志
+                            if 'OpenData' in self._data_processor.__class__.__name__:
+                                self.logger.debug(f"从data_processor加载: {stock_code}.{table_name}")
+                            else:
+                                self.logger.debug(f"从API下载并缓存: {stock_code}.{table_name}")
+                            return
+                        else:
+                            # DataFrame 为空 - 这可能是新股（在请求期间还没有财务数据）
+                            # 这是正常情况，不应该标记为失败
+                            self.logger.debug(f"[加载结果] {stock_code}.{table_name} df为空，可能是新股或暂无财务数据")
+                            if stock_code not in self._data:
+                                self._data[stock_code] = {}
+                            self._data[stock_code][table_name] = df  # 保存空DataFrame
+                            self._loaded_tables[(stock_code, table_name)] = True  # 标记为成功加载（即使是空的）
+                            return
+                    else:
+                        self.logger.debug(f"[加载结果] {stock_code}.{table_name} 不是DataFrame")
+                else:
+                    self.logger.debug(f"[加载结果] {stock_code}.{table_name} 数据不存在于返回结果中，data={data}")
             except Exception as e:
                 self.logger.warning(f"按需下载失败: {stock_code}.{table_name}: {e}")
 
-        # 所有尝试失败，标记为已尝试（避免反复重试）
-        self._loaded_tables[(stock_code, table_name)] = True
-        if stock_code not in self._data:
-            self._data[stock_code] = {}
+        # 检查是否成功加载了数据
+        if stock_code in self._data and table_name in self._data[stock_code]:
+            # 成功加载，标记为已加载
+            self._loaded_tables[(stock_code, table_name)] = True
+            self.logger.debug(f"成功加载数据: {stock_code}.{table_name}")
+        else:
+            # 加载失败，标记为失败（使用False而不是True）
+            # 这样后续调用会知道已经尝试过，但失败了
+            self._loaded_tables[(stock_code, table_name)] = False
+            self.logger.debug(f"数据加载失败，标记为失败: {stock_code}.{table_name}")
+            # 确保股票代码在_data中（即使为空）
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
 
     def _ensure_datetime_index(self, df: pd.DataFrame,
                                 stock_code: str = '', table_name: str = '') -> pd.DataFrame:
@@ -173,7 +223,7 @@ class FinancialDataCache:
 
         # 尝试从常见日期列构建 DatetimeIndex
         # 优先使用公告日期列（避免未来数据），其次使用报告期列
-        for col in ['announce_date', 'm_anntime', 'pubDate', '公告日期',
+        for col in ['announce_date', 'm_anntime', 'pubDate', '公告日期', '最新公告日期',
                      'report_date', 'm_timetag', 'statDate', '报告期', 'index']:
             if col in df.columns:
                 try:
@@ -207,6 +257,72 @@ class FinancialDataCache:
                 f'无法构建DatetimeIndex, index类型={type(df.index).__name__}'
             )
 
+        return df
+
+    def _ensure_column_mapping(self, df: pd.DataFrame, table_name: str) -> pd.DataFrame:
+        """确保财务数据字段名已转换为英文（保险机制）
+        
+        当 OpenDataProcessor 返回的数据字段名仍为中文时，进行转换。
+        这是一个保险机制，防止字段名未正确转换导致策略无法获取数据。
+        
+        Args:
+            df: 财务数据 DataFrame
+            table_name: 报表名称
+            
+        Returns:
+            字段名已转换的 DataFrame
+        """
+        if df is None or df.empty:
+            return df
+            
+        # 定义字段名映射（与 OpenDataProcessor._convert_akshare_columns 保持一致）
+        column_map = {
+            # 每股指标相关
+            '每股收益': 's_fa_eps_basic',
+            '每股净资产': 's_fa_bps',
+            '每股经营现金流量': 's_fa_ocfps',
+            '每股资本公积金': 's_fa_surpluscapitalps',
+            '每股未分配利润': 's_fa_undistributedps',
+            '净资产收益率': 'du_return_on_equity',
+            '净资产收益率-加权': 'equity_roe',
+            '净资产收益率-摊薄': 'net_roe',
+            '销售毛利率': 'gross_profit_margin',
+            '净利润-同比增长': 'inc_net_profit_rate',
+            '营业总收入-同比增长': 'inc_revenue_rate',
+            # 资产负债表相关
+            '资产总计': 'total_assets',
+            '负债合计': 'total_liabilities',
+            '所有者权益合计': 'total_equity',
+            '流动资产合计': 'total_current_assets',
+            '非流动资产合计': 'total_noncurrent_assets',
+            '流动负债合计': 'total_current_liabilities',
+            '非流动负债合计': 'total_noncurrent_liabilities',
+            '货币资金': 'cash_and_equivalents',
+            '应收账款': 'accounts_receivable',
+            '存货': 'inventory',
+            # 利润表相关
+            '营业总收入': 'total_operate_income',
+            '营业收入': 'operate_income',
+            '营业总成本': 'total_operate_cost',
+            '营业成本': 'operate_cost',
+            '营业利润': 'operate_profit',
+            '利润总额': 'total_profit',
+            '净利润': 'net_profit',
+            '归属于母公司股东的净利润': 'net_profit_parent',
+            # 现金流量表相关
+            '经营活动产生的现金流量净额': 'net_operate_cash_flow',
+            '投资活动产生的现金流量净额': 'net_invest_cash_flow',
+            '筹资活动产生的现金流量净额': 'net_finance_cash_flow',
+            '现金及现金等价物净增加额': 'net_cash_increase',
+        }
+        
+        # 只转换存在的列
+        existing_cols = {k: v for k, v in column_map.items() if k in df.columns and v not in df.columns}
+        
+        if existing_cols:
+            self.logger.debug(f'[_ensure_column_mapping] 转换字段名: {list(existing_cols.keys())} -> {list(existing_cols.values())}')
+            df = df.rename(columns=existing_cols)
+            
         return df
 
     def get_stocks(self) -> List[str]:

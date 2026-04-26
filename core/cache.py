@@ -54,10 +54,10 @@ class DiskCache:
         'QMTDataProcessor_Financial': 'financial',
         'QMTDataProcessor_Industry': 'industry',
         'QMTDataProcessor_Sector': 'sector',
-        'AKShareDataProcessor': 'market',
-        'AKShareDataProcessor_Financial': 'financial',
-        'BaoStockDataProcessor': 'market',
-        'BaoStockDataProcessor_Financial': 'financial',
+        'OpenDataProcessor': 'market',
+        'OpenDataProcessor_Financial': 'financial',
+        'OpenDataProcessor_Industry': 'industry',
+        'OpenDataProcessor_Sector': 'sector',
     }
 
     BASE_DIR_MAP = {
@@ -65,10 +65,10 @@ class DiskCache:
         'QMTDataProcessor_Financial': 'QMTData',
         'QMTDataProcessor_Industry': 'QMTData',
         'QMTDataProcessor_Sector': 'QMTData',
-        'AKShareDataProcessor': 'AKShareData',
-        'AKShareDataProcessor_Financial': 'AKShareData',
-        'BaoStockDataProcessor': 'BaoStockData',
-        'BaoStockDataProcessor_Financial': 'BaoStockData',
+        'OpenDataProcessor': 'OpenData',
+        'OpenDataProcessor_Financial': 'OpenData',
+        'OpenDataProcessor_Industry': 'OpenData',
+        'OpenDataProcessor_Sector': 'OpenData',
     }
 
     def __init__(self, cache_dir: str):
@@ -171,7 +171,19 @@ class DiskCache:
                 temp_path = file_path.with_suffix(file_path.suffix + '.tmp')
                 if format_type == 'parquet' and HAS_PYARROW and isinstance(value, pd.DataFrame):
                     save_df = value.copy()
-                    save_df.columns = [str(c) for c in save_df.columns]
+                    # 处理重复列名：添加后缀区分
+                    cols = list(save_df.columns)
+                    seen = {}
+                    new_cols = []
+                    for c in cols:
+                        c_str = str(c)
+                        if c_str in seen:
+                            seen[c_str] += 1
+                            new_cols.append(f"{c_str}_{seen[c_str]}")
+                        else:
+                            seen[c_str] = 0
+                            new_cols.append(c_str)
+                    save_df.columns = new_cols
                     save_df.to_parquet(temp_path, engine='pyarrow', compression='snappy')
                 else:
                     with open(temp_path, 'wb') as f:
@@ -394,9 +406,11 @@ class SmartCacheManager:
             if incremental and isinstance(disk_data, pd.DataFrame) and not disk_data.empty:
                 req_start = self._get_param_value(func, args, kwargs, 'start_date', '')
                 req_end = self._get_param_value(func, args, kwargs, 'end_date', '')
+                disk_start = disk_data.index.min().strftime('%Y-%m-%d') if isinstance(disk_data.index, pd.DatetimeIndex) else str(disk_data.index.min())
                 disk_end = disk_data.index.max().strftime('%Y-%m-%d') if isinstance(disk_data.index, pd.DatetimeIndex) else str(disk_data.index.max())
 
-                if req_end and disk_end >= req_end:
+                # 检查缓存是否完全覆盖请求的范围
+                if req_start and req_end and disk_start <= req_start and disk_end >= req_end:
                     self.stats['total_load_time_ms'] += (time.time() - start_time) * 1000
                     return self._filter_by_date(disk_data, req_start, req_end)
 
