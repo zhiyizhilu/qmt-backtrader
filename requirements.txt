@@ -10,6 +10,7 @@ PyQt5>=5.15.0
 xtquant
 akshare>=1.12.0
 baostock>=0.8.9
+requests>=2.31.0
 # 监控 (可选)
 dash>=2.14.0
 psutil>=5.9.6

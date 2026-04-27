@@ -38,6 +38,20 @@ class QMTDataProcessor(DataProcessor):
             self._opendata = OpenDataProcessor(fallback_to_simulated=fallback_to_simulated)
         except ImportError:
             self._opendata = None
+
+        # 增加本地CSV成分股管理器（聚宽历史数据）
+        try:
+            from core.data.index_constituent import IndexConstituentManager
+            self._index_constituent_mgr = IndexConstituentManager(xtdata=self.xtdata)
+        except Exception:
+            self._index_constituent_mgr = None
+
+        # 增加本地CSV行业成分股管理器（聚宽历史数据）
+        try:
+            from core.data.industry_constituent import IndustryConstituentManager
+            self._industry_constituent_mgr = IndustryConstituentManager(xtdata=self.xtdata)
+        except Exception:
+            self._industry_constituent_mgr = None
     
     def check_connection(self) -> bool:
         """检查QMT数据服务是否可用"""
@@ -229,21 +243,17 @@ class QMTDataProcessor(DataProcessor):
 
         try:
             start_ts = time.time()
-            if total <= 5:
-                for i, stock in enumerate(stock_list, 1):
-                    self.logger.info(f"[ {i} / {total} ] 正在下载 {stock} 财务数据...")
-                    self.xtdata.download_financial_data(stock, tables)
-                    self.logger.info(f"[ {i} / {total} ] {stock} 财务数据下载完成")
-            else:
-                # 大批量下载：分批处理，每批50只，避免QMT超时
-                batch_size = 50
-                for batch_start in range(0, total, batch_size):
-                    batch_end = min(batch_start + batch_size, total)
-                    batch = stock_list[batch_start:batch_end]
-                    self.logger.info(
-                        f"[ {batch_start + 1}~{batch_end} / {total} ] "
-                        f"正在下载财务数据 (表: {', '.join(tables)})..."
-                    )
+            # 统一使用 download_financial_data2，避免单只下载的阻塞问题
+            # 小批量处理，每批10只，避免QMT超时
+            batch_size = 10
+            for batch_start in range(0, total, batch_size):
+                batch_end = min(batch_start + batch_size, total)
+                batch = stock_list[batch_start:batch_end]
+                self.logger.info(
+                    f"[ {batch_start + 1}~{batch_end} / {total} ] "
+                    f"正在下载财务数据 (表: {', '.join(tables)})..."
+                )
+                try:
                     self.xtdata.download_financial_data2(
                         batch, tables,
                         start_time=start_time, end_time=end_time,
@@ -252,6 +262,12 @@ class QMTDataProcessor(DataProcessor):
                         f"[ {batch_start + 1}~{batch_end} / {total} ] "
                         f"财务数据下载完成"
                     )
+                except Exception as e:
+                    self.logger.warning(
+                        f"[ {batch_start + 1}~{batch_end} / {total} ] "
+                        f"下载失败: {e}，跳过本批次"
+                    )
+                    continue
             elapsed = time.time() - start_ts
             self.logger.info(
                 f"财务数据下载完成: {total} 只股票, {', '.join(tables)}, "
@@ -499,72 +515,152 @@ class QMTDataProcessor(DataProcessor):
 
         return result
 
-    def _get_stock_list_cache_key(self, sector: str) -> str:
+    def _get_stock_list_cache_key(self, sector: str, date: Optional[str] = None) -> str:
         """生成成分股缓存key，按日期区分"""
+        if date:
+            date_compact = date.replace('-', '')
+            return f"sector_{sector}_{date_compact}"
         today = datetime.now().strftime('%Y%m%d')
         return f"sector_{sector}_{today}"
 
-    def _load_stock_list_from_cache(self, sector: str) -> Optional[List[str]]:
+    def _load_stock_list_from_cache(self, sector: str, date: Optional[str] = None) -> Optional[List[str]]:
         """尝试从本地缓存加载成分股列表"""
         namespace = 'QMTDataProcessor_Sector'
-        cache_key = self._get_stock_list_cache_key(sector)
+        cache_key = self._get_stock_list_cache_key(sector, date)
         cached = cache_manager.disk_cache.get(namespace, cache_key, 'parquet')
         if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
             if 'stock_code' in cached.columns:
                 stock_list = cached['stock_code'].astype(str).tolist()
-                self.logger.info(f"从本地缓存加载 {sector} 成分股: {len(stock_list)} 只")
+                self.logger.info(f"从本地缓存加载 {sector} 成分股: {len(stock_list)} 只 (date={date or 'latest'})")
                 return stock_list
         return None
 
-    def _save_stock_list_to_cache(self, sector: str, stock_list: List[str]) -> None:
+    def _save_stock_list_to_cache(self, sector: str, stock_list: List[str], date: Optional[str] = None) -> None:
         """将成分股列表保存到本地缓存"""
         namespace = 'QMTDataProcessor_Sector'
-        cache_key = self._get_stock_list_cache_key(sector)
+        cache_key = self._get_stock_list_cache_key(sector, date)
         df = pd.DataFrame({'stock_code': stock_list})
         cache_manager.disk_cache.put(namespace, cache_key, df, 'parquet')
-        self.logger.info(f"成分股列表已缓存: {sector} ({len(stock_list)} 只)")
+        self.logger.info(f"成分股列表已缓存: {sector} ({len(stock_list)} 只, date={date or 'latest'})")
 
-    def get_stock_list(self, sector: str = '沪深A股') -> List[str]:
+    def get_stock_list(self, sector: str = '沪深A股', date: Optional[str] = None) -> List[str]:
         """获取板块成分股列表
 
         优先从本地缓存加载，缓存按日期区分。若缓存不存在且QMT可用，
-        则从QMT获取并保存到本地缓存，供后续离线使用。
+        则从QMT获取并保存到本地缓存。QMT不可用时自动使用OpenData补充。
 
         Args:
             sector: 板块名称，如 '沪深A股', '上证50', '沪深300'
+            date: 目标日期，格式 'YYYY-MM-DD'，为None时获取最新成分股
 
         Returns:
             股票代码列表
         """
+        # 如果指定了日期，优先使用 OpenData 获取历史成分股
+        if date:
+            return self.get_historical_stock_list(sector, date)
+
         # 1. 尝试从本地缓存加载（支持离线回测）
         cached = self._load_stock_list_from_cache(sector)
         if cached is not None:
             return cached
 
-        if not self.xtdata:
-            if self._fallback_to_simulated:
-                self.logger.warning("xtquant 未安装，返回模拟股票列表")
-                return ['000001.SZ', '000002.SZ', '600000.SH', '600036.SH']
-            raise RuntimeError("xtquant 未安装，请安装 xtquant 后重试")
-
-        try:
-            stock_list = self.xtdata.get_stock_list_in_sector(sector)
-            if stock_list:
-                self._save_stock_list_to_cache(sector, stock_list)
-                return stock_list
+        # 2. 尝试从 QMT 获取
+        if self.xtdata:
             try:
-                self.xtdata.download_sector_data()
-            except Exception:
-                pass
-            stock_list = self.xtdata.get_stock_list_in_sector(sector)
-            if stock_list:
-                self._save_stock_list_to_cache(sector, stock_list)
-            return stock_list if stock_list else []
-        except Exception as e:
-            if self._fallback_to_simulated:
-                self.logger.warning(f"获取板块成分股失败: {e}，返回模拟列表")
-                return ['000001.SZ', '000002.SZ', '600000.SH', '600036.SH']
-            raise RuntimeError(f"获取板块成分股失败: {e}")
+                stock_list = self.xtdata.get_stock_list_in_sector(sector)
+                if stock_list:
+                    self._save_stock_list_to_cache(sector, stock_list)
+                    return stock_list
+                try:
+                    self.xtdata.download_sector_data()
+                except Exception:
+                    pass
+                stock_list = self.xtdata.get_stock_list_in_sector(sector)
+                if stock_list:
+                    self._save_stock_list_to_cache(sector, stock_list)
+                return stock_list if stock_list else []
+            except Exception as e:
+                self.logger.debug(f"QMT获取板块成分股失败: {e}")
+
+        # 3. QMT 失败，使用 OpenData 兜底
+        if self._opendata:
+            self.logger.info(f"QMT获取成分股失败，使用OpenData: {sector}")
+            try:
+                return self._opendata.get_stock_list(sector)
+            except Exception as e:
+                self.logger.warning(f"OpenData获取成分股也失败: {e}")
+
+        # 4. 全部失败
+        if self._fallback_to_simulated:
+            self.logger.warning("所有数据源获取成分股失败，返回模拟列表")
+            return ['000001.SZ', '000002.SZ', '600000.SH', '600036.SH']
+        raise RuntimeError(f"获取板块成分股失败: {sector}")
+
+    def get_historical_stock_list(self, sector: str = '沪深A股',
+                                   date: Optional[str] = None) -> List[str]:
+        """获取指定日期的历史成分股列表
+
+        数据源优先级:
+        1. 本地CSV文件（聚宽历史成分股数据，最完整可靠）
+        2. QMT 的 get_stock_list_in_sector(sector, timetag)
+        3. OpenData 的纳入/剔除日期还原方式（可能不完整）
+
+        当日期超出CSV范围时，自动从QMT获取最新成分股并更新CSV文件。
+
+        结果按日期缓存到磁盘，避免重复请求。
+
+        Args:
+            sector: 板块名称，如 '沪深300', '中证500'
+            date: 目标日期，格式 'YYYY-MM-DD'，默认为当前日期
+
+        Returns:
+            股票代码列表
+        """
+        # 0. 优先使用本地CSV成分股数据（聚宽历史数据）
+        if self._index_constituent_mgr:
+            index_code = self._index_constituent_mgr.sector_to_index_code(sector)
+            if index_code:
+                result = self._index_constituent_mgr.get_constituent_stocks(index_code, date or datetime.now().strftime('%Y-%m-%d'))
+                if result:
+                    self.logger.info(f"本地CSV成分股: {sector}, date={date}, 共 {len(result)} 只")
+                    return result
+
+        # 先尝试从本地缓存加载
+        cached = self._load_stock_list_from_cache(sector, date)
+        if cached is not None:
+            return cached
+
+        # 1. 使用 QMT 历史成分股接口（get_stock_list_in_sector 支持 timetag）
+        if self.xtdata and date:
+            try:
+                import time as _time
+                dt_obj = datetime.strptime(date, '%Y-%m-%d')
+                timetag = int(_time.mktime(dt_obj.timetuple()) * 1000)
+                stock_list = self.xtdata.get_stock_list_in_sector(sector, timetag)
+                if stock_list and len(stock_list) > 10:
+                    self.logger.info(
+                        f"QMT历史成分股: {sector}, date={date}, "
+                        f"共 {len(stock_list)} 只"
+                    )
+                    self._save_stock_list_to_cache(sector, stock_list, date)
+                    return stock_list
+            except Exception as e:
+                self.logger.debug(f"QMT获取历史成分股失败: {e}")
+
+        # 2. 使用 OpenData 获取历史成分股（基于纳入/剔除日期还原）
+        if self._opendata:
+            try:
+                result = self._opendata.get_historical_stock_list(sector, date)
+                if result:
+                    self._save_stock_list_to_cache(sector, result, date)
+                    return result
+            except Exception as e:
+                self.logger.warning(f"OpenData获取历史成分股失败: {e}")
+
+        # 3. 回退到当前成分股（不缓存，避免错误数据污染）
+        self.logger.warning(f"历史成分股获取失败，使用当前成分股: {sector}")
+        return self.get_stock_list(sector)
 
     def get_sector_list(self) -> List[str]:
         """获取所有板块列表"""
@@ -623,8 +719,11 @@ class QMTDataProcessor(DataProcessor):
                              stock_pool: Optional[List[str]] = None) -> Dict[str, str]:
         """获取申万行业分类映射
 
-        优先从本地缓存加载，缓存按日期和股票池区分。若缓存不存在且QMT可用，
-        则从QMT获取并保存到本地缓存，供后续离线使用。
+        数据源优先级:
+        1. 本地CSV文件（聚宽历史行业成分股数据，最完整可靠）
+        2. 本地缓存
+        3. QMT 实时获取
+        4. OpenData 兜底
 
         Args:
             level: 行业级别，1=一级行业，2=二级行业，3=三级行业
@@ -633,78 +732,177 @@ class QMTDataProcessor(DataProcessor):
         Returns:
             { stock_code: industry_name, ... } 映射字典
         """
+        # 0. 优先使用本地CSV行业成分股数据（聚宽历史数据）
+        if level == 1 and self._industry_constituent_mgr:
+            if stock_pool is None:
+                stock_pool = self.get_stock_list('沪深A股')
+            mapping = self._industry_constituent_mgr.get_industry_mapping(stock_pool)
+            if mapping:
+                self.logger.info(f"本地CSV行业映射: {len(set(mapping.values()))} 个行业, {len(mapping)} 只股票")
+                return mapping
+
         # 1. 尝试从本地缓存加载（支持离线回测）
         cached = self._load_industry_mapping_from_cache(level, stock_pool)
         if cached is not None:
             return cached
 
-        if not self.xtdata:
-            if self._fallback_to_simulated:
-                self.logger.warning("xtquant 未安装，返回模拟行业映射")
-                return {
-                    '000001.SZ': '银行', '000002.SZ': '房地产',
-                    '600000.SH': '银行', '600036.SH': '银行',
-                }
-            raise RuntimeError("xtquant 未安装，请安装 xtquant 后重试")
-
-        try:
-            self.logger.info("正在获取申万行业板块列表...")
-            sector_list = self.get_sector_list()
-            if not sector_list:
-                self.logger.info("行业板块列表为空，尝试下载...")
-                try:
-                    client = self.xtdata.get_client()
-                    client.down_all_sector_data()
-                except Exception:
+        # 2. 尝试从 QMT 获取
+        if self.xtdata:
+            try:
+                self.logger.info("正在获取申万行业板块列表...")
+                sector_list = self.get_sector_list()
+                if not sector_list:
+                    self.logger.info("行业板块列表为空，尝试下载...")
                     try:
-                        self.xtdata.download_sector_data()
+                        client = self.xtdata.get_client()
+                        client.down_all_sector_data()
                     except Exception:
-                        pass
-                sector_list = self.xtdata.get_sector_list() or []
-            sw_prefix = f'SW{level}'
-            sw_sectors = [s for s in sector_list
-                          if s.upper().startswith(sw_prefix.upper())
-                          and '加权' not in s
-                          and not s.upper().startswith('1000SW')
-                          and not s.upper().startswith('300SW')
-                          and not s.upper().startswith('500SW')
-                          and not s.upper().startswith('HKSW')
-                          and not s.upper().startswith('转债SW')]
+                        try:
+                            self.xtdata.download_sector_data()
+                        except Exception:
+                            pass
+                    sector_list = self.xtdata.get_sector_list() or []
+                sw_prefix = f'SW{level}'
+                sw_sectors = [s for s in sector_list
+                              if s.upper().startswith(sw_prefix.upper())
+                              and '加权' not in s
+                              and not s.upper().startswith('1000SW')
+                              and not s.upper().startswith('300SW')
+                              and not s.upper().startswith('500SW')
+                              and not s.upper().startswith('HKSW')
+                              and not s.upper().startswith('转债SW')]
 
-            self.logger.info(f"找到 {len(sw_sectors)} 个申万{level}级行业板块")
+                self.logger.info(f"找到 {len(sw_sectors)} 个申万{level}级行业板块")
 
-            if stock_pool is None:
-                stock_pool = self.get_stock_list('沪深A股')
+                if stock_pool is None:
+                    stock_pool = self.get_stock_list('沪深A股')
 
-            stock_set = set(stock_pool)
-            mapping: Dict[str, str] = {}
+                stock_set = set(stock_pool)
+                mapping: Dict[str, str] = {}
 
-            for idx, sw_sector in enumerate(sw_sectors, 1):
-                industry_name = sw_sector[len(sw_prefix):]
-                members = self.xtdata.get_stock_list_in_sector(sw_sector) or []
-                for stock in members:
-                    if stock in stock_set:
-                        mapping[stock] = industry_name
-                if idx % 10 == 0 or idx == len(sw_sectors):
-                    self.logger.info(
-                        f"[ {idx} / {len(sw_sectors)} ] 行业映射进度: "
-                        f"已处理 {idx} 个行业, 累计匹配 {len(mapping)} 只股票"
-                    )
+                for idx, sw_sector in enumerate(sw_sectors, 1):
+                    industry_name = sw_sector[len(sw_prefix):]
+                    members = self.xtdata.get_stock_list_in_sector(sw_sector) or []
+                    for stock in members:
+                        if stock in stock_set:
+                            mapping[stock] = industry_name
+                    if idx % 10 == 0 or idx == len(sw_sectors):
+                        self.logger.info(
+                            f"[ {idx} / {len(sw_sectors)} ] 行业映射进度: "
+                            f"已处理 {idx} 个行业, 累计匹配 {len(mapping)} 只股票"
+                        )
 
-            self.logger.info(f"申万{level}级行业映射加载完成: {len(sw_sectors)} 个行业, {len(mapping)} 只股票")
-            # 保存到本地缓存供离线使用
-            self._save_industry_mapping_to_cache(level, stock_pool, mapping)
-            return mapping
-        except RuntimeError:
-            raise
-        except Exception as e:
-            if self._fallback_to_simulated:
-                self.logger.warning(f"获取行业映射失败: {e}，返回模拟数据")
-                return {
-                    '000001.SZ': '银行', '000002.SZ': '房地产',
-                    '600000.SH': '银行', '600036.SH': '银行',
-                }
-            raise RuntimeError(f"获取行业映射失败: {e}")
+                self.logger.info(f"申万{level}级行业映射加载完成: {len(sw_sectors)} 个行业, {len(mapping)} 只股票")
+                # 保存到本地缓存供离线使用
+                self._save_industry_mapping_to_cache(level, stock_pool, mapping)
+                return mapping
+            except Exception as e:
+                self.logger.debug(f"QMT获取行业映射失败: {e}")
+
+        # 3. QMT 失败，使用 OpenData 兜底
+        if self._opendata:
+            self.logger.info("QMT获取行业映射失败，使用OpenData")
+            try:
+                return self._opendata.get_industry_mapping(level=level, stock_pool=stock_pool)
+            except Exception as e:
+                self.logger.warning(f"OpenData获取行业映射也失败: {e}")
+
+        # 4. 全部失败
+        if self._fallback_to_simulated:
+            self.logger.warning("所有数据源获取行业映射失败，返回模拟数据")
+            return {
+                '000001.SZ': '银行', '000002.SZ': '房地产',
+                '600000.SH': '银行', '600036.SH': '银行',
+            }
+        raise RuntimeError("获取行业映射失败")
+
+    def get_historical_industry_mapping(self, stock_list: List[str],
+                                        date: Optional[str] = None,
+                                        classification: str = '申银万国行业分类标准') -> Dict[str, str]:
+        """获取指定日期的历史行业分类映射
+
+        数据源优先级:
+        1. 本地CSV文件（聚宽历史行业成分股数据，最完整可靠）
+        2. 本地缓存
+        3. OpenData（巨潮资讯）
+        4. 回退到当前行业映射
+
+        Args:
+            stock_list: 股票代码列表（QMT格式，如 ['000001.SZ', '600000.SH']）
+            date: 目标日期，格式 'YYYY-MM-DD'，默认为当前日期
+            classification: 行业分类标准，默认'申银万国行业分类标准'
+
+        Returns:
+            { stock_code: industry_name, ... } 映射字典
+        """
+        # 0. 优先使用本地CSV行业成分股数据（聚宽历史数据）
+        if self._industry_constituent_mgr:
+            target_date = date or datetime.now().strftime('%Y-%m-%d')
+            mapping = self._industry_constituent_mgr.get_industry_mapping(stock_list, date=target_date)
+            if mapping:
+                self.logger.info(f"本地CSV历史行业映射: date={target_date}, "
+                                 f"{len(set(mapping.values()))} 个行业, {len(mapping)} 只股票")
+                return mapping
+
+        # 先尝试从缓存加载
+        cached = self._load_historical_industry_from_cache(stock_list, date, classification)
+        if cached is not None:
+            return cached
+
+        # 使用 OpenData 获取历史行业映射
+        if self._opendata:
+            try:
+                result = self._opendata.get_historical_industry_mapping(
+                    stock_list=stock_list, date=date, classification=classification
+                )
+                if result:
+                    self._save_historical_industry_to_cache(stock_list, date, classification, result)
+                    return result
+            except Exception as e:
+                self.logger.warning(f"OpenData获取历史行业映射失败: {e}")
+
+        # 回退到当前行业映射
+        self.logger.info("历史行业映射获取失败，使用当前行业映射")
+        return self.get_industry_mapping(level=1, stock_pool=stock_list)
+
+    def _load_historical_industry_from_cache(self, stock_list: List[str],
+                                              date: Optional[str],
+                                              classification: str) -> Optional[Dict[str, str]]:
+        """尝试从本地缓存加载历史行业映射"""
+        namespace = 'QMTDataProcessor_Industry'
+        date_str = date or datetime.now().strftime('%Y-%m-%d')
+        date_compact = date_str.replace('-', '')
+        pool_hash = hashlib.md5(','.join(sorted(stock_list)).encode()).hexdigest()[:8]
+        cache_key = f"hist_industry_{classification}_{date_compact}_{pool_hash}"
+
+        cached = cache_manager.disk_cache.get(namespace, cache_key, 'parquet')
+        if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
+            if 'stock_code' in cached.columns and 'industry_name' in cached.columns:
+                mapping = dict(zip(
+                    cached['stock_code'].astype(str).tolist(),
+                    cached['industry_name'].astype(str).tolist()
+                ))
+                self.logger.info(f"从缓存加载历史行业映射: date={date_str}, {len(mapping)} 只股票")
+                return mapping
+        return None
+
+    def _save_historical_industry_to_cache(self, stock_list: List[str],
+                                            date: Optional[str],
+                                            classification: str,
+                                            mapping: Dict[str, str]) -> None:
+        """将历史行业映射保存到本地缓存"""
+        namespace = 'QMTDataProcessor_Industry'
+        date_str = date or datetime.now().strftime('%Y-%m-%d')
+        date_compact = date_str.replace('-', '')
+        pool_hash = hashlib.md5(','.join(sorted(stock_list)).encode()).hexdigest()[:8]
+        cache_key = f"hist_industry_{classification}_{date_compact}_{pool_hash}"
+
+        df = pd.DataFrame({
+            'stock_code': list(mapping.keys()),
+            'industry_name': list(mapping.values())
+        })
+        cache_manager.disk_cache.put(namespace, cache_key, df, 'parquet')
+        self.logger.info(f"历史行业映射已缓存: date={date_str}, {len(mapping)} 只股票")
 
     def get_dividend_data(self, stock_list: List[str]) -> Dict[str, pd.DataFrame]:
         """获取股票分红数据

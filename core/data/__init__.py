@@ -16,12 +16,16 @@ from core.data.opendata import (
     _convert_symbol_to_opendata_financial,
 )
 from core.data.factory import create_data_processor
+from core.data.index_constituent import IndexConstituentManager
+from core.data.industry_constituent import IndustryConstituentManager
 
 __all__ = [
     'DataProcessor',
     'QMTDataProcessor',
     'CSVDataProcessor',
     'OpenDataProcessor',
+    'IndexConstituentManager',
+    'IndustryConstituentManager',
     'create_data_processor',
     '_merged_dict_to_parquet',
     '_parquet_to_merged_dict',

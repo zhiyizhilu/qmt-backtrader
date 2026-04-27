@@ -47,6 +47,14 @@ class OpenDataProcessor(DataProcessor):
         '000016.SH': '000016',
     }
 
+    # 中证指数代码 -> 新浪指数代码（深证代码体系）
+    _SINA_INDEX_CODE_MAP = {
+        '000300': '399300',  # 沪深300
+        '000905': '399905',  # 中证500
+        '000852': '399852',  # 中证1000
+        '000016': '000016',  # 上证50
+    }
+
     PERIOD_MAP = {
         '1d': 'daily', 'day': 'daily', 'daily': 'daily',
         '1w': 'weekly', 'week': 'weekly', 'weekly': 'weekly',
@@ -160,21 +168,7 @@ class OpenDataProcessor(DataProcessor):
             return cached
 
         try:
-            sector_map = {'沪深300': '000300', '中证500': '000905', '中证1000': '000852', '上证50': '000016'}
-            index_code = sector_map.get(sector)
-            result = []
-            if index_code:
-                df = self._ak.index_stock_cons_csindex(symbol=index_code)
-                if df is not None and not df.empty:
-                    code_col = next((c for c in ['品种代码', '股票代码', 'code', '成分券代码'] if c in df.columns), None)
-                    if code_col:
-                        result = [_convert_symbol_to_qmt(c) for c in df[code_col].astype(str).tolist()]
-            if sector in ('沪深A股', 'A股', '全部A股'):
-                df = self._ak.stock_zh_a_spot_em()
-                if df is not None and not df.empty:
-                    code_col = next((c for c in ['代码', '股票代码', 'code'] if c in df.columns), None)
-                    if code_col:
-                        result = [_convert_symbol_to_qmt(c) for c in df[code_col].astype(str).tolist()]
+            result = self._fetch_stock_list(sector)
 
             if not result:
                 result = ['000001.SZ', '000002.SZ', '600000.SH', '600036.SH']
@@ -186,6 +180,305 @@ class OpenDataProcessor(DataProcessor):
         except Exception as e:
             self.logger.warning(f"AKShare获取板块成分股失败: {e}")
             return ['000001.SZ', '000002.SZ', '600000.SH', '600036.SH']
+
+    @staticmethod
+    def _get_adjustment_dates() -> List[pd.Timestamp]:
+        """生成沪深300/中证系列指数的成分股调整日期列表
+
+        中证指数每年6月和12月的第二个星期五调整成分股，
+        此处使用近似日期（每月15日），足够用于历史成分股还原。
+        """
+        dates = []
+        for year in range(2005, 2030):
+            for month in [6, 12]:
+                dates.append(pd.Timestamp(f'{year}-{month}-15'))
+        return dates
+
+    @staticmethod
+    def _find_prev_adjustment(date: pd.Timestamp,
+                               adj_dates: List[pd.Timestamp]) -> pd.Timestamp:
+        """找到指定日期之前最近的调整日期"""
+        prev = adj_dates[0]
+        for d in adj_dates:
+            if d <= date:
+                prev = d
+            else:
+                break
+        return prev
+
+    def _fetch_index_constituent_changes(self, index_code: str) -> pd.DataFrame:
+        """获取指数成分股变动记录（含纳入日期和剔除日期）
+
+        数据来源:
+        1. akshare index_stock_cons: 当前成分股的所有纳入记录
+           - 同一股票可能出现多次（被移除后重新纳入）
+           - 通过多次纳入记录推断剔除日期
+        2. 新浪财经历史成分股页面: 早期（2005-2009）已剔除成分股的精确日期
+
+        对于 index_stock_cons 中的重复纳入记录，推断剔除日期为
+        下一次纳入前的最近调整日（中证指数每年6月和12月中旬调整成分股）。
+
+        结果按指数代码缓存，避免重复网络请求。
+
+        Args:
+            index_code: 中证指数代码，如 '000300'
+
+        Returns:
+            DataFrame with columns: [stock_code, in_date, out_date]
+            stock_code: 6位纯数字代码
+            in_date: 纳入日期 (datetime)
+            out_date: 剔除日期 (datetime, NaT表示仍在指数中)
+        """
+        namespace = 'OpenDataProcessor_Sector'
+        cache_key = f"index_changes_{index_code}"
+        cached = cache_manager.disk_cache.get(namespace, cache_key, 'parquet')
+        if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
+            self.logger.info(f"从缓存加载指数变动数据: {index_code}, {len(cached)} 条记录")
+            return cached
+
+        sina_code = self._SINA_INDEX_CODE_MAP.get(index_code, index_code)
+        adj_dates = self._get_adjustment_dates()
+        all_records = []
+
+        # ── Step 1: 当前成分股的所有纳入记录 ──
+        # index_stock_cons 可能返回同一股票的多条记录（移除后重新纳入）
+        stock_entries = {}  # code -> [in_date1, in_date2, ...]
+        try:
+            df_current = self._ak.index_stock_cons(symbol=sina_code)
+            if df_current is not None and not df_current.empty:
+                code_col = next((c for c in ['品种代码', '股票代码', 'code']
+                                 if c in df_current.columns), None)
+                in_date_col = next((c for c in ['纳入日期', '日期']
+                                    if c in df_current.columns), None)
+                if code_col and in_date_col:
+                    for _, row in df_current.iterrows():
+                        raw_code = str(row[code_col]).strip()
+                        if not raw_code or raw_code == 'nan':
+                            continue
+                        code = raw_code.zfill(6)
+                        in_date = pd.to_datetime(row[in_date_col], errors='coerce')
+                        if pd.isna(in_date):
+                            continue
+                        stock_entries.setdefault(code, []).append(in_date)
+
+                    # 对每只股票，按纳入日期排序，推断剔除日期
+                    for code, in_dates in stock_entries.items():
+                        in_dates.sort()
+                        for i, in_d in enumerate(in_dates):
+                            if i < len(in_dates) - 1:
+                                # 非最后一次纳入：剔除日期约为下一次纳入前的调整日
+                                next_in = in_dates[i + 1]
+                                out_d = self._find_prev_adjustment(next_in, adj_dates)
+                            else:
+                                # 最后一次纳入：仍在指数中
+                                out_d = pd.NaT
+                            all_records.append({
+                                'stock_code': code,
+                                'in_date': in_d,
+                                'out_date': out_d,
+                            })
+                    self.logger.info(
+                        f"当前成分股: {len(stock_entries)} 只唯一股票, "
+                        f"{len(df_current)} 条纳入记录"
+                    )
+                else:
+                    self.logger.warning(f"index_stock_cons 列不包含纳入日期: {list(df_current.columns)}")
+        except Exception as e:
+            self.logger.warning(f"获取当前成分股变动数据失败: {e}", exc_info=True)
+
+        # ── Step 2: 新浪历史成分股（早期2005-2009的精确剔除记录） ──
+        try:
+            import requests
+            from io import StringIO
+
+            base_url = (f"https://vip.stock.finance.sina.com.cn/corp/view/"
+                        f"vII_HistoryComponent.php?indexid={sina_code}")
+            headers = {
+                'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                               'AppleWebKit/537.36 (KHTML, like Gecko) '
+                               'Chrome/120.0.0.0 Safari/537.36')
+            }
+
+            page = 1
+            total_history = 0
+            while page <= 20:
+                url = f"{base_url}&p={page}"
+                try:
+                    resp = requests.get(url, headers=headers, timeout=15)
+                    resp.encoding = 'gb2312'
+                except Exception:
+                    break
+
+                if resp.status_code != 200 or len(resp.text) < 500:
+                    break
+
+                try:
+                    dfs = pd.read_html(StringIO(resp.text), header=0)
+                except Exception:
+                    break
+
+                # 新浪页面表格列名为"历史成分"系列，第一行才是真实列名
+                page_data = None
+                for df in dfs:
+                    if len(df) > 3 and any(str(c).startswith('历史成分') for c in df.columns):
+                        first_row = df.iloc[0]
+                        real_cols = [str(v).strip() for v in first_row.values]
+                        df = df.iloc[1:].copy()
+                        df.columns = real_cols[:len(df.columns)]
+                        df = df.reset_index(drop=True)
+                        df = df.dropna(subset=[real_cols[0]], how='all')
+                        page_data = df
+                        break
+
+                if page_data is None or page_data.empty:
+                    break
+
+                code_col = next((c for c in ['品种代码', '股票代码', 'code']
+                                 if c in page_data.columns), None)
+                in_col = next((c for c in ['纳入日期'] if c in page_data.columns), None)
+                out_col = next((c for c in ['剔除日期', '退出日期']
+                                if c in page_data.columns), None)
+
+                if code_col:
+                    for _, row in page_data.iterrows():
+                        code = str(row[code_col]).strip().zfill(6)
+                        if code == 'nan' or len(code) < 4:
+                            continue
+                        in_date = pd.to_datetime(row[in_col], errors='coerce') if in_col else pd.NaT
+                        out_date = pd.to_datetime(row[out_col], errors='coerce') if out_col else pd.NaT
+                        all_records.append({
+                            'stock_code': code,
+                            'in_date': in_date,
+                            'out_date': out_date,
+                        })
+                    total_history += len(page_data)
+
+                # 总页数信息
+                total_pages = 1
+                for df in dfs:
+                    for col in df.columns:
+                        page_info = str(col)
+                        if '共' in page_info and '页' in page_info:
+                            import re
+                            m = re.search(r'共(\d+)页', page_info)
+                            if m:
+                                total_pages = int(m.group(1))
+                                break
+
+                if page >= total_pages:
+                    break
+                page += 1
+                time.sleep(0.3)
+
+            self.logger.info(f"从新浪获取历史变动: {page} 页, {total_history} 条记录")
+        except ImportError:
+            self.logger.warning("requests 未安装，无法获取新浪历史成分股变动数据")
+        except Exception as e:
+            self.logger.warning(f"从新浪获取历史成分股变动失败: {e}")
+
+        if not all_records:
+            return pd.DataFrame(columns=['stock_code', 'in_date', 'out_date'])
+
+        df_changes = pd.DataFrame(all_records)
+        cache_manager.disk_cache.put(namespace, cache_key, df_changes, 'parquet')
+        self.logger.info(f"指数变动数据已缓存: {index_code}, {len(df_changes)} 条记录")
+        return df_changes
+
+    def get_historical_stock_list(self, sector: str = '沪深A股',
+                                   date: Optional[str] = None) -> List[str]:
+        """获取指定日期的历史成分股列表
+
+        基于新浪财经的历史成分股变动数据（纳入日期 + 剔除日期）还原
+        任意日期的指数成分股，确保回测时成分股与回测时期一致。
+
+        支持的指数: 沪深300、中证500、中证1000、上证50
+
+        数据按日期缓存到磁盘，变动记录按指数代码单独缓存。
+
+        Args:
+            sector: 板块名称，如 '沪深300', '中证500', '中证1000', '上证50'
+            date: 目标日期，格式 'YYYY-MM-DD'，默认为当前日期
+
+        Returns:
+            股票代码列表（QMT格式，如 ['000001.SZ', '600000.SH']）
+        """
+        if not self._ak:
+            return self.get_stock_list(sector)
+
+        if date is None:
+            date = pd.Timestamp.now().strftime('%Y-%m-%d')
+
+        # 沪深A股只有当前成分股，没有历史版本
+        if sector in ('沪深A股', 'A股', '全部A股'):
+            return self.get_stock_list(sector)
+
+        # 构造按日期的缓存key
+        date_compact = date.replace('-', '')
+        cache_key = f"hist_stock_list_{sector}_{date_compact}"
+        namespace = 'OpenDataProcessor_Sector'
+
+        # 尝试从缓存读取
+        cached = cache_manager.disk_cache.get(namespace, cache_key, 'parquet')
+        if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
+            if 'stock_code' in cached.columns:
+                stock_list = cached['stock_code'].astype(str).tolist()
+                self.logger.info(f"从缓存加载历史成分股: {sector}, date={date}, 共 {len(stock_list)} 只")
+                return stock_list
+
+        result = []
+        sector_map = {'沪深300': '000300', '中证500': '000905', '中证1000': '000852', '上证50': '000016'}
+        index_code = sector_map.get(sector)
+
+        if index_code:
+            # 获取成分股变动记录
+            df_changes = self._fetch_index_constituent_changes(index_code)
+
+            if not df_changes.empty:
+                target_date = pd.Timestamp(date)
+                # 筛选: 纳入日期 <= 目标日期 AND (剔除日期为空 OR 剔除日期 > 目标日期)
+                mask = (
+                    (df_changes['in_date'] <= target_date) &
+                    (df_changes['out_date'].isna() | (df_changes['out_date'] > target_date))
+                )
+                hist_codes = df_changes.loc[mask, 'stock_code'].unique().tolist()
+                result = [_convert_symbol_to_qmt(c) for c in hist_codes]
+                self.logger.info(
+                    f"还原 {sector} 历史成分股: date={date}, "
+                    f"变动记录={len(df_changes)}, 还原={len(result)} 只"
+                )
+
+        if not result:
+            # 回退到当前成分股（不缓存，避免错误数据污染缓存）
+            self.logger.warning(f"历史成分股还原失败，使用当前成分股: {sector}")
+            result = self.get_stock_list(sector)
+            return result
+
+        # 缓存到磁盘（仅缓存成功还原的历史成分股）
+        if result:
+            df_cache = pd.DataFrame({'stock_code': result})
+            cache_manager.disk_cache.put(namespace, cache_key, df_cache, 'parquet')
+            self.logger.info(f"历史成分股已缓存: {sector}, date={date}, 共 {len(result)} 只")
+
+        return result
+
+    def _fetch_stock_list(self, sector: str = '沪深A股') -> List[str]:
+        """从AKShare获取成分股列表（内部方法）"""
+        sector_map = {'沪深300': '000300', '中证500': '000905', '中证1000': '000852', '上证50': '000016'}
+        index_code = sector_map.get(sector)
+        result = []
+        if index_code:
+            df = self._ak.index_stock_cons_csindex(symbol=index_code)
+            if df is not None and not df.empty:
+                code_col = next((c for c in ['品种代码', '股票代码', 'code', '成分券代码'] if c in df.columns), None)
+                if code_col:
+                    result = [_convert_symbol_to_qmt(c) for c in df[code_col].astype(str).tolist()]
+        if sector in ('沪深A股', 'A股', '全部A股'):
+            df = self._ak.stock_zh_a_spot_em()
+            if df is not None and not df.empty:
+                code_col = next((c for c in ['代码', '股票代码', 'code'] if c in df.columns), None)
+                if code_col:
+                    result = [_convert_symbol_to_qmt(c) for c in df[code_col].astype(str).tolist()]
+        return result
 
     def download_financial_data(self, stock_list: List[str],
                                   table_list: Optional[List[str]] = None,

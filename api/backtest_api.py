@@ -317,11 +317,18 @@ class BacktestAPI(BaseAPI):
         if not end_time and self._data_end_date:
             end_time = self._data_end_date
 
-        # ── 阶段1：获取股票池 ──
+        # ── 阶段1：获取股票池（优先使用历史成分股） ──
         if stock_list is None and sector:
-            self.logger.info(f"[阶段1/5] 获取板块 '{sector}' 成分股...")
-            stock_list = self._financial_data_processor.get_stock_list(sector)
-            self.logger.info(f"[阶段1/5] 板块 '{sector}' 获取到 {len(stock_list)} 只股票")
+            # 使用回测起始日期获取历史成分股，确保成分股与回测时期一致
+            hist_date = start_time if start_time else end_time
+            if hist_date:
+                self.logger.info(f"[阶段1/5] 获取板块 '{sector}' 历史成分股 (基准日期: {hist_date})...")
+                stock_list = self._financial_data_processor.get_historical_stock_list(sector, date=hist_date)
+                self.logger.info(f"[阶段1/5] 板块 '{sector}' 获取到 {len(stock_list)} 只历史成分股")
+            else:
+                self.logger.info(f"[阶段1/5] 获取板块 '{sector}' 成分股...")
+                stock_list = self._financial_data_processor.get_stock_list(sector)
+                self.logger.info(f"[阶段1/5] 板块 '{sector}' 获取到 {len(stock_list)} 只股票")
         else:
             self.logger.info(f"[阶段1/5] 使用指定股票列表: {len(stock_list or [])} 只")
 
@@ -385,27 +392,20 @@ class BacktestAPI(BaseAPI):
             f"[阶段3/5] 财务数据适配器创建完成(按需加载模式): {len(stock_list)} 只股票待查询"
         )
 
-        # ── 阶段4：获取行业映射 ──
+        # ── 阶段4：获取行业映射（优先使用历史行业数据） ──
         self.logger.info(f"[阶段4/5] 获取申万行业分类映射...")
         try:
-            # 优先使用历史行业数据（如果数据源支持）
-            if hasattr(self._financial_data_processor, 'get_historical_industry_mapping'):
-                # 使用回测开始日期作为历史行业数据的基准日期
-                hist_date = start_time if start_time else end_time
-                if not hist_date:
-                    hist_date = pd.Timestamp.now().strftime('%Y-%m-%d')
+            # 使用回测开始日期作为历史行业数据的基准日期
+            hist_date = start_time if start_time else end_time
+            if not hist_date:
+                hist_date = pd.Timestamp.now().strftime('%Y-%m-%d')
 
-                self.logger.info(f"[阶段4/5] 使用历史行业数据 (基准日期: {hist_date})...")
-                industry_mapping = self._financial_data_processor.get_historical_industry_mapping(
-                    stock_list=stock_list,
-                    date=hist_date,
-                    classification='申银万国行业分类标准'
-                )
-            else:
-                # 回退到最新行业数据
-                industry_mapping = self._financial_data_processor.get_industry_mapping(
-                    level=1, stock_pool=stock_list
-                )
+            self.logger.info(f"[阶段4/5] 使用历史行业数据 (基准日期: {hist_date})...")
+            industry_mapping = self._financial_data_processor.get_historical_industry_mapping(
+                stock_list=stock_list,
+                date=hist_date,
+                classification='申银万国行业分类标准'
+            )
 
             if industry_mapping:
                 self._financial_adapter.set_industry_mapping(industry_mapping)
@@ -439,6 +439,9 @@ class BacktestAPI(BaseAPI):
                         stock_list: Optional[List[str]] = None) -> List[str]:
         """加载股票池
 
+        回测时自动使用历史成分股（基于数据起始日期），
+        而非QMT的最新成分股，确保成分股与回测时期一致。
+
         Args:
             sector: 板块名称
             stock_list: 自定义股票列表，优先于 sector
@@ -449,7 +452,15 @@ class BacktestAPI(BaseAPI):
         if stock_list:
             self._stock_pool = stock_list
         else:
-            self._stock_pool = self.data_processor.get_stock_list(sector)
+            # 回测时使用历史成分股，而非QMT最新成分股
+            hist_date = self._data_start_date
+            if hist_date:
+                self.logger.info(f"获取板块 '{sector}' 历史成分股 (基准日期: {hist_date})...")
+                self._stock_pool = self.data_processor.get_historical_stock_list(sector, date=hist_date)
+                self.logger.info(f"板块 '{sector}' 获取到 {len(self._stock_pool)} 只历史成分股")
+            else:
+                self._stock_pool = self.data_processor.get_stock_list(sector)
+                self.logger.info(f"板块 '{sector}' 获取到 {len(self._stock_pool)} 只股票")
 
         self.logger.info(f"股票池加载完成: {len(self._stock_pool)} 只股票")
         return self._stock_pool
