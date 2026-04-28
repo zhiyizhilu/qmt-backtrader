@@ -128,8 +128,8 @@ class BacktestAPI(BaseAPI):
         super().__init__()
         self.cerebro = bt.Cerebro()
         self.data_processor = create_data_processor(fallback_to_simulated=True, proxy=proxy)
-        # 财务数据处理器（QMT为主，OpenData补充）
-        self._financial_data_processor = create_data_processor(fallback_to_simulated=True, proxy=proxy)
+        # 财务数据处理器（仅使用 QMT，禁用 OpenData 补充）
+        self._financial_data_processor = create_data_processor(fallback_to_simulated=True, proxy=proxy, use_opendata=False)
         self._symbols: List[str] = []
         self._strategy_logic_class: Optional[Type[StrategyLogic]] = None
         self._strategy_kwargs: Dict[str, Any] = {}
@@ -317,18 +317,25 @@ class BacktestAPI(BaseAPI):
         if not end_time and self._data_end_date:
             end_time = self._data_end_date
 
-        # ── 阶段1：获取股票池（优先使用历史成分股） ──
+        # ── 阶段1：获取股票池（收集回测期间所有历史成分股） ──
         if stock_list is None and sector:
-            # 使用回测起始日期获取历史成分股，确保成分股与回测时期一致
-            hist_date = start_time if start_time else end_time
-            if hist_date:
-                self.logger.info(f"[阶段1/5] 获取板块 '{sector}' 历史成分股 (基准日期: {hist_date})...")
-                stock_list = self._financial_data_processor.get_historical_stock_list(sector, date=hist_date)
-                self.logger.info(f"[阶段1/5] 板块 '{sector}' 获取到 {len(stock_list)} 只历史成分股")
+            if start_time and end_time:
+                self.logger.info(f"[阶段1/5] 获取板块 '{sector}' 回测期间全部历史成分股 "
+                                 f"({start_time} ~ {end_time})...")
+                stock_list = self._financial_data_processor.get_all_historical_stocks_in_range(
+                    sector, start_date=start_time, end_date=end_time
+                )
+                self.logger.info(f"[阶段1/5] 板块 '{sector}' 回测期间共涉及 {len(stock_list)} 只历史成分股")
             else:
-                self.logger.info(f"[阶段1/5] 获取板块 '{sector}' 成分股...")
-                stock_list = self._financial_data_processor.get_stock_list(sector)
-                self.logger.info(f"[阶段1/5] 板块 '{sector}' 获取到 {len(stock_list)} 只股票")
+                hist_date = start_time if start_time else end_time
+                if hist_date:
+                    self.logger.info(f"[阶段1/5] 获取板块 '{sector}' 历史成分股 (基准日期: {hist_date})...")
+                    stock_list = self._financial_data_processor.get_historical_stock_list(sector, date=hist_date)
+                    self.logger.info(f"[阶段1/5] 板块 '{sector}' 获取到 {len(stock_list)} 只历史成分股")
+                else:
+                    self.logger.info(f"[阶段1/5] 获取板块 '{sector}' 成分股...")
+                    stock_list = self._financial_data_processor.get_stock_list(sector)
+                    self.logger.info(f"[阶段1/5] 板块 '{sector}' 获取到 {len(stock_list)} 只股票")
         else:
             self.logger.info(f"[阶段1/5] 使用指定股票列表: {len(stock_list or [])} 只")
 
@@ -336,7 +343,7 @@ class BacktestAPI(BaseAPI):
             raise ValueError("必须指定 stock_list 或 sector")
 
         tables = table_list or ['Balance', 'Income', 'CashFlow', 'Capital',
-                                'Holdernum', 'Top10holder', 'Top10flowholder', 'Pershareindex']
+                                'HolderNum', 'Top10Holder', 'Top10FlowHolder', 'PershareIndex']
 
         # ── 阶段2：检查磁盘缓存覆盖情况，只下载缺失的数据 ──
         from core.cache import cache_manager
@@ -344,20 +351,45 @@ class BacktestAPI(BaseAPI):
         time_suffix = f"_{start_time}_{end_time}" if start_time or end_time else ""
         ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
 
+        # 计算请求的年份范围
+        req_years = []
+        if start_time and end_time:
+            try:
+                req_years = list(range(pd.Timestamp(start_time).year, pd.Timestamp(end_time).year + 1))
+            except Exception:
+                pass
+
         cached_stocks = set()
         uncached_stocks = []
 
         for stock in stock_list:
             all_tables_cached = True
             for table in tables:
-                cache_key = f"{stock}{time_suffix}_{table}_{report_type}"
-                file_path = ns_dir / f"{cache_key}.parquet"
-                if not file_path.exists():
-                    # 也检查旧格式 pkl
-                    pkl_path = ns_dir / f"{cache_key}.pkl"
-                    if not pkl_path.exists():
+                table_suffix = f"{table}_{report_type}"
+
+                # V2: 检查年份分片格式
+                if req_years:
+                    available_years = cache_manager.index_manager.get_available_financial_years(stock, table_suffix)
+                    if not available_years:
+                        available_years = cache_manager.disk_cache.list_yearly_files(namespace, stock, table_suffix)
+                    missing_years = set(req_years) - set(available_years)
+                    if missing_years:
                         all_tables_cached = False
                         break
+                else:
+                    # 无时间限制时，检查是否有任何年份数据
+                    available_years = cache_manager.index_manager.get_available_financial_years(stock, table_suffix)
+                    if not available_years:
+                        available_years = cache_manager.disk_cache.list_yearly_files(namespace, stock, table_suffix)
+                    if not available_years:
+                        # 回退到旧格式检查
+                        cache_key = f"{stock}{time_suffix}_{table}_{report_type}"
+                        file_path = ns_dir / f"{cache_key}.parquet"
+                        if not file_path.exists():
+                            pkl_path = ns_dir / f"{cache_key}.pkl"
+                            if not pkl_path.exists():
+                                all_tables_cached = False
+                                break
             if all_tables_cached:
                 cached_stocks.add(stock)
             else:
@@ -439,8 +471,8 @@ class BacktestAPI(BaseAPI):
                         stock_list: Optional[List[str]] = None) -> List[str]:
         """加载股票池
 
-        回测时自动使用历史成分股（基于数据起始日期），
-        而非QMT的最新成分股，确保成分股与回测时期一致。
+        回测时自动收集回测期间所有历史成分股的并集，
+        确保成分股调整期间涉及的股票数据都能被获取。
 
         Args:
             sector: 板块名称
@@ -452,12 +484,15 @@ class BacktestAPI(BaseAPI):
         if stock_list:
             self._stock_pool = stock_list
         else:
-            # 回测时使用历史成分股，而非QMT最新成分股
-            hist_date = self._data_start_date
-            if hist_date:
-                self.logger.info(f"获取板块 '{sector}' 历史成分股 (基准日期: {hist_date})...")
-                self._stock_pool = self.data_processor.get_historical_stock_list(sector, date=hist_date)
-                self.logger.info(f"板块 '{sector}' 获取到 {len(self._stock_pool)} 只历史成分股")
+            start_date = self._data_start_date
+            end_date = self._data_end_date
+            if start_date and end_date:
+                self.logger.info(f"获取板块 '{sector}' 回测期间全部历史成分股 "
+                                 f"({start_date} ~ {end_date})...")
+                self._stock_pool = self.data_processor.get_all_historical_stocks_in_range(
+                    sector, start_date=start_date, end_date=end_date
+                )
+                self.logger.info(f"板块 '{sector}' 回测期间共涉及 {len(self._stock_pool)} 只历史成分股")
             else:
                 self._stock_pool = self.data_processor.get_stock_list(sector)
                 self.logger.info(f"板块 '{sector}' 获取到 {len(self._stock_pool)} 只股票")

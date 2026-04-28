@@ -2,7 +2,7 @@ import pandas as pd
 import hashlib
 import logging
 import time
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple, Set
 from datetime import datetime
 
 from core.cache import smart_cache, cache_manager
@@ -18,10 +18,10 @@ class QMTDataProcessor(DataProcessor):
     
     FINANCIAL_TABLES = [
         'Balance', 'Income', 'CashFlow', 'Capital',
-        'Holdernum', 'Top10holder', 'Top10flowholder', 'Pershareindex',
+        'HolderNum', 'Top10Holder', 'Top10FlowHolder', 'PershareIndex',
     ]
 
-    def __init__(self, fallback_to_simulated: bool = False):
+    def __init__(self, fallback_to_simulated: bool = False, use_opendata: bool = True):
         try:
             from xtquant import xtdata
             self.xtdata = xtdata
@@ -29,15 +29,20 @@ class QMTDataProcessor(DataProcessor):
             self.xtdata = None
             logging.getLogger(__name__).warning("xtquant not installed, using simulated data")
         self._fallback_to_simulated = fallback_to_simulated
+        self._use_opendata = use_opendata
         self._financial_data_cache: Dict[str, Any] = {}
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
         
         # 增加 OpenData 处理器用于数据补充
-        try:
-            from core.data.opendata import OpenDataProcessor
-            self._opendata = OpenDataProcessor(fallback_to_simulated=fallback_to_simulated)
-        except ImportError:
+        if use_opendata:
+            try:
+                from core.data.opendata import OpenDataProcessor
+                self._opendata = OpenDataProcessor(fallback_to_simulated=fallback_to_simulated)
+            except ImportError:
+                self._opendata = None
+        else:
             self._opendata = None
+            self.logger.info("OpenData 补充已禁用，仅使用 QMT 数据")
 
         # 增加本地CSV成分股管理器（聚宽历史数据）
         try:
@@ -58,7 +63,8 @@ class QMTDataProcessor(DataProcessor):
         if not self.xtdata:
             return False
         try:
-            self.xtdata.get_financial_index('000001.SZ')
+            # 使用 get_market_data 检测连接，get_financial_index 不存在
+            self.xtdata.get_market_data(['close'], ['000001.SZ'], period='1d', count=1)
             return True
         except Exception:
             return False
@@ -164,7 +170,218 @@ class QMTDataProcessor(DataProcessor):
         except Exception as e:
             self.logger.debug(f"QMT获取数据失败: {e}")
             return None
-    
+
+    @staticmethod
+    def _parse_cache_date_range(cache_key: str):
+        """从缓存 key 中解析日期范围
+
+        支持的格式:
+        - '000001.SZ_2025-03-12_2026-04-21_Balance_announce_time' → ('2025-03-12', '2026-04-21')
+        - '000001.SZ_Balance_announce_time' → None (旧格式，无日期范围)
+
+        Returns:
+            (start_date, end_date) 或 None
+        """
+        import re
+        m = re.match(r'^[A-Z0-9]+\.[A-Z]+_(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})_', cache_key)
+        if m:
+            return (m.group(1), m.group(2))
+        return None
+
+    def _find_best_financial_cache(self, stock: str, table: str,
+                                    report_type: str,
+                                    req_start: str, req_end: str) -> Optional[Tuple[pd.DataFrame, str]]:
+        """查找能覆盖请求日期范围的最佳财务数据缓存
+
+        查找逻辑:
+        1. 精确匹配: {stock}_{req_start}_{req_end}_{table}_{report_type}
+        2. 包含匹配: 同股票同表的所有缓存中，日期范围包含请求范围的
+        3. 旧格式匹配: 无日期范围的旧缓存（视为全量数据，按索引日期截取）
+
+        Args:
+            stock: 股票代码
+            table: 财务表名
+            report_type: 报表筛选方式
+            req_start: 请求起始日期
+            req_end: 请求结束日期
+
+        Returns:
+            (DataFrame, cache_key) 或 None
+        """
+        namespace = 'QMTDataProcessor_Financial'
+        time_suffix = f"_{req_start}_{req_end}" if req_start or req_end else ""
+
+        # 1. 精确匹配
+        exact_key = f"{stock}{time_suffix}_{table}_{report_type}"
+        cached = cache_manager.disk_cache.get(namespace, exact_key, 'parquet')
+        if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
+            return (cached, exact_key)
+
+        # 2. 模式匹配: 查找同股票同表的所有缓存
+        pattern = f"{stock}*_{table}_{report_type}"
+        matches = cache_manager.disk_cache.find_by_pattern(namespace, pattern, 'parquet')
+
+        best_match = None
+        best_range = None
+
+        req_start_ts = pd.Timestamp(req_start) if req_start else pd.Timestamp.min
+        req_end_ts = pd.Timestamp(req_end) if req_end else pd.Timestamp.max
+
+        for key, data in matches:
+            if not isinstance(data, pd.DataFrame) or data.empty:
+                continue
+
+            date_range = self._parse_cache_date_range(key)
+
+            if date_range is None:
+                # 旧格式缓存（无日期范围），检查数据索引是否覆盖请求范围
+                if isinstance(data.index, pd.DatetimeIndex) and not data.index.empty:
+                    data_start = data.index.min()
+                    data_end = data.index.max()
+                    if data_start <= req_start_ts and data_end >= req_end_ts:
+                        if best_match is None:
+                            best_match = (data, key)
+                            best_range = (data_start, data_end)
+                        elif (data_end - data_start) < (best_range[1] - best_range[0]):
+                            best_match = (data, key)
+                            best_range = (data_start, data_end)
+                continue
+
+            cache_start, cache_end = date_range
+            cache_start_ts = pd.Timestamp(cache_start)
+            cache_end_ts = pd.Timestamp(cache_end)
+
+            if cache_start_ts <= req_start_ts and cache_end_ts >= req_end_ts:
+                if best_match is None:
+                    best_match = (data, key)
+                    best_range = (cache_start_ts, cache_end_ts)
+                elif (cache_end_ts - cache_start_ts) < (best_range[1] - best_range[0]):
+                    best_match = (data, key)
+                    best_range = (cache_start_ts, cache_end_ts)
+
+        if best_match:
+            return best_match
+
+        # 3. 尝试旧格式 pkl
+        cached_pkl = cache_manager.disk_cache.get(namespace, exact_key, 'pkl')
+        if cached_pkl is not None and isinstance(cached_pkl, pd.DataFrame) and not cached_pkl.empty:
+            cache_manager.disk_cache.put(namespace, exact_key, cached_pkl, 'parquet')
+            return (cached_pkl, exact_key)
+
+        return None
+
+    def _cleanup_redundant_caches(self, stock: str, table: str,
+                                   report_type: str,
+                                   best_key: str, best_start: pd.Timestamp, best_end: pd.Timestamp) -> int:
+        """清理被大范围缓存包含的小范围冗余缓存
+
+        当有了大范围缓存（如 2020-2026）后，删除被包含的小范围缓存（如 2025-2026、2026-01~2026-04）
+
+        Returns:
+            删除的缓存数量
+        """
+        namespace = 'QMTDataProcessor_Financial'
+        pattern = f"{stock}*_{table}_{report_type}"
+        matches = cache_manager.disk_cache.find_by_pattern(namespace, pattern, 'parquet')
+
+        deleted_count = 0
+        for key, data in matches:
+            if key == best_key:
+                continue  # 跳过最佳缓存本身
+
+            date_range = self._parse_cache_date_range(key)
+            if date_range is None:
+                continue  # 跳过旧格式缓存
+
+            cache_start, cache_end = date_range
+            cache_start_ts = pd.Timestamp(cache_start)
+            cache_end_ts = pd.Timestamp(cache_end)
+
+            # 如果小范围缓存被大范围缓存完全包含，则删除
+            if cache_start_ts >= best_start and cache_end_ts <= best_end:
+                cache_manager.disk_cache.delete(namespace, key, 'parquet')
+                self.logger.debug(f"删除冗余小范围缓存: {key} (范围 {cache_start}~{cache_end} 被包含在 {best_start.date()}~{best_end.date()} 内)")
+                deleted_count += 1
+
+        return deleted_count
+
+    def _find_overlapping_caches(self, stock: str, table: str,
+                                  report_type: str,
+                                  req_start: str, req_end: str) -> List[Tuple[pd.DataFrame, str, Optional[Tuple[str, str]]]]:
+        """查找与请求日期范围有重叠的所有缓存
+
+        用于合并策略：找到所有部分重叠的缓存，合并后覆盖更大范围。
+
+        Returns:
+            [(DataFrame, cache_key, date_range_or_none), ...] 按日期范围排序
+        """
+        namespace = 'QMTDataProcessor_Financial'
+        pattern = f"{stock}*_{table}_{report_type}"
+        matches = cache_manager.disk_cache.find_by_pattern(namespace, pattern, 'parquet')
+
+        req_start_ts = pd.Timestamp(req_start) if req_start else pd.Timestamp.min
+        req_end_ts = pd.Timestamp(req_end) if req_end else pd.Timestamp.max
+
+        overlapping = []
+        for key, data in matches:
+            if not isinstance(data, pd.DataFrame) or data.empty:
+                continue
+
+            date_range = self._parse_cache_date_range(key)
+
+            if date_range is None:
+                if isinstance(data.index, pd.DatetimeIndex) and not data.index.empty:
+                    data_start = data.index.min()
+                    data_end = data.index.max()
+                    if data_end >= req_start_ts and data_start <= req_end_ts:
+                        overlapping.append((data, key, None))
+                continue
+
+            cache_start, cache_end = date_range
+            cache_start_ts = pd.Timestamp(cache_start)
+            cache_end_ts = pd.Timestamp(cache_end)
+
+            if cache_end_ts >= req_start_ts and cache_start_ts <= req_end_ts:
+                overlapping.append((data, key, date_range))
+
+        overlapping.sort(key=lambda x: pd.Timestamp(x[2][0]) if x[2] else pd.Timestamp.min)
+        return overlapping
+
+    def _merge_financial_caches(self, existing_dfs: List[pd.DataFrame],
+                                 new_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+        """合并多个财务数据缓存 DataFrame
+
+        合并规则:
+        - 按 DatetimeIndex 去重，保留最新数据
+        - 列不一致时取交集
+        """
+        frames = [df for df in existing_dfs if isinstance(df, pd.DataFrame) and not df.empty]
+        if new_df is not None and isinstance(new_df, pd.DataFrame) and not new_df.empty:
+            frames.append(new_df)
+
+        if not frames:
+            return pd.DataFrame()
+        if len(frames) == 1:
+            return frames[0]
+
+        all_cols = [set(f.columns) for f in frames]
+        common_cols = set.intersection(*all_cols) if all_cols else set()
+
+        if common_cols:
+            aligned = [f[list(common_cols)] for f in frames]
+        else:
+            self.logger.warning("合并缓存时列名不一致且无交集，使用 outer 合并")
+            aligned = frames
+
+        merged = pd.concat(aligned)
+        if isinstance(merged.index, pd.DatetimeIndex):
+            merged = merged[~merged.index.duplicated(keep='last')]
+            merged = merged.sort_index()
+        else:
+            merged = merged.reset_index(drop=True)
+
+        return merged
+
     def _normalize_qmt_financial_df(self, df: pd.DataFrame,
                                       report_type: str = 'announce_time') -> pd.DataFrame:
         """将 QMT xtdata 返回的财务 DataFrame 标准化
@@ -172,6 +389,8 @@ class QMTDataProcessor(DataProcessor):
         QMT xtdata 返回的财务数据索引是 RangeIndex，日期信息存储在列中：
         - m_anntime: 公告日期 (YYYYMMDD 字符串)
         - m_timetag: 报告期 (YYYYMMDD 字符串)
+        - declareDate: 公告日期 (HolderNum, Top10Holder, Top10FlowHolder 表)
+        - endDate: 报告期截止日期 (HolderNum, Top10Holder, Top10FlowHolder 表)
 
         此方法将其转换为 DatetimeIndex，便于回测按日期过滤。
         """
@@ -183,6 +402,12 @@ class QMTDataProcessor(DataProcessor):
             date_col = 'm_anntime'
         elif 'm_timetag' in df.columns:
             date_col = 'm_timetag'
+        elif report_type == 'announce_time' and 'declareDate' in df.columns:
+            # HolderNum, Top10Holder, Top10FlowHolder 表使用 declareDate
+            date_col = 'declareDate'
+        elif 'endDate' in df.columns:
+            # HolderNum, Top10Holder, Top10FlowHolder 表使用 endDate
+            date_col = 'endDate'
         else:
             # 没有已知的日期列，返回原数据
             return df
@@ -223,10 +448,298 @@ class QMTDataProcessor(DataProcessor):
 
         return df
 
+    def _check_data_ready(self, stock_list: List[str], tables: List[str],
+                          start_time: str, end_time: str) -> Tuple[Set[str], Set[str]]:
+        """检查哪些股票的数据已就绪
+
+        Returns:
+            (ready_stocks, missing_stocks): 已就绪的股票集合和缺失的股票集合
+        """
+        try:
+            test_data = self.xtdata.get_financial_data(
+                stock_list, tables,
+                start_time=start_time, end_time=end_time
+            )
+        except UnicodeDecodeError as e:
+            # QMT 返回的数据编码问题，尝试逐个股票检查
+            self.logger.debug(f"批量检查数据编码错误，降级为单只检查: {e}")
+            ready_stocks = set()
+            missing_stocks = set()
+            for stock in stock_list:
+                try:
+                    single_data = self.xtdata.get_financial_data([stock], tables, start_time=start_time, end_time=end_time)
+                    if single_data and stock in single_data:
+                        ready_stocks.add(stock)
+                    else:
+                        missing_stocks.add(stock)
+                except Exception as se:
+                    self.logger.debug(f"单只股票 {stock} 检查失败: {se}")
+                    missing_stocks.add(stock)
+            return ready_stocks, missing_stocks
+        except Exception as e:
+            self.logger.debug(f"检查数据就绪失败: {e}")
+            return set(), set(stock_list)
+
+        if not test_data:
+            return set(), set(stock_list)
+
+        ready_stocks = set()
+        missing_stocks = set()
+
+        for stock in stock_list:
+            if stock not in test_data:
+                missing_stocks.add(stock)
+                continue
+
+            stock_data_dict = test_data[stock]
+            if not isinstance(stock_data_dict, dict):
+                missing_stocks.add(stock)
+                continue
+
+            # 检查所有请求的表
+            all_tables_ready = True
+            for table in tables:
+                if table not in stock_data_dict:
+                    all_tables_ready = False
+                    break
+                df = stock_data_dict[table]
+                if not isinstance(df, pd.DataFrame) or df.empty:
+                    all_tables_ready = False
+                    break
+
+            if all_tables_ready:
+                ready_stocks.add(stock)
+            else:
+                missing_stocks.add(stock)
+
+        return ready_stocks, missing_stocks
+
+    def _get_tables_ready_status(self, stock: str, tables: List[str],
+                                  start_time: str, end_time: str) -> Dict[str, bool]:
+        """获取某只股票各表的就绪状态
+
+        Returns:
+            {table_name: is_ready}
+        """
+        status = {table: False for table in tables}
+        try:
+            test_data = self.xtdata.get_financial_data(
+                [stock], tables,
+                start_time=start_time, end_time=end_time
+            )
+            if not test_data or stock not in test_data:
+                return status
+
+            stock_data_dict = test_data[stock]
+            if not isinstance(stock_data_dict, dict):
+                return status
+
+            for table in tables:
+                if table in stock_data_dict:
+                    df = stock_data_dict[table]
+                    if isinstance(df, pd.DataFrame) and not df.empty:
+                        status[table] = True
+        except Exception:
+            pass
+        return status
+
+    def _download_batch(self, batch: List[str], tables: List[str],
+                       start_time: str, end_time: str,
+                       batch_idx: int, total_batches: int) -> Set[str]:
+        """下载一个批次的数据，返回成功下载的股票集合
+
+        策略:
+        1. 先检查哪些股票已有缓存（无需下载）
+        2. 对缺失的股票调用 download_financial_data2
+        3. 轮询等待新数据同步
+        4. 如果批次下载失败或超时，降级为单只下载
+        """
+        batch_desc = f"[{batch_idx}/{total_batches}]"
+
+        # 步骤1: 检查已有缓存
+        ready_before, missing_before = self._check_data_ready(
+            batch, tables, start_time, end_time
+        )
+
+        if not missing_before:
+            # 全部已有缓存
+            self.logger.info(f"{batch_desc} {len(batch)}只股票已有缓存，跳过下载")
+            return ready_before
+
+        # 显示准备下载的股票代码（最多显示5只，超出显示数量）
+        missing_list = sorted(list(missing_before))
+        if len(missing_list) <= 5:
+            stocks_str = ', '.join(missing_list)
+        else:
+            stocks_str = ', '.join(missing_list[:5]) + f' 等{len(missing_list)}只'
+
+        # 显示请求的表
+        tables_str = ', '.join(tables[:4])
+        if len(tables) > 4:
+            tables_str += f' 等{len(tables)}个表'
+
+        if ready_before:
+            ready_list = sorted(list(ready_before))
+            if len(ready_list) <= 3:
+                ready_str = f"缓存命中: {', '.join(ready_list)}"
+            else:
+                ready_str = f"缓存命中: {', '.join(ready_list[:3])} 等{len(ready_list)}只"
+            self.logger.info(f"{batch_desc} {ready_str}，准备下载: {stocks_str} (表: {tables_str})")
+        else:
+            self.logger.info(f"{batch_desc} 准备下载: {stocks_str} (表: {tables_str})")
+
+        # 步骤2: 下载缺失的股票
+        stocks_to_download = list(missing_before)
+        try:
+            self.xtdata.download_financial_data2(
+                stocks_to_download, tables,
+                start_time=start_time, end_time=end_time,
+            )
+        except Exception as e:
+            self.logger.warning(f"{batch_desc} 批次下载调用失败: {e}，将尝试单只下载")
+            # 直接降级到单只下载
+            return self._download_single_stocks(stocks_to_download, tables, start_time, end_time, batch_desc)
+
+        # 步骤3: 轮询等待新数据同步
+        max_wait = 30  # 减少最大等待时间
+        wait_interval = 0.3
+        waited = 0
+
+        while waited <= max_wait:
+            ready_now, missing_now = self._check_data_ready(
+                stocks_to_download, tables, start_time, end_time
+            )
+
+            if not missing_now:
+                # 全部下载成功
+                all_ready = ready_before | ready_now
+                if waited > 0:
+                    self.logger.info(f"{batch_desc} 下载完成，等待{waited:.1f}秒")
+                else:
+                    self.logger.info(f"{batch_desc} 下载完成")
+                return all_ready
+
+            # 检查是否有股票数据为空（QMT中无数据）- 只在超时前检查，用于日志记录
+            if waited >= 15:  # 等待15秒后检查
+                for stock in list(missing_now):
+                    try:
+                        test_data = self.xtdata.get_financial_data([stock], tables, start_time=start_time, end_time=end_time)
+                        if test_data and stock in test_data:
+                            all_empty = True
+                            for table in tables:
+                                if table in test_data[stock]:
+                                    df = test_data[stock][table]
+                                    if isinstance(df, pd.DataFrame) and not df.empty:
+                                        all_empty = False
+                                        break
+                            if all_empty:
+                                self.logger.warning(f"{batch_desc} {stock} QMT中数据为空（可能正在下载）")
+                    except Exception:
+                        pass
+
+            # 部分就绪，记录进度（每3秒或首次记录）
+            progress_interval = 3  # 每3秒记录一次进度
+            if waited == 0 and len(ready_now) > 0:
+                self.logger.info(f"{batch_desc} 立即可用: {len(ready_now)}/{len(stocks_to_download)}只")
+            elif waited > 0 and int(waited) % progress_interval == 0 and int(waited - wait_interval) % progress_interval != 0:
+                ready_count = len(ready_now)
+                total_count = len(stocks_to_download)
+                if ready_count < total_count:
+                    # 显示仍未就绪的股票及其表状态
+                    still_missing = sorted(list(missing_now))[:3]
+                    missing_details = []
+                    for stock in still_missing:
+                        table_status = self._get_tables_ready_status(stock, tables, start_time, end_time)
+                        ready_tables = [t for t, ready in table_status.items() if ready]
+                        if ready_tables:
+                            missing_details.append(f"{stock}({len(ready_tables)}/{len(tables)}表)")
+                        else:
+                            missing_details.append(f"{stock}(无)")
+                    missing_str = ', '.join(missing_details)
+                    if len(missing_now) > 3:
+                        missing_str += f' 等{len(missing_now)}只'
+                    self.logger.info(f"{batch_desc} 下载中... {ready_count}/{total_count}只就绪，已等待{waited:.1f}秒，未就绪: {missing_str}")
+
+            if waited < max_wait:
+                time.sleep(wait_interval)
+                waited += wait_interval
+            else:
+                break
+
+        # 步骤4: 超时，降级为单只下载剩余股票
+        if missing_now:
+            timeout_stocks = sorted(list(missing_now))[:5]
+            timeout_str = ', '.join(timeout_stocks)
+            if len(missing_now) > 5:
+                timeout_str += f' 等{len(missing_now)}只'
+            self.logger.warning(
+                f"{batch_desc} 批次下载超时，未就绪: {timeout_str}，降级为单只下载"
+            )
+            single_success = self._download_single_stocks(
+                list(missing_now), tables, start_time, end_time, batch_desc
+            )
+            return ready_before | ready_now | single_success
+        else:
+            return ready_before | ready_now
+
+    def _download_single_stocks(self, stock_list: List[str], tables: List[str],
+                                start_time: str, end_time: str, batch_desc: str) -> Set[str]:
+        """单只股票逐个下载，用于批次失败后的降级处理"""
+        success_stocks = set()
+        failed_stocks = []
+
+        # 显示单只降级的股票列表
+        stock_list_sorted = sorted(stock_list)
+        if len(stock_list_sorted) <= 5:
+            stocks_str = ', '.join(stock_list_sorted)
+        else:
+            stocks_str = ', '.join(stock_list_sorted[:5]) + f' 等{len(stock_list_sorted)}只'
+        self.logger.info(f"{batch_desc} 单只降级下载: {stocks_str}")
+
+        for i, stock in enumerate(stock_list, 1):
+            try:
+                # 单只下载
+                self.xtdata.download_financial_data2([stock], tables, start_time=start_time, end_time=end_time)
+
+                # 等待这只股票的数据就绪（最多10秒）
+                max_wait = 10
+                waited = 0
+                stock_ready = False
+                while waited <= max_wait:
+                    ready, missing = self._check_data_ready([stock], tables, start_time, end_time)
+                    if stock in ready:
+                        success_stocks.add(stock)
+                        stock_ready = True
+                        break
+                    if waited < max_wait:
+                        time.sleep(0.2)
+                        waited += 0.2
+                    else:
+                        break
+
+                if not stock_ready:
+                    failed_stocks.append(stock)
+                    self.logger.debug(f"{batch_desc} 单只下载超时: {stock}")
+
+            except Exception as e:
+                failed_stocks.append(stock)
+                self.logger.debug(f"{batch_desc} 单只下载失败 {stock}: {e}")
+
+        # 汇总结果
+        if success_stocks:
+            if failed_stocks:
+                self.logger.info(f"{batch_desc} 单只下载结果: 成功{len(success_stocks)}只，失败{len(failed_stocks)}只")
+                if len(failed_stocks) <= 3:
+                    self.logger.warning(f"{batch_desc} 下载失败: {', '.join(failed_stocks)}")
+            else:
+                self.logger.info(f"{batch_desc} 单只下载全部成功: {len(success_stocks)}只")
+
+        return success_stocks
+
     def download_financial_data(self, stock_list: List[str],
                                 table_list: Optional[List[str]] = None,
                                 start_time: str = '', end_time: str = '') -> None:
-        """下载财务数据到本地缓存
+        """下载财务数据到本地缓存（改进版，支持失败降级）
 
         Args:
             stock_list: 股票代码列表，如 ['000001.SZ', '600000.SH']
@@ -241,40 +754,50 @@ class QMTDataProcessor(DataProcessor):
         tables = table_list or self.FINANCIAL_TABLES
         total = len(stock_list)
 
+        start_ts = time.time()
+        all_success = set()
+
+        # 小批量处理，每批10只
+        batch_size = 10
+        total_batches = (total + batch_size - 1) // batch_size
+
+        for batch_start in range(0, total, batch_size):
+            batch_end = min(batch_start + batch_size, total)
+            batch = stock_list[batch_start:batch_end]
+            batch_idx = batch_start // batch_size + 1
+
+            try:
+                success = self._download_batch(batch, tables, start_time, end_time, batch_idx, total_batches)
+                all_success.update(success)
+            except Exception as e:
+                self.logger.warning(f"批次 {batch_idx} 处理失败: {e}")
+                continue
+
+        # 下载完成后，对所有传入的股票调用 get_financial_data 保存到缓存
+        # 注意：这里使用 stock_list 而不是 all_success，因为即使 _download_batch
+        # 认为某只股票已就绪（QMT中有数据），也可能需要保存到本地缓存
+        self.logger.info(f"正在将 {len(stock_list)} 只股票的数据保存到缓存...")
         try:
-            start_ts = time.time()
-            # 统一使用 download_financial_data2，避免单只下载的阻塞问题
-            # 小批量处理，每批10只，避免QMT超时
-            batch_size = 10
-            for batch_start in range(0, total, batch_size):
-                batch_end = min(batch_start + batch_size, total)
-                batch = stock_list[batch_start:batch_end]
-                self.logger.info(
-                    f"[ {batch_start + 1}~{batch_end} / {total} ] "
-                    f"正在下载财务数据 (表: {', '.join(tables)})..."
-                )
-                try:
-                    self.xtdata.download_financial_data2(
-                        batch, tables,
-                        start_time=start_time, end_time=end_time,
-                    )
-                    self.logger.info(
-                        f"[ {batch_start + 1}~{batch_end} / {total} ] "
-                        f"财务数据下载完成"
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"[ {batch_start + 1}~{batch_end} / {total} ] "
-                        f"下载失败: {e}，跳过本批次"
-                    )
-                    continue
-            elapsed = time.time() - start_ts
-            self.logger.info(
-                f"财务数据下载完成: {total} 只股票, {', '.join(tables)}, "
-                f"耗时 {elapsed:.1f}秒"
+            # 使用 announce_time 作为默认 report_type
+            self.get_financial_data(
+                stock_list, tables, start_time, end_time, report_type='announce_time'
             )
         except Exception as e:
-            self.logger.error(f"财务数据下载失败: {e}")
+            self.logger.warning(f"保存数据到缓存时出错: {e}")
+
+        elapsed = time.time() - start_ts
+        failed_count = total - len(all_success)
+
+        if failed_count == 0:
+            self.logger.info(
+                f"财务数据下载完成: {total} 只股票全部成功, "
+                f"耗时 {elapsed:.1f}秒"
+            )
+        else:
+            self.logger.warning(
+                f"财务数据下载完成: {len(all_success)}/{total} 只成功, "
+                f"{failed_count} 只失败, 耗时 {elapsed:.1f}秒"
+            )
 
     def _try_load_merged_financial_cache(self, stock_list: List[str],
                                           table_list: Optional[List[str]] = None,
@@ -377,7 +900,13 @@ class QMTDataProcessor(DataProcessor):
                                       table_list: Optional[List[str]] = None,
                                       start_time: str = '', end_time: str = '',
                                       report_type: str = 'announce_time') -> Dict[str, Any]:
-        """从QMT获取财务数据（原有逻辑提取）"""
+        """从QMT获取财务数据 - V2按年份分片缓存
+
+        优先使用按年份分片的新缓存格式:
+          .cache/QMTData/financial/{symbol}/{year}_{table}.parquet
+
+        向后兼容旧格式（合并缓存、逐只缓存）。
+        """
         if not self.xtdata:
             if self._fallback_to_simulated:
                 self.logger.warning("xtquant 未安装，返回空财务数据")
@@ -387,74 +916,73 @@ class QMTDataProcessor(DataProcessor):
         tables = table_list or self.FINANCIAL_TABLES
         namespace = 'QMTDataProcessor_Financial'
 
-        # 尝试从合并缓存加载（基于股票列表内容hash，支持子集匹配）
-        sorted_stocks = sorted(stock_list)
-        stocks_hash = hashlib.md5(','.join(sorted_stocks).encode()).hexdigest()[:12]
-        merged_cache_key = f"merged_{stocks_hash}_{start_time}_{end_time}_{report_type}"
+        req_years = self._parse_years_from_time_range(start_time, end_time)
 
-        # 1. 精确匹配：股票列表完全相同
-        merged_cached = cache_manager.disk_cache.get(namespace, merged_cache_key, 'parquet')
-        if merged_cached is not None and isinstance(merged_cached, pd.DataFrame) and not merged_cached.empty:
-            merged_cached = _parquet_to_merged_dict(merged_cached, mode='financial')
-            self.logger.info(f"从合并缓存(精确)加载财务数据: {len(merged_cached)} 只股票")
-            return merged_cached
-
-        # 2. 子集匹配：已有缓存包含请求的全部股票
-        request_set = set(sorted_stocks)
-        ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
-        if ns_dir.exists():
-            for cache_file in ns_dir.glob('merged_*.parquet'):
-                if cache_file.name == f"{merged_cache_key}.parquet":
-                    continue  # 已尝试精确匹配
-                try:
-                    candidate = pd.read_parquet(cache_file)
-                    if candidate is not None and isinstance(candidate, pd.DataFrame) and not candidate.empty:
-                        if '_stock_code' in candidate.columns:
-                            cached_stocks = set(candidate['_stock_code'].unique())
-                            if request_set.issubset(cached_stocks):
-                                candidate_dict = _parquet_to_merged_dict(candidate, mode='financial')
-                                # 过滤只保留请求的股票
-                                result_subset = {s: candidate_dict[s] for s in stock_list if s in candidate_dict}
-                                if len(result_subset) == len(stock_list):
-                                    self.logger.info(
-                                        f"从合并缓存(子集)加载财务数据: "
-                                        f"缓存{len(cached_stocks)}只, 请求{len(stock_list)}只"
-                                    )
-                                    return result_subset
-                except Exception:
-                    continue
-
-        # 逐只股票缓存（每只股票的每个表单独存为 parquet）
         result = {}
         cache_hits = 0
         download_hits = 0
         fail_count = 0
-        time_suffix = f"_{start_time}_{end_time}" if start_time or end_time else ""
         total = len(stock_list)
         phase_start = time.time()
 
-        self.logger.info(f"开始获取财务数据: {total} 只股票, 表: {', '.join(tables)}")
+        self.logger.info(f"开始获取财务数据: {total} 只股票, 表: {', '.join(tables)}, 请求年份={req_years or '全部'}")
 
         for i, stock in enumerate(stock_list, 1):
             stock_data = {}
-            all_cached = True
+            tables_to_download = []
+            missing_years_by_table = {}  # 记录每个表缺失的年份
 
-            # 逐表检查 parquet 缓存
             for table in tables:
-                cache_key = f"{stock}{time_suffix}_{table}_{report_type}"
-                cached = cache_manager.disk_cache.get(namespace, cache_key, 'parquet')
-                if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
-                    stock_data[table] = cached
-                else:
-                    # 尝试旧格式 pkl（向后兼容）
-                    cached_pkl = cache_manager.disk_cache.get(namespace, cache_key, 'pkl')
-                    if cached_pkl is not None and isinstance(cached_pkl, pd.DataFrame) and not cached_pkl.empty:
-                        stock_data[table] = cached_pkl
-                        cache_manager.disk_cache.put(namespace, cache_key, cached_pkl, 'parquet')
-                    else:
-                        all_cached = False
+                table_suffix = f"{table}_{report_type}"
 
-            if all_cached and stock_data:
+                if req_years:
+                    cached_years = cache_manager.index_manager.get_available_financial_years(stock, table_suffix)
+                    if not cached_years:
+                        cached_years = cache_manager.disk_cache.list_yearly_files(namespace, stock, table_suffix)
+
+                    missing_years = set(req_years) - set(cached_years)
+
+                    if not missing_years:
+                        df = cache_manager.disk_cache.get_yearly_range(namespace, stock, sorted(req_years), table_suffix)
+                        if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
+                            stock_data[table] = df
+                            continue
+
+                    if missing_years:
+                        missing_years_by_table[table] = sorted(missing_years)
+                    tables_to_download.append(table)
+                else:
+                    available_years = cache_manager.index_manager.get_available_financial_years(stock, table_suffix)
+                    if not available_years:
+                        available_years = cache_manager.disk_cache.list_yearly_files(namespace, stock, table_suffix)
+
+                    if available_years:
+                        df = cache_manager.disk_cache.get_yearly_range(namespace, stock, sorted(available_years), table_suffix)
+                        if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
+                            stock_data[table] = df
+                            continue
+
+                    best = self._find_best_financial_cache(stock, table, report_type, start_time, end_time)
+                    if best is not None:
+                        stock_data[table] = best[0]
+                        continue
+
+                    tables_to_download.append(table)
+
+            # 显示需要下载的详细信息
+            if tables_to_download and i <= 5:  # 只显示前5只股票的详细信息，避免日志过多
+                self.logger.info(f"[ {i} / {total} ] {stock} 需要下载:")
+                for table in tables_to_download:
+                    if table in missing_years_by_table:
+                        years = missing_years_by_table[table]
+                        years_str = ', '.join([str(y) for y in years[:5]])
+                        if len(years) > 5:
+                            years_str += f' 等{len(years)}年'
+                        self.logger.info(f"  - {table}: 缺失年份 {years_str}")
+                    else:
+                        self.logger.info(f"  - {table}: 无缓存")
+
+            if not tables_to_download and stock_data:
                 result[stock] = stock_data
                 cache_hits += 1
                 if i % 20 == 0 or i == total:
@@ -464,56 +992,164 @@ class QMTDataProcessor(DataProcessor):
                     )
                 continue
 
-            # 有缺失的表，重新下载该股票全部财务数据
-            try:
-                dl_start = time.time()
-                data = self.xtdata.get_financial_data(
-                    [stock], tables,
-                    start_time=start_time, end_time=end_time,
-                    report_type=report_type,
-                )
-                dl_elapsed = time.time() - dl_start
-                if data and stock in data and data[stock]:
-                    stock_new_data = data[stock]
-                    # 合并已缓存和新增数据
-                    stock_data.update(stock_new_data)
-                    result[stock] = stock_data
-                    # 逐表写入 parquet 缓存
-                    for table, df in stock_new_data.items():
-                        if isinstance(df, pd.DataFrame) and not df.empty:
-                            # QMT xtdata 返回的财务数据索引是 RangeIndex，
-                            # 需要将其转换为 DatetimeIndex 以便回测按日期查询
-                            df = self._normalize_qmt_financial_df(df, report_type)
-                            cache_key = f"{stock}{time_suffix}_{table}_{report_type}"
-                            cache_manager.disk_cache.put(namespace, cache_key, df, 'parquet')
-                download_hits += 1
-                self.logger.info(
-                    f"[ {i} / {total} ] {stock} 财务数据已下载 "
-                    f"({dl_elapsed:.1f}秒)"
-                )
-            except Exception as e:
-                fail_count += 1
-                # 下载失败但有部分缓存，仍使用缓存数据
-                if stock_data:
-                    result[stock] = stock_data
-                self.logger.warning(
-                    f"[ {i} / {total} ] {stock} 财务数据下载失败: {e}"
-                )
-                continue
+            if tables_to_download:
+                try:
+                    dl_start = time.time()
+                    data = self.xtdata.get_financial_data(
+                        [stock], tables_to_download,
+                        start_time=start_time, end_time=end_time,
+                        report_type=report_type,
+                    )
+                    dl_elapsed = time.time() - dl_start
+                    if data and stock in data and data[stock]:
+                        stock_new_data = data[stock]
+                        for table, df in stock_new_data.items():
+                            if isinstance(df, pd.DataFrame) and not df.empty:
+                                df = self._normalize_qmt_financial_df(df, report_type)
+                                stock_data[table] = df
 
-        # 全部下载完成后，写入合并缓存（转为 DataFrame 存 parquet）
+                                table_suffix = f"{table}_{report_type}"
+                                if isinstance(df.index, pd.DatetimeIndex) and not df.empty:
+                                    written = cache_manager.disk_cache.put_yearly_from_df(
+                                        namespace, stock, table_suffix, df
+                                    )
+                                    # 显示保存的文件信息
+                                    if written:
+                                        years_str = ', '.join([str(y) for y in sorted(written)[:5]])
+                                        if len(written) > 5:
+                                            years_str += f' 等{len(written)}个年份'
+                                        self.logger.debug(
+                                            f"  保存 {stock} {table}: {years_str} -> "
+                                            f"{stock}/{min(written)}_{table}_{report_type}.parquet ..."
+                                        )
+                                    for y in written:
+                                        cache_manager.index_manager.update_financial_index(stock, table_suffix, y)
+                                    cache_manager.index_manager.save_index()
+                                else:
+                                    time_suffix = f"_{start_time}_{end_time}" if start_time or end_time else ""
+                                    cache_key = f"{stock}{time_suffix}_{table}_{report_type}"
+                                    cache_manager.disk_cache.put(namespace, cache_key, df, 'parquet')
+                                    # 显示保存的文件信息
+                                    self.logger.debug(
+                                        f"  保存 {stock} {table}: "
+                                        f"{cache_key}.parquet ({len(df)} 行)"
+                                    )
+
+                        download_hits += 1
+                        # 显示下载的详细信息
+                        downloaded_tables = list(stock_new_data.keys())
+                        tables_info = []
+                        for table in downloaded_tables:
+                            if table in stock_new_data:
+                                df = stock_new_data[table]
+                                if isinstance(df, pd.DataFrame) and not df.empty:
+                                    # 获取年份范围
+                                    if isinstance(df.index, pd.DatetimeIndex):
+                                        years = sorted(df.index.year.unique())
+                                        years_str = f"{min(years)}~{max(years)}" if years else "N/A"
+                                    else:
+                                        years_str = f"{len(df)}行"
+                                    tables_info.append(f"{table}({years_str})")
+                                else:
+                                    tables_info.append(f"{table}(空)")
+
+                        tables_detail = ', '.join(tables_info[:4])
+                        if len(tables_info) > 4:
+                            tables_detail += f' 等{len(tables_info)}表'
+
+                        self.logger.info(
+                            f"[ {i} / {total} ] {stock} 已下载: {tables_detail} "
+                            f"({dl_elapsed:.1f}秒)"
+                        )
+                    else:
+                        download_hits += 1
+                except Exception as e:
+                    fail_count += 1
+                    if stock_data:
+                        result[stock] = stock_data
+                    self.logger.warning(
+                        f"[ {i} / {total} ] {stock} 财务数据下载失败: {e}"
+                    )
+                    continue
+
+            if stock_data:
+                result[stock] = stock_data
+
         phase_elapsed = time.time() - phase_start
         self.logger.info(
             f"财务数据获取完成: 缓存命中 {cache_hits}, 新下载 {download_hits}, "
             f"失败 {fail_count}, 耗时 {phase_elapsed:.1f}秒"
         )
-        if result:
-            merged_df = _merged_dict_to_parquet(result, mode='financial')
-            if merged_df is not None:
-                cache_manager.disk_cache.put(namespace, merged_cache_key, merged_df, 'parquet')
-                self.logger.info(f"财务数据合并缓存已创建: {len(result)} 只股票")
 
         return result
+
+    def _parse_years_from_time_range(self, start_time: str, end_time: str) -> List[int]:
+        """从时间范围解析出涉及的年份列表"""
+        if not start_time and not end_time:
+            return []
+        try:
+            start_year = pd.Timestamp(start_time).year if start_time else 2000
+            end_year = pd.Timestamp(end_time).year if end_time else pd.Timestamp.now().year
+            return list(range(start_year, end_year + 1))
+        except Exception:
+            return []
+
+    def _cleanup_redundant_merged_caches(self, stock_list: List[str],
+                                          start_time: str, end_time: str,
+                                          report_type: str,
+                                          best_key: str) -> int:
+        """清理被大范围合并缓存包含的小范围冗余合并缓存
+
+        合并缓存的key格式: merged_<hash>_<start>_<end>_<report_type>
+        当有了新的合并缓存后，删除股票列表相同但范围更小的旧缓存
+        """
+        namespace = 'QMTDataProcessor_Financial'
+        ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
+        if not ns_dir.exists():
+            return 0
+
+        # 计算当前股票列表的hash
+        sorted_stocks = sorted(stock_list)
+        stocks_hash = hashlib.md5(','.join(sorted_stocks).encode()).hexdigest()[:12]
+
+        req_start_ts = pd.Timestamp(start_time) if start_time else pd.Timestamp.min
+        req_end_ts = pd.Timestamp(end_time) if end_time else pd.Timestamp.max
+
+        deleted_count = 0
+        for cache_file in ns_dir.glob('merged_*.parquet'):
+            if cache_file.name == f"{best_key}.parquet":
+                continue
+
+            try:
+                # 解析文件名: merged_<hash>_<start>_<end>_<report_type>.parquet
+                parts = cache_file.stem.split('_')
+                if len(parts) < 5:
+                    continue
+
+                cache_hash = parts[1]
+                cache_start = parts[2]
+                cache_end = parts[3]
+                cache_report_type = '_'.join(parts[4:])
+
+                # 只处理相同股票列表和相同report_type的缓存
+                if cache_hash != stocks_hash or cache_report_type != report_type:
+                    continue
+
+                cache_start_ts = pd.Timestamp(cache_start)
+                cache_end_ts = pd.Timestamp(cache_end)
+
+                # 如果小范围缓存被大范围缓存完全包含，则删除
+                if cache_start_ts >= req_start_ts and cache_end_ts <= req_end_ts:
+                    cache_file.unlink()
+                    self.logger.debug(f"删除冗余合并缓存: {cache_file.name} (范围 {cache_start}~{cache_end} 被包含在 {start_time}~{end_time} 内)")
+                    deleted_count += 1
+            except Exception:
+                continue
+
+        if deleted_count > 0:
+            self.logger.info(f"清理了 {deleted_count} 个冗余合并缓存")
+
+        return deleted_count
 
     def _get_stock_list_cache_key(self, sector: str, date: Optional[str] = None) -> str:
         """生成成分股缓存key，按日期区分"""
@@ -661,6 +1297,40 @@ class QMTDataProcessor(DataProcessor):
         # 3. 回退到当前成分股（不缓存，避免错误数据污染）
         self.logger.warning(f"历史成分股获取失败，使用当前成分股: {sector}")
         return self.get_stock_list(sector)
+
+    def get_all_historical_stocks_in_range(self, sector: str = '沪深A股',
+                                            start_date: Optional[str] = None,
+                                            end_date: Optional[str] = None) -> List[str]:
+        """获取回测期间所有历史成分股的并集
+
+        指数成分股会定期调整（如沪深300每半年调整一次），
+        回测期间涉及的股票数量远超单次成分股数量。
+        此方法收集整个回测期间所有变更记录的成分股并集，
+        确保回测时能获取到所有曾经属于该指数的股票数据。
+
+        Args:
+            sector: 板块名称，如 '沪深300', '中证500'
+            start_date: 回测起始日期，格式 'YYYY-MM-DD'
+            end_date: 回测结束日期，格式 'YYYY-MM-DD'
+
+        Returns:
+            去重的股票代码列表
+        """
+        if self._index_constituent_mgr:
+            index_code = self._index_constituent_mgr.sector_to_index_code(sector)
+            if index_code:
+                result = self._index_constituent_mgr.get_all_constituent_stocks_in_range(
+                    index_code,
+                    start_date or datetime.now().strftime('%Y-%m-%d'),
+                    end_date or datetime.now().strftime('%Y-%m-%d')
+                )
+                if result:
+                    self.logger.info(f"回测期间 {sector} 全部历史成分股: 共 {len(result)} 只")
+                    return result
+
+        # 回退：只用起始日期的成分股
+        self.logger.warning(f"无法获取回测期间全部成分股，回退到起始日期成分股")
+        return self.get_historical_stock_list(sector, date=start_date)
 
     def get_sector_list(self) -> List[str]:
         """获取所有板块列表"""
@@ -907,8 +1577,8 @@ class QMTDataProcessor(DataProcessor):
     def get_dividend_data(self, stock_list: List[str]) -> Dict[str, pd.DataFrame]:
         """获取股票分红数据
 
-        逐只股票查询并缓存，避免中断后重复下载。
-        全部下载完成后合并为总缓存，提升后续加载速度。
+        使用单一合并缓存文件（dividend_all），避免产生大量单独文件。
+        加载时从合并缓存读取已有数据，仅下载缺失的股票，下载后增量合并回缓存。
 
         Args:
             stock_list: 股票代码列表
@@ -924,105 +1594,102 @@ class QMTDataProcessor(DataProcessor):
             raise RuntimeError("xtquant 未安装，请安装 xtquant 后重试")
 
         namespace = 'QMTDataProcessor_Financial'
+        merged_cache_key = 'dividend_all'
 
-        # 尝试从合并缓存加载（基于股票列表内容hash，支持子集匹配）
-        sorted_stocks = sorted(stock_list)
-        stocks_hash = hashlib.md5(','.join(sorted_stocks).encode()).hexdigest()[:12]
-        merged_cache_key = f"dividend_merged_{stocks_hash}"
+        result = {}
+        request_set = set(stock_list)
+
         merged_cached = cache_manager.disk_cache.get(namespace, merged_cache_key, 'parquet')
         if merged_cached is not None and isinstance(merged_cached, pd.DataFrame) and not merged_cached.empty:
-            merged_cached = _parquet_to_merged_dict(merged_cached, mode='dividend')
-            self.logger.info(f"从合并缓存(精确)加载分红数据: {len(merged_cached)} 只股票")
-            return merged_cached
+            cached_dict = _parquet_to_merged_dict(merged_cached, mode='dividend')
+            cached_stocks = set(cached_dict.keys())
+            for stock in stock_list:
+                if stock in cached_dict and isinstance(cached_dict[stock], pd.DataFrame) and not cached_dict[stock].empty:
+                    result[stock] = cached_dict[stock]
+            missing_stocks = sorted(request_set - cached_stocks)
+            self.logger.info(
+                f"从合并缓存加载分红数据: 缓存有 {len(cached_stocks)} 只, "
+                f"本次命中 {len(result)} 只, 缺失 {len(missing_stocks)} 只"
+            )
+        else:
+            missing_stocks = sorted(stock_list)
+            self.logger.info(f"无分红合并缓存, 需下载 {len(missing_stocks)} 只股票")
 
-        # 子集匹配
-        request_set = set(sorted_stocks)
-        ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
-        if ns_dir.exists():
-            for cache_file in ns_dir.glob('dividend_merged_*.parquet'):
-                if cache_file.name == f"{merged_cache_key}.parquet":
-                    continue
+        if missing_stocks:
+            download_hits = 0
+            fail_count = 0
+            total = len(missing_stocks)
+            phase_start = time.time()
+
+            for i, stock in enumerate(missing_stocks, 1):
                 try:
-                    candidate = pd.read_parquet(cache_file)
-                    if candidate is not None and isinstance(candidate, pd.DataFrame) and not candidate.empty:
-                        if '_stock_code' in candidate.columns:
-                            cached_stocks = set(candidate['_stock_code'].unique())
-                            if request_set.issubset(cached_stocks):
-                                candidate_dict = _parquet_to_merged_dict(candidate, mode='dividend')
-                                result_subset = {s: candidate_dict[s] for s in stock_list if s in candidate_dict}
-                                if len(result_subset) == len(stock_list):
-                                    self.logger.info(
-                                        f"从合并缓存(子集)加载分红数据: "
-                                        f"缓存{len(cached_stocks)}只, 请求{len(stock_list)}只"
-                                    )
-                                    return result_subset
-                except Exception:
-                    continue
-        result = {}
-        cache_hits = 0
-        download_hits = 0
-        fail_count = 0
-        total = len(stock_list)
-        phase_start = time.time()
-
-        self.logger.info(f"开始获取分红数据: {total} 只股票")
-
-        for i, stock in enumerate(stock_list, 1):
-            cache_key = f"{stock}_dividend"
-            cached = cache_manager.disk_cache.get(namespace, cache_key, 'parquet')
-            if cached is not None:
-                if isinstance(cached, pd.DataFrame) and not cached.empty:
-                    result[stock] = cached
-                cache_hits += 1
-                if i % 20 == 0 or i == total:
+                    dl_start = time.time()
+                    df = self.xtdata.get_divid_factors(stock)
+                    dl_elapsed = time.time() - dl_start
+                    if df is not None and not df.empty:
+                        df = self._normalize_qmt_dividend_df(df)
+                        result[stock] = df
+                    download_hits += 1
                     self.logger.info(
-                        f"[ {i} / {total} ] 分红数据进度: {cache_hits} 缓存, "
-                        f"{download_hits} 已下载, {fail_count} 失败"
+                        f"[ {i} / {total} ] {stock} 分红数据已下载 "
+                        f"({dl_elapsed:.1f}秒)"
                     )
-            else:
-                # 尝试旧格式 pkl（向后兼容）
-                cached_pkl = cache_manager.disk_cache.get(namespace, cache_key, 'pkl')
-                if cached_pkl is not None and isinstance(cached_pkl, pd.DataFrame) and not cached_pkl.empty:
-                    result[stock] = cached_pkl
-                    # 迁移为 parquet 格式
-                    cache_manager.disk_cache.put(namespace, cache_key, cached_pkl, 'parquet')
-                    cache_hits += 1
-                else:
-                    try:
-                        dl_start = time.time()
-                        df = self.xtdata.get_divid_factors(stock)
-                        dl_elapsed = time.time() - dl_start
-                        if df is not None and not df.empty:
-                            # QMT xtdata 返回的分红数据 time 列是毫秒时间戳，需要标准化
-                            df = self._normalize_qmt_dividend_df(df)
-                            result[stock] = df
-                            cache_manager.disk_cache.put(namespace, cache_key, df, 'parquet')
-                        download_hits += 1
-                        self.logger.info(
-                            f"[ {i} / {total} ] {stock} 分红数据已下载 "
-                            f"({dl_elapsed:.1f}秒)"
-                        )
-                    except Exception as e:
-                        fail_count += 1
-                        self.logger.warning(
-                            f"[ {i} / {total} ] {stock} 分红数据下载失败: {e}"
-                        )
-                        continue
+                except Exception as e:
+                    fail_count += 1
+                    self.logger.warning(
+                        f"[ {i} / {total} ] {stock} 分红数据下载失败: {e}"
+                    )
+                    continue
 
-        # 全部下载完成后，写入合并缓存（转为 DataFrame 存 parquet）
-        phase_elapsed = time.time() - phase_start
-        self.logger.info(
-            f"分红数据获取完成: 缓存命中 {cache_hits}, 新下载 {download_hits}, "
-            f"失败 {fail_count}, 耗时 {phase_elapsed:.1f}秒"
-        )
-        if result:
-            merged_df = _merged_dict_to_parquet(result, mode='dividend')
-            if merged_df is not None:
-                cache_manager.disk_cache.put(namespace, merged_cache_key, merged_df, 'parquet')
-                self.logger.info(f"分红数据合并缓存已创建: {len(result)} 只股票")
+            phase_elapsed = time.time() - phase_start
+            self.logger.info(
+                f"分红数据下载完成: 新下载 {download_hits}, "
+                f"失败 {fail_count}, 耗时 {phase_elapsed:.1f}秒"
+            )
+
+            if result:
+                merged_df = _merged_dict_to_parquet(result, mode='dividend')
+                if merged_df is not None:
+                    if merged_cached is not None and isinstance(merged_cached, pd.DataFrame) and not merged_cached.empty:
+                        try:
+                            merged_df = pd.concat([merged_cached, merged_df], ignore_index=True)
+                            merged_df = merged_df.drop_duplicates(subset=['_stock_code'], keep='last')
+                        except Exception:
+                            pass
+                    cache_manager.disk_cache.put(namespace, merged_cache_key, merged_df, 'parquet')
+                    self.logger.info(f"分红数据合并缓存已更新: {len(result)} 只股票")
+
+            self._cleanup_dividend_individual_cache(namespace)
 
         self.logger.info(f"分红数据加载完成: {len(result)}/{len(stock_list)} 只股票有数据")
         return result
+
+    def _cleanup_dividend_individual_cache(self, namespace: str):
+        """清理旧的单独分红缓存文件"""
+        ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
+        if not ns_dir.exists():
+            return
+        cleaned = 0
+        for f in ns_dir.glob('*_dividend.parquet'):
+            try:
+                f.unlink()
+                cleaned += 1
+            except Exception:
+                pass
+        for f in ns_dir.glob('*_dividend.pkl'):
+            try:
+                f.unlink()
+                cleaned += 1
+            except Exception:
+                pass
+        for f in ns_dir.glob('dividend_merged_*.parquet'):
+            try:
+                f.unlink()
+                cleaned += 1
+            except Exception:
+                pass
+        if cleaned > 0:
+            self.logger.info(f"已清理 {cleaned} 个冗余分红缓存文件")
 
     def get_instrument_detail(self, stock_code: str) -> Optional[Dict]:
         """获取合约基础信息

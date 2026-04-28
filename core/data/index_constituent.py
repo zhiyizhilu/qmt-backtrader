@@ -193,6 +193,55 @@ class IndexConstituentManager:
 
         self.logger.info(f"已更新 {csv_path.name}: 追加 {date}, {len(stock_list)} 只成分股")
 
+    def get_all_constituent_stocks_in_range(self, index_code: str,
+                                             start_date: str,
+                                             end_date: str) -> List[str]:
+        """获取指定时间范围内所有历史成分股的并集
+
+        指数成分股会定期调整，回测期间涉及的股票数量远超单次成分股数量。
+        此方法收集时间范围内所有变更记录的成分股并集，
+        确保回测时能获取到所有曾经属于该指数的股票数据。
+
+        Args:
+            index_code: 指数代码，如 '000300.SH'
+            start_date: 起始日期，格式 'YYYY-MM-DD'
+            end_date: 结束日期，格式 'YYYY-MM-DD'
+
+        Returns:
+            去重的股票代码列表
+        """
+        df = self._load_csv(index_code)
+        if df is None or df.empty:
+            return self.get_constituent_stocks(index_code, start_date)
+
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
+
+        # 取时间范围内的变更记录
+        mask = (df['date'] >= start_ts) & (df['date'] <= end_ts)
+        period_df = df[mask]
+
+        # 还需要取起始日期之前的最近一条记录
+        mask_before = df['date'] < start_ts
+        if mask_before.any():
+            before_row = df[mask_before].iloc[-1]
+            all_stocks = set(before_row['codes'])
+        else:
+            all_stocks = set()
+
+        # 加上时间范围内所有变更记录的成分股
+        change_count = 0
+        for _, row in period_df.iterrows():
+            codes = row['codes']
+            if isinstance(codes, list):
+                all_stocks.update(codes)
+                change_count += 1
+
+        self.logger.info(f"{index_code} 在 {start_date}~{end_date} 期间: "
+                         f"{change_count} 次成分股变更, 共涉及 {len(all_stocks)} 只股票")
+
+        return sorted(list(all_stocks))
+
     @classmethod
     def sector_to_index_code(cls, sector: str) -> Optional[str]:
         return cls.SECTOR_TO_INDEX.get(sector)

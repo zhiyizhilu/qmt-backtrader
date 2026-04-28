@@ -640,6 +640,9 @@ class BacktestReportWindow(QMainWindow):
                         connect_to_y = kline_data["high"]
                     elif y_pos < kline_data["low"]:
                         connect_to_y = kline_data["low"]
+                    else:
+                        # y_pos 在 high 和 low 之间，连接到 close 价格
+                        connect_to_y = kline_data.get("close", y_pos)
 
                     line_coords = (
                         [closest_kline_index, closest_kline_index],
@@ -944,10 +947,14 @@ class BacktestReportWindow(QMainWindow):
         if not visible_data or not hasattr(self, "candlestick_item"):
             return
 
-        kline_y_min, kline_y_max = (
-            min(d["low"] for d in visible_data),
-            max(d["high"] for d in visible_data),
-        )
+        # 过滤掉 NaN 值
+        valid_lows = [d["low"] for d in visible_data if not (d["low"] != d["low"])]  # NaN check
+        valid_highs = [d["high"] for d in visible_data if not (d["high"] != d["high"])]  # NaN check
+
+        if not valid_lows or not valid_highs:
+            return
+
+        kline_y_min, kline_y_max = min(valid_lows), max(valid_highs)
 
         marker_offset = getattr(self, "marker_arrow_offset", 0.0)
 

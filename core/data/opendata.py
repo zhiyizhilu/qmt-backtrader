@@ -493,160 +493,92 @@ class OpenDataProcessor(DataProcessor):
             return {}
         tables = table_list or self.FINANCIAL_TABLES
         namespace = 'OpenDataProcessor_Financial'
-        sorted_stocks = sorted(stock_list)
-        stocks_hash = hashlib.md5(','.join(sorted_stocks).encode()).hexdigest()[:12]
-        merged_cache_key = f"merged_{stocks_hash}_{start_time}_{end_time}"
-        merged_cached = cache_manager.disk_cache.get(namespace, merged_cache_key, 'parquet')
-        if merged_cached is not None and isinstance(merged_cached, pd.DataFrame) and not merged_cached.empty:
-            merged_cached = _parquet_to_merged_dict(merged_cached, mode='financial')
-            # 对合并缓存中的数据进行列名映射（原始数据→映射后数据）和过滤
-            for symbol in merged_cached:
-                for table in merged_cached[symbol]:
-                    df = merged_cached[symbol][table]
-                    if df is not None and not df.empty:
-                        df = self._convert_akshare_columns(df, table)
-                        df = self._set_datetime_index(df)
-                        # 根据请求时间范围过滤数据（处理新股情况）
-                        df = self._filter_cache_by_request(df, start_time, end_time)
-                        merged_cached[symbol][table] = df
-            self.logger.info(f"从合并缓存(精确)加载财务数据: {len(merged_cached)} 只股票")
-            return merged_cached
-        request_set = set(sorted_stocks)
-        ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
-        if ns_dir.exists():
-            for cache_file in ns_dir.glob('merged_*.parquet'):
-                if cache_file.name == f"{merged_cache_key}.parquet":
-                    continue
-                try:
-                    candidate = pd.read_parquet(cache_file)
-                    if candidate is not None and isinstance(candidate, pd.DataFrame) and not candidate.empty:
-                        if '_stock_code' in candidate.columns:
-                            cached_stocks = set(candidate['_stock_code'].unique())
-                            if request_set.issubset(cached_stocks):
-                                candidate_dict = _parquet_to_merged_dict(candidate, mode='financial')
-                                result_subset = {s: candidate_dict[s] for s in stock_list if s in candidate_dict}
-                                if len(result_subset) == len(stock_list):
-                                    # 对子集缓存中的数据进行列名映射（原始数据→映射后数据）和过滤
-                                    for symbol in result_subset:
-                                        for table in result_subset[symbol]:
-                                            df = result_subset[symbol][table]
-                                            if df is not None and not df.empty:
-                                                df = self._convert_akshare_columns(df, table)
-                                                df = self._set_datetime_index(df)
-                                                # 根据请求时间范围过滤数据（处理新股情况）
-                                                df = self._filter_cache_by_request(df, start_time, end_time)
-                                                result_subset[symbol][table] = df
-                                    self.logger.info(f"从合并缓存(子集)加载财务数据: 缓存{len(cached_stocks)}只, 请求{len(stock_list)}只")
-                                    return result_subset
-                except Exception:
-                    continue
+
         result = {}
         cache_hits = 0
+        download_hits = 0
         total = len(stock_list)
+        phase_start = time.time()
+
         for i, symbol in enumerate(stock_list, 1):
             ak_code = _convert_symbol_to_opendata_financial(symbol)
             symbol_data = {}
             need_download_tables = []
+
             for table in tables:
+                table_suffix = f"{table}_{report_type}"
+
+                available_years = cache_manager.index_manager.get_available_financial_years(symbol, table_suffix)
+                if not available_years:
+                    available_years = cache_manager.disk_cache.list_yearly_files(namespace, symbol, table_suffix)
+
+                if available_years:
+                    df = cache_manager.disk_cache.get_yearly_range(namespace, symbol, sorted(available_years), table_suffix)
+                    if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
+                        df = self._convert_akshare_columns(df, table)
+                        df = self._set_datetime_index(df)
+                        df = self._filter_cache_by_request(df, start_time, end_time)
+                        if not df.empty:
+                            symbol_data[table] = df
+                            continue
+
                 cache_key = f"{symbol}_{table}"
                 cached = cache_manager.disk_cache.get(namespace, cache_key, 'parquet')
                 if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
-                    # 检查缓存数据的时间范围是否满足需求
                     cached_with_index = self._set_datetime_index(cached.copy())
                     if not cached_with_index.empty and self._is_cache_sufficient(cached_with_index, start_time, end_time):
-                        # 缓存数据足够，过滤出实际需要的数据范围
                         filtered_cache = self._filter_cache_by_request(cached_with_index, start_time, end_time)
                         cached = self._convert_akshare_columns(filtered_cache, table)
                         cached = self._set_datetime_index(cached)
                         symbol_data[table] = cached
-                    else:
-                        # 缓存数据不足，需要增量更新
-                        # 传入已设置索引的缓存，避免 _get_cache_date_ranges 再次处理
-                        need_download_tables.append((table, cached_with_index))
-                else:
-                    # 没有缓存，需要完整下载
-                    need_download_tables.append((table, None))
-            
-            if not need_download_tables:
-                # 所有表都有足够缓存
+
+                        if isinstance(cached_with_index.index, pd.DatetimeIndex) and not cached_with_index.empty:
+                            written = cache_manager.disk_cache.put_yearly_from_df(namespace, symbol, table_suffix, cached_with_index)
+                            for y in written:
+                                cache_manager.index_manager.update_financial_index(symbol, table_suffix, y)
+                            cache_manager.index_manager.save_index()
+                        continue
+
+                need_download_tables.append(table)
+
+            if not need_download_tables and symbol_data:
                 result[symbol] = symbol_data
                 cache_hits += 1
                 continue
-            
-            downloaded_tables, failed_tables = [], []
-            for table, existing_cache in need_download_tables:
-                try:
-                    if existing_cache is not None and not existing_cache.empty:
-                        # 有缓存但不足，计算需要增量下载的范围
-                        cache_ranges = self._get_cache_date_ranges(existing_cache, start_time, end_time)
-                        all_incremental_data = []
-                        
-                        # 下载前面缺失的数据
-                        if cache_ranges['need_earlier']:
-                            earlier_start = cache_ranges['requested_start']
-                            earlier_end = cache_ranges['cache_start']
-                            self.logger.debug(f"{symbol} {table} 增量下载早期数据: {earlier_start} ~ {earlier_end}")
-                            earlier_df = self._get_akshare_financial_data_raw(
-                                ak_code, table, earlier_start, earlier_end
-                            )
-                            if earlier_df is not None and not earlier_df.empty:
-                                all_incremental_data.append(earlier_df)
-                        
-                        # 下载后面缺失的数据
-                        if cache_ranges['need_later']:
-                            later_start = cache_ranges['cache_end']
-                            later_end = cache_ranges['requested_end']
-                            self.logger.debug(f"{symbol} {table} 增量下载后期数据: {later_start} ~ {later_end}")
-                            later_df = self._get_akshare_financial_data_raw(
-                                ak_code, table, later_start, later_end
-                            )
-                            if later_df is not None and not later_df.empty:
-                                all_incremental_data.append(later_df)
-                        
-                        # 合并所有数据
-                        if all_incremental_data:
-                            raw_df = self._merge_financial_data(existing_cache, pd.concat(all_incremental_data, ignore_index=True))
-                        else:
-                            raw_df = existing_cache
-                    else:
-                        # 没有缓存，完整下载
+
+            if need_download_tables:
+                for table in need_download_tables:
+                    try:
                         raw_df = self._get_akshare_financial_data_raw(ak_code, table, start_time, end_time)
-                    
-                    if raw_df is not None and not raw_df.empty:
-                        # 保存原始数据到缓存
-                        cache_key = f"{symbol}_{table}"
-                        cache_manager.disk_cache.put(namespace, cache_key, raw_df, 'parquet')
-                        # 对原始数据进行列名映射（用于内存中使用）
-                        df = self._convert_akshare_columns(raw_df, table)
-                        df = self._set_datetime_index(df)
-                        symbol_data[table] = df
-                        downloaded_tables.append(table)
-                    else:
-                        failed_tables.append(table)
-                except Exception as e:
-                    self.logger.warning(f"下载 {symbol} {table} 失败: {e}")
-                    failed_tables.append(table)
-                    # 增量下载失败时，尝试使用已有的缓存数据（虽然不完整，但比没有好）
-                    if existing_cache is not None and not existing_cache.empty:
-                        try:
-                            fallback_df = self._convert_akshare_columns(existing_cache.copy(), table)
-                            fallback_df = self._set_datetime_index(fallback_df)
-                            fallback_df = self._filter_cache_by_request(fallback_df, start_time, end_time)
-                            if not fallback_df.empty:
-                                symbol_data[table] = fallback_df
-                                self.logger.info(f"{symbol} {table} 增量下载失败，使用已有缓存数据 (不完整)")
-                        except Exception:
-                            pass
+                        if raw_df is not None and not raw_df.empty:
+                            table_suffix = f"{table}_{report_type}"
+
+                            raw_with_index = self._set_datetime_index(raw_df.copy())
+                            if isinstance(raw_with_index.index, pd.DatetimeIndex) and not raw_with_index.empty:
+                                written = cache_manager.disk_cache.put_yearly_from_df(namespace, symbol, table_suffix, raw_with_index)
+                                for y in written:
+                                    cache_manager.index_manager.update_financial_index(symbol, table_suffix, y)
+                                cache_manager.index_manager.save_index()
+
+                            df = self._convert_akshare_columns(raw_df, table)
+                            df = self._set_datetime_index(df)
+                            symbol_data[table] = df
+                            download_hits += 1
+                    except Exception as e:
+                        self.logger.warning(f"下载 {symbol} {table} 失败: {e}")
+
             if symbol_data:
                 result[symbol] = symbol_data
-            if downloaded_tables and not failed_tables:
-                self.logger.info(f"[ {i} / {total} ] {symbol} 财务数据已下载 ({len(downloaded_tables)}表)")
-            elif downloaded_tables:
-                self.logger.info(f"[ {i} / {total} ] {symbol} 部分下载 ({len(downloaded_tables)}/{len(tables)}表)")
-        if result:
-            merged_df = _merged_dict_to_parquet(result, mode='financial')
-            if merged_df is not None:
-                cache_manager.disk_cache.put(namespace, merged_cache_key, merged_df, 'parquet')
+
+            if i % 20 == 0 or i == total:
+                self.logger.info(
+                    f"[ {i} / {total} ] 进度: {cache_hits} 缓存命中, {download_hits} 已下载"
+                )
+
+        phase_elapsed = time.time() - phase_start
+        self.logger.info(
+            f"OpenData财务数据获取完成: 缓存命中 {cache_hits}, 新下载 {download_hits}, 耗时 {phase_elapsed:.1f}秒"
+        )
         return result
 
     def _get_akshare_financial_data_raw(self, ak_code: str, table: str, start_time: str = '', end_time: str = '') -> Optional[pd.DataFrame]:
