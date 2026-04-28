@@ -140,6 +140,37 @@ class CacheIndexManager:
             entry = self._financial_index.get(symbol, {}).get(table, {})
             return list(entry.get('years', []))
 
+    def update_checked_financial_years(self, symbol: str, table: str, years: List[int]) -> None:
+        with self.lock:
+            if symbol not in self._financial_index:
+                self._financial_index[symbol] = {}
+            if table not in self._financial_index[symbol]:
+                self._financial_index[symbol][table] = {'years': [], 'checked_years': {}, 'last_update': ''}
+            if 'checked_years' not in self._financial_index[symbol][table]:
+                self._financial_index[symbol][table]['checked_years'] = {}
+            now = pd.Timestamp.now().strftime('%Y-%m-%dT%H:%M:%S')
+            for y in years:
+                self._financial_index[symbol][table]['checked_years'][str(y)] = now
+            self._financial_index[symbol][table]['last_update'] = now
+            self._dirty = True
+
+    def get_checked_financial_years(self, symbol: str, table: str, max_age_days: int = 7) -> List[int]:
+        with self.lock:
+            entry = self._financial_index.get(symbol, {}).get(table, {})
+            checked = entry.get('checked_years', {})
+            if not checked:
+                return []
+            now = pd.Timestamp.now()
+            valid_years = []
+            for year_str, check_time in checked.items():
+                try:
+                    check_dt = pd.Timestamp(check_time)
+                    if (now - check_dt).days < max_age_days:
+                        valid_years.append(int(year_str))
+                except Exception:
+                    continue
+            return valid_years
+
     def rebuild_index_from_disk(self, disk_cache: 'DiskCache') -> None:
         """从磁盘文件重建索引（用于索引损坏或首次迁移时）"""
         self.logger.info("开始从磁盘重建缓存索引...")
@@ -396,11 +427,18 @@ class DiskCache:
 
     def put_yearly_from_df(self, namespace: str, symbol: str,
                             suffix: str, df: pd.DataFrame,
-                            format_type: str = 'parquet') -> List[int]:
+                            format_type: str = 'parquet',
+                            only_years: Optional[List[int]] = None,
+                            skip_existing: bool = False) -> List[int]:
         """将一个DataFrame按年份拆分并存储
 
+        Args:
+            only_years: 如果指定，只保存这些年份的数据，跳过其他年份。
+                        为 None 时保存所有年份（默认行为）。
+            skip_existing: 如果为 True，跳过磁盘上已存在的年份文件，避免重复写入。
+
         Returns:
-            成功写入的年份列表
+            成功写入的年份列表（不含跳过的年份）
         """
         if df is None or not isinstance(df, pd.DataFrame) or df.empty:
             return []
@@ -410,6 +448,12 @@ class DiskCache:
 
         written_years = []
         for year in sorted(df.index.year.unique()):
+            if only_years is not None and year not in only_years:
+                continue
+            if skip_existing:
+                file_path = self._get_yearly_file_path(namespace, symbol, year, suffix, format_type)
+                if file_path.exists():
+                    continue
             if self.put_yearly(namespace, symbol, year, suffix, df, format_type):
                 written_years.append(year)
 

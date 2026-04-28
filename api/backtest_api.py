@@ -372,7 +372,8 @@ class BacktestAPI(BaseAPI):
                     available_years = cache_manager.index_manager.get_available_financial_years(stock, table_suffix)
                     if not available_years:
                         available_years = cache_manager.disk_cache.list_yearly_files(namespace, stock, table_suffix)
-                    missing_years = set(req_years) - set(available_years)
+                    checked_years = cache_manager.index_manager.get_checked_financial_years(stock, table_suffix)
+                    missing_years = set(req_years) - set(available_years) - set(checked_years)
                     if missing_years:
                         all_tables_cached = False
                         break

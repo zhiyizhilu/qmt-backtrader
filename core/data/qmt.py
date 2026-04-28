@@ -940,7 +940,8 @@ class QMTDataProcessor(DataProcessor):
                     if not cached_years:
                         cached_years = cache_manager.disk_cache.list_yearly_files(namespace, stock, table_suffix)
 
-                    missing_years = set(req_years) - set(cached_years)
+                    checked_years = cache_manager.index_manager.get_checked_financial_years(stock, table_suffix)
+                    missing_years = set(req_years) - set(cached_years) - set(checked_years)
 
                     if not missing_years:
                         df = cache_manager.disk_cache.get_yearly_range(namespace, stock, sorted(req_years), table_suffix)
@@ -1010,10 +1011,14 @@ class QMTDataProcessor(DataProcessor):
 
                                 table_suffix = f"{table}_{report_type}"
                                 if isinstance(df.index, pd.DatetimeIndex) and not df.empty:
+                                    save_years = None
+                                    if table in missing_years_by_table:
+                                        save_years = missing_years_by_table[table]
                                     written = cache_manager.disk_cache.put_yearly_from_df(
-                                        namespace, stock, table_suffix, df
+                                        namespace, stock, table_suffix, df,
+                                        only_years=save_years,
+                                        skip_existing=True,
                                     )
-                                    # 显示保存的文件信息
                                     if written:
                                         years_str = ', '.join([str(y) for y in sorted(written)[:5]])
                                         if len(written) > 5:
@@ -1024,26 +1029,50 @@ class QMTDataProcessor(DataProcessor):
                                         )
                                     for y in written:
                                         cache_manager.index_manager.update_financial_index(stock, table_suffix, y)
+
+                                    if req_years and table in missing_years_by_table:
+                                        empty_years = sorted(set(missing_years_by_table[table]) - set(written))
+                                        if empty_years:
+                                            cache_manager.index_manager.update_checked_financial_years(stock, table_suffix, empty_years)
+                                            if i <= 5:
+                                                self.logger.debug(
+                                                    f"  记录 {stock} {table} 已检查无数据年份: {empty_years}"
+                                                )
+
                                     cache_manager.index_manager.save_index()
                                 else:
                                     time_suffix = f"_{start_time}_{end_time}" if start_time or end_time else ""
                                     cache_key = f"{stock}{time_suffix}_{table}_{report_type}"
                                     cache_manager.disk_cache.put(namespace, cache_key, df, 'parquet')
-                                    # 显示保存的文件信息
                                     self.logger.debug(
                                         f"  保存 {stock} {table}: "
                                         f"{cache_key}.parquet ({len(df)} 行)"
                                     )
+                            else:
+                                table_suffix = f"{table}_{report_type}"
+                                if req_years and table in missing_years_by_table:
+                                    cache_manager.index_manager.update_checked_financial_years(
+                                        stock, table_suffix, missing_years_by_table[table]
+                                    )
+                                    cache_manager.index_manager.save_index()
+                    else:
+                        for table in tables_to_download:
+                            table_suffix = f"{table}_{report_type}"
+                            if req_years and table in missing_years_by_table:
+                                cache_manager.index_manager.update_checked_financial_years(
+                                    stock, table_suffix, missing_years_by_table[table]
+                                )
+                        cache_manager.index_manager.save_index()
 
-                        download_hits += 1
-                        # 显示下载的详细信息
-                        downloaded_tables = list(stock_new_data.keys())
+                    download_hits += 1
+                    # 显示下载的详细信息
+                    if data and stock in data and data[stock]:
+                        downloaded_tables = list(data[stock].keys())
                         tables_info = []
                         for table in downloaded_tables:
-                            if table in stock_new_data:
-                                df = stock_new_data[table]
+                            if table in data[stock]:
+                                df = data[stock][table]
                                 if isinstance(df, pd.DataFrame) and not df.empty:
-                                    # 获取年份范围
                                     if isinstance(df.index, pd.DatetimeIndex):
                                         years = sorted(df.index.year.unique())
                                         years_str = f"{min(years)}~{max(years)}" if years else "N/A"
@@ -1056,13 +1085,13 @@ class QMTDataProcessor(DataProcessor):
                         tables_detail = ', '.join(tables_info[:4])
                         if len(tables_info) > 4:
                             tables_detail += f' 等{len(tables_info)}表'
-
-                        self.logger.info(
-                            f"[ {i} / {total} ] {stock} 已下载: {tables_detail} "
-                            f"({dl_elapsed:.1f}秒)"
-                        )
                     else:
-                        download_hits += 1
+                        tables_detail = "无数据"
+
+                    self.logger.info(
+                        f"[ {i} / {total} ] {stock} 已下载: {tables_detail} "
+                        f"({dl_elapsed:.1f}秒)"
+                    )
                 except Exception as e:
                     fail_count += 1
                     if stock_data:
