@@ -1,7 +1,7 @@
 import datetime as dt_module
 from abc import abstractmethod
 from typing import Dict, List, Optional, Any
-from core.strategy_logic import StrategyLogic, BarData
+from core.strategy_logic import StrategyLogic, BarData, OrderInfo
 
 
 class StockSelectionStrategy(StrategyLogic):
@@ -15,6 +15,14 @@ class StockSelectionStrategy(StrategyLogic):
     2. select_stocks() 返回目标持仓列表
     3. rebalance_to() 自动计算买卖并执行调仓
 
+    调仓模式：
+    - 回测模式：同步执行，卖出和买入在同一 bar 内完成
+      （backtrader 会在下一根K线统一处理，先卖后买，资金自动衔接）
+    - 实盘/模拟盘模式：两阶段异步执行
+      阶段1：下单卖出，等待成交确认
+      阶段2：所有卖出确认后，根据实际可用资金下单买入
+      避免卖出未成交时资金不足导致买入失败
+
     使用方式：
         class MyStrategy(StockSelectionStrategy):
             params = (
@@ -23,7 +31,6 @@ class StockSelectionStrategy(StrategyLogic):
             )
 
             def select_stocks(self):
-                # 基于财务条件筛选
                 return self.screen_stocks(
                     lambda s: (self.get_financial_field(s, 'Pershareindex', 'eps_diluted') or 0) > 0.5,
                     top_n=self.params.max_stocks
@@ -42,12 +49,23 @@ class StockSelectionStrategy(StrategyLogic):
     REBALANCE_FREQ_MONTHLY = 'monthly'
     REBALANCE_FREQ_QUARTERLY = 'quarterly'
 
+    PHASE_IDLE = 0
+    PHASE_SELLING = 1
+    PHASE_BUYING = 2
+
     def __init__(self, executor=None, **kwargs):
         super().__init__(executor, **kwargs)
         self._current_holdings: Dict[str, int] = {}
         self._last_rebalance_date: Optional[dt_module.date] = None
         self._rebalance_count: int = 0
         self._selected_stocks: List[str] = []
+        self._rebalance_phase: int = self.PHASE_IDLE
+        self._pending_sell_symbols: set = set()
+        self._rebalance_target_stocks: List[str] = []
+
+    def _is_live_trading(self) -> bool:
+        from core.executor import QMTExecutor
+        return isinstance(self.executor, QMTExecutor)
 
     def on_bar(self, bar: BarData):
         """K线数据到达 - 执行选股调仓逻辑"""
@@ -55,19 +73,43 @@ class StockSelectionStrategy(StrategyLogic):
         if current_date is None:
             return
 
+        if self._rebalance_phase != self.PHASE_IDLE:
+            return
+
         if self.is_rebalance_day(current_date):
             self.log(f'[选股] 调仓日: {current_date}')
             self._execute_rebalance(current_date)
 
-    def is_rebalance_day(self, current_date: dt_module.date) -> bool:
-        """判断当前日期是否为调仓日
+    def on_order(self, order: OrderInfo):
+        """委托状态回调 - 实盘两阶段调仓的核心驱动
 
-        Args:
-            current_date: 当前日期
-
-        Returns:
-            是否为调仓日
+        在实盘模式下，当卖出委托完成/失败后，检查是否所有卖出都已确认，
+        若是则进入买入阶段。
         """
+        super().on_order(order)
+
+        if self._rebalance_phase != self.PHASE_SELLING:
+            return
+
+        if order.symbol not in self._pending_sell_symbols:
+            return
+
+        if order.is_active:
+            return
+
+        self._pending_sell_symbols.discard(order.symbol)
+
+        if order.is_completed:
+            self.log(f'再平衡卖出确认: {order.symbol}, 成交量: {order.executed_volume}')
+        else:
+            self.log(f'再平衡卖出未成交: {order.symbol}, 状态: {order.status}')
+
+        if not self._pending_sell_symbols:
+            self.log('所有卖出订单已确认，进入买入阶段')
+            self._rebalance_buy_phase(self._rebalance_target_stocks)
+
+    def is_rebalance_day(self, current_date: dt_module.date) -> bool:
+        """判断当前日期是否为调仓日"""
         freq = getattr(self.params, 'rebalance_freq', self.REBALANCE_FREQ_MONTHLY)
 
         if self._last_rebalance_date is None:
@@ -122,10 +164,12 @@ class StockSelectionStrategy(StrategyLogic):
         self.rebalance_to(target_stocks)
 
     def rebalance_to(self, target_stocks: List[str]):
-        """调仓到目标持仓
+        """调仓到目标持仓 - 等权重再平衡
 
-        自动计算需要卖出和买入的标的，等权重分配资金。
-        跳过当前无数据（价格为None）的标的，避免对NaN数据执行交易。
+        回测模式：同步执行卖出和买入（backtrader 统一在下一根K线处理）
+        实盘模式：两阶段异步执行
+          阶段1：下单卖出，通过 on_order 回调等待成交确认
+          阶段2：所有卖出确认后，根据实际可用资金下单买入
 
         Args:
             target_stocks: 目标持仓股票列表
@@ -134,8 +178,10 @@ class StockSelectionStrategy(StrategyLogic):
         target_symbols = set(target_stocks)
 
         sell_symbols = current_symbols - target_symbols
-        buy_symbols = target_symbols - current_symbols
         hold_symbols = current_symbols & target_symbols
+
+        all_sell_symbols = sell_symbols | hold_symbols
+        has_sells = False
 
         for symbol in sell_symbols:
             pos_size = self._current_holdings.get(symbol, 0)
@@ -143,22 +189,44 @@ class StockSelectionStrategy(StrategyLogic):
                 price = self.get_current_price(symbol)
                 if price and price > 0:
                     self.sell(symbol, price, pos_size)
-                    self.log(f'调仓卖出: {symbol}, 数量: {pos_size}, 价格: {price:.2f}')
+                    self.log(f'调仓卖出(清仓): {symbol}, 数量: {pos_size}, 价格: {price:.2f}')
+                    has_sells = True
             del self._current_holdings[symbol]
 
         for symbol in hold_symbols:
             pos_size = self._current_holdings.get(symbol, 0)
             if pos_size > 0:
-                del self._current_holdings[symbol]
+                price = self.get_current_price(symbol)
+                if price and price > 0:
+                    self.sell(symbol, price, pos_size)
+                    self.log(f'调仓卖出(再平衡): {symbol}, 数量: {pos_size}, 价格: {price:.2f}')
+                    has_sells = True
+            del self._current_holdings[symbol]
+
+        if self._is_live_trading() and has_sells:
+            self._rebalance_phase = self.PHASE_SELLING
+            self._pending_sell_symbols = all_sell_symbols.copy()
+            self._rebalance_target_stocks = list(target_stocks)
+            self.log(f'再平衡阶段1: 等待 {len(all_sell_symbols)} 只股票卖出确认')
+        else:
+            self._rebalance_buy_phase(target_stocks)
+
+    def _rebalance_buy_phase(self, target_stocks: List[str]):
+        """调仓买入阶段 - 根据实际可用资金等权买入
+
+        在实盘模式下，此时所有卖出已确认成交，get_cash() 返回的资金
+        已包含卖出回款，可以安全地用于买入计算。
+        """
+        if self._is_live_trading():
+            self._sync_holdings_from_executor()
 
         cash = self.get_cash()
         position_ratio = getattr(self.params, 'position_ratio', 0.95)
         available_cash = cash * position_ratio
 
-        # 过滤掉当前无数据的股票（价格为None表示该日期尚无实际行情）
         tradeable_symbols = []
         skipped_symbols = []
-        for symbol in buy_symbols | hold_symbols:
+        for symbol in target_stocks:
             price = self.get_current_price(symbol)
             if price is not None and price > 0:
                 tradeable_symbols.append(symbol)
@@ -169,6 +237,7 @@ class StockSelectionStrategy(StrategyLogic):
             self.log(f'调仓跳过无数据股票: {skipped_symbols}')
 
         if not tradeable_symbols:
+            self._rebalance_phase = self.PHASE_IDLE
             return
 
         per_stock_cash = available_cash / len(tradeable_symbols)
@@ -181,6 +250,23 @@ class StockSelectionStrategy(StrategyLogic):
                     self.buy(symbol, price, volume)
                     self._current_holdings[symbol] = volume
                     self.log(f'调仓买入: {symbol}, 数量: {volume}, 价格: {price:.2f}')
+
+        self._rebalance_phase = self.PHASE_IDLE
+
+    def _sync_holdings_from_executor(self):
+        """从执行器同步真实持仓到 _current_holdings
+
+        实盘/模拟盘中，订单可能部分成交或未成交，
+        内部持仓记录可能与实际不一致，需要从券商端同步。
+        """
+        synced = {}
+        for symbol in list(self._current_holdings.keys()):
+            real_size = self.get_position_size(symbol)
+            if real_size > 0:
+                synced[symbol] = real_size
+                if real_size != self._current_holdings.get(symbol, 0):
+                    self.log(f'持仓同步: {symbol} 内部={self._current_holdings.get(symbol, 0)}, 实际={real_size}')
+        self._current_holdings = synced
 
     def _sell_all(self):
         """卖出所有持仓"""

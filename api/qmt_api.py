@@ -7,7 +7,7 @@ from api.base_api import BaseAPI
 from core.executor import QMTExecutor
 from core.data_adapter import LiveDataAdapter
 from core.data import QMTDataProcessor
-from core.strategy_logic import StrategyLogic, BarData
+from core.strategy_logic import StrategyLogic, BarData, OrderInfo, TradeInfo
 
 
 class QMTTrader:
@@ -201,9 +201,11 @@ class QMTAPI(BaseAPI):
 
                 def on_stock_order(self, order):
                     self.api.logger.info(f"收到委托主推: {order.stock_code} {order.order_status}")
+                    self.api._on_qmt_order(order)
 
                 def on_stock_trade(self, trade):
                     self.api.logger.info(f"收到成交主推: {trade.stock_code} {trade.traded_volume}@{trade.traded_price}")
+                    self.api._on_qmt_trade(trade)
 
             self.callback = MyXtQuantTraderCallback(self)
             self.xttrader.register_callback(self.callback)
@@ -244,6 +246,113 @@ class QMTAPI(BaseAPI):
         """添加策略 - 实例化StrategyLogic，注入QMT执行器"""
         executor = QMTExecutor(self.trader)
         self.strategy = strategy_logic_class(executor=executor, **kwargs)
+
+    def _on_qmt_order(self, qmt_order):
+        """将QMT委托主推桥接到策略的 on_order 回调
+
+        QMT委托状态映射到统一的 OrderInfo 状态：
+        - MARGIN_CALL / UNKNOWN / INIT / SUBMITTED / ACCEPTED → 活跃状态
+        - FILLED → 已完成
+        - CANCELED / PARTIAL_CANCEL → 已撤单
+        - REJECTED → 已拒绝
+        """
+        if not self.strategy:
+            return
+
+        try:
+            from xtquant import xtconstant
+
+            status_raw = getattr(qmt_order, 'order_status', None)
+            status = self._map_qmt_order_status(status_raw)
+
+            direction = 'buy' if getattr(qmt_order, 'order_side', '') == xtconstant.STOCK_BUY else 'sell'
+
+            order_info = OrderInfo(
+                order_id=str(getattr(qmt_order, 'order_id', '')),
+                symbol=getattr(qmt_order, 'stock_code', ''),
+                direction=direction,
+                price=float(getattr(qmt_order, 'price', 0)),
+                volume=int(getattr(qmt_order, 'order_volume', 0)),
+                status=status,
+                executed_volume=int(getattr(qmt_order, 'traded_volume', 0)),
+                executed_price=float(getattr(qmt_order, 'traded_price', 0)),
+            )
+
+            self.strategy.on_order(order_info)
+        except Exception as e:
+            self.logger.error(f'桥接委托回调失败: {e}')
+
+    def _on_qmt_trade(self, qmt_trade):
+        """将QMT成交主推桥接到策略的 on_trade 回调"""
+        if not self.strategy:
+            return
+
+        try:
+            from xtquant import xtconstant
+
+            direction = 'buy' if getattr(qmt_trade, 'order_side', '') == xtconstant.STOCK_BUY else 'sell'
+
+            trade_info = TradeInfo(
+                trade_id=str(getattr(qmt_trade, 'traded_id', '')),
+                order_id=str(getattr(qmt_trade, 'order_id', '')),
+                symbol=getattr(qmt_trade, 'stock_code', ''),
+                direction=direction,
+                price=float(getattr(qmt_trade, 'traded_price', 0)),
+                volume=int(getattr(qmt_trade, 'traded_volume', 0)),
+            )
+
+            self.strategy.on_trade(trade_info)
+        except Exception as e:
+            self.logger.error(f'桥接成交回调失败: {e}')
+
+    @staticmethod
+    def _map_qmt_order_status(status_raw) -> str:
+        """将QMT订单状态映射到 OrderInfo 统一状态
+
+        QMT xtconstant 中的订单状态值：
+        - MARGIN_CALL, UNKNOWN, INIT, SUBMITTED, ACCEPTED → 活跃
+        - FILLED → 完成
+        - CANCELED, PARTIAL_CANCEL → 撤单
+        - REJECTED → 拒绝
+        """
+        try:
+            from xtquant import xtconstant
+
+            active_statuses = {
+                xtconstant.ORDER_MARGIN_CALL,
+                xtconstant.ORDER_UNKNOWN,
+                xtconstant.ORDER_INIT,
+                xtconstant.ORDER_SUBMITTED,
+                xtconstant.ORDER_ACCEPTED,
+            }
+            completed_statuses = {xtconstant.ORDER_FILLED}
+            canceled_statuses = {
+                xtconstant.ORDER_CANCELED,
+                xtconstant.ORDER_PARTIAL_CANCEL,
+            }
+            rejected_statuses = {xtconstant.ORDER_REJECTED}
+
+            if status_raw in active_statuses:
+                return OrderInfo.STATUS_ACCEPTED
+            elif status_raw in completed_statuses:
+                return OrderInfo.STATUS_COMPLETED
+            elif status_raw in canceled_statuses:
+                return OrderInfo.STATUS_CANCELED
+            elif status_raw in rejected_statuses:
+                return OrderInfo.STATUS_REJECTED
+        except (ImportError, Exception):
+            pass
+
+        if isinstance(status_raw, str):
+            status_lower = status_raw.lower()
+            if status_lower in ('filled',):
+                return OrderInfo.STATUS_COMPLETED
+            elif status_lower in ('canceled', 'cancelled', 'partial_cancel'):
+                return OrderInfo.STATUS_CANCELED
+            elif status_lower in ('rejected',):
+                return OrderInfo.STATUS_REJECTED
+
+        return OrderInfo.STATUS_SUBMITTED
 
     def _load_history_data(self) -> LiveDataAdapter:
         """加载历史数据到数据适配器"""
