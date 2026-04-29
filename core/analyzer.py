@@ -161,6 +161,19 @@ class PerformanceAnalyzer:
 
             positions[order_info.symbol] = new_pos
 
+            memo = ""
+            is_buy = direction == "0"
+            if is_buy:
+                if offset == "0":
+                    memo = "建仓" if current_pos <= 0 else "加仓"
+                else:
+                    memo = "平仓"
+            else:
+                if offset == "1":
+                    memo = "清仓" if new_pos == 0 else "减仓"
+                else:
+                    memo = "空头建仓"
+
             trade_datetime = getattr(order_info, 'datetime', None)
             pnl_val = 0.0
             fee_val = getattr(order_info, 'commission', 0.0)
@@ -186,7 +199,7 @@ class PerformanceAnalyzer:
                 trade_price=exec_price,
                 fee=fee_val,
                 pnl=pnl_val,
-                memo="",
+                memo=memo,
             )
             trades.append(trade)
 

@@ -122,6 +122,37 @@ class CacheIndexManager:
             entry = self._market_index.get(symbol, {}).get(period, {})
             return list(entry.get('years', []))
 
+    def update_checked_market_years(self, symbol: str, period: str, years: List[int]) -> None:
+        with self.lock:
+            if symbol not in self._market_index:
+                self._market_index[symbol] = {}
+            if period not in self._market_index[symbol]:
+                self._market_index[symbol][period] = {'years': [], 'checked_years': {}, 'last_update': ''}
+            if 'checked_years' not in self._market_index[symbol][period]:
+                self._market_index[symbol][period]['checked_years'] = {}
+            now = pd.Timestamp.now().strftime('%Y-%m-%dT%H:%M:%S')
+            for y in years:
+                self._market_index[symbol][period]['checked_years'][str(y)] = now
+            self._market_index[symbol][period]['last_update'] = now
+            self._dirty = True
+
+    def get_checked_market_years(self, symbol: str, period: str, max_age_days: int = 30) -> List[int]:
+        with self.lock:
+            entry = self._market_index.get(symbol, {}).get(period, {})
+            checked = entry.get('checked_years', {})
+            if not checked:
+                return []
+            now = pd.Timestamp.now()
+            valid_years = []
+            for year_str, check_time in checked.items():
+                try:
+                    check_dt = pd.Timestamp(check_time)
+                    if (now - check_dt).days < max_age_days:
+                        valid_years.append(int(year_str))
+                except Exception:
+                    continue
+            return valid_years
+
     def update_financial_index(self, symbol: str, table: str, year: int) -> None:
         with self.lock:
             if symbol not in self._financial_index:
@@ -1074,6 +1105,9 @@ class SmartCacheManager:
         cached_years = set(available_years) & set(req_years)
         missing_years = set(req_years) - cached_years
 
+        checked_years = set(self.index_manager.get_checked_market_years(symbol, period))
+        truly_missing = missing_years - checked_years
+
         cached_frames = []
         if cached_years:
             df = self.disk_cache.get_yearly_range(namespace, symbol, sorted(cached_years), period)
@@ -1081,32 +1115,52 @@ class SmartCacheManager:
                 cached_frames.append(df)
                 self.stats['yearly_hits'] += 1
 
-        if not missing_years:
+        if not truly_missing:
             merged = self.disk_cache.get_yearly_range(namespace, symbol, sorted(cached_years), period)
             if merged is not None and not merged.empty:
                 if isinstance(merged.index, pd.DatetimeIndex):
                     disk_start = merged.index.min().strftime('%Y-%m-%d')
                     disk_end = merged.index.max().strftime('%Y-%m-%d')
-                    if disk_start <= req_start and disk_end >= req_end:
+                    if disk_end >= req_end:
                         result = self._filter_by_date(merged, req_start, req_end)
                         self.mem_cache.put(mem_key, result)
                         self.stats['disk_hits'] += 1
                         self.stats['total_load_time_ms'] += (time.time() - start_time) * 1000
                         return result
-
-                missing_years = set(req_years)
+                    last_cached_year = merged.index.max().year
+                    truly_missing = set(y for y in req_years if y > last_cached_year)
+                    truly_missing -= checked_years
+                    if not truly_missing:
+                        truly_missing = {max(req_years)} - checked_years
+                        if not truly_missing:
+                            result = self._filter_by_date(merged, req_start, req_end)
+                            self.mem_cache.put(mem_key, result)
+                            self.stats['disk_hits'] += 1
+                            self.stats['total_load_time_ms'] += (time.time() - start_time) * 1000
+                            return result
+                    self.logger.info(
+                        f"[{namespace}] {symbol} 缓存未覆盖结束日期: "
+                        f"缓存截止={disk_end}, 请求截止={req_end}, 增量获取年份={sorted(truly_missing)}"
+                    )
+                else:
+                    truly_missing = set(req_years)
+                    cached_frames = []
+                    self.logger.info(f"[{namespace}] {symbol} 缓存索引非时间类型，重新获取: {sorted(truly_missing)}")
+            else:
+                truly_missing = set(req_years)
                 cached_frames = []
-                self.logger.info(f"[{namespace}] {symbol} 缓存年份不完整，重新获取: {sorted(missing_years)}")
+                self.logger.info(f"[{namespace}] {symbol} 缓存数据为空，重新获取: {sorted(truly_missing)}")
 
-        if missing_years:
+        if truly_missing:
             self.stats['incremental_merges'] += 1
+            actual_cached = sorted(set(req_years) - truly_missing)
             self.logger.info(
                 f"[{namespace}] {symbol} 行情增量更新: "
-                f"已有年份={sorted(cached_years)}, 缺失年份={sorted(missing_years)}"
+                f"已有年份={actual_cached}, 缺失年份={sorted(truly_missing)}"
             )
 
-            min_missing = min(missing_years)
-            max_missing = max(missing_years)
+            min_missing = min(truly_missing)
+            max_missing = max(truly_missing)
 
             inc_start = req_start if min_missing == min(req_years) else f"{min_missing}-01-01"
             inc_end = req_end if max_missing == max(req_years) else f"{max_missing}-12-31"
@@ -1125,6 +1179,13 @@ class SmartCacheManager:
                         self.index_manager.update_market_index(symbol, period, y)
                     self.index_manager.save_index()
                     cached_frames.append(new_data)
+                    fetched_years_with_data = set(new_data.index.year.unique()) if isinstance(new_data.index, pd.DatetimeIndex) else set()
+                    no_data_years = truly_missing - fetched_years_with_data
+                else:
+                    no_data_years = truly_missing
+                if no_data_years:
+                    self.index_manager.update_checked_market_years(symbol, period, sorted(no_data_years))
+                    self.index_manager.save_index()
             except Exception as e:
                 self.logger.warning(f"[{namespace}] {symbol} 增量获取失败: {e}")
 

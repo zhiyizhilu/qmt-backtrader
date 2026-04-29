@@ -344,38 +344,80 @@ class BacktestReportWindow(QMainWindow):
 
         y_adapter_func(view_box, x_min, x_max)
 
+    BENCHMARK_NAME_MAP = {
+        "000300.SH": "沪深300",
+        "000016.SH": "上证50",
+        "000905.SH": "中证500",
+        "000852.SH": "中证1000",
+        "000001.SH": "上证指数",
+        "399001.SZ": "深证成指",
+        "399006.SZ": "创业板指",
+    }
+
+    def _convert_benchmark_to_klines(self, benchmark_df):
+        klines = []
+        for dt, row in benchmark_df.iterrows():
+            if not isinstance(dt, pd.Timestamp):
+                dt = pd.Timestamp(dt)
+            bar_dt = dt.to_pydatetime()
+            if bar_dt.hour == 0 and bar_dt.minute == 0:
+                bar_dt = bar_dt.replace(hour=14, minute=50)
+            kline = {
+                "datetime": bar_dt,
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": float(row.get("volume", 0)),
+            }
+            klines.append(kline)
+        return klines
+
     def _create_kline_chart_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        required_params = {
-            "instrument_id": self.result.strategy_params.get("instrument_id"),
-            "exchange": self.result.strategy_params.get("exchange"),
-            "kline_style": self.result.strategy_params.get("kline_style"),
-        }
-        missing_params = [name for name, value in required_params.items() if not value]
+        use_benchmark_klines = (
+            len(self.result.instruments_data) > 1
+            and self.result.benchmark_df is not None
+            and not self.result.benchmark_df.empty
+            and all(col in self.result.benchmark_df.columns for col in ["open", "high", "low", "close"])
+        )
 
-        if missing_params:
-            missing_str = "、".join(missing_params)
-            label = QLabel(f"无法生成K线图，请在回测策略参数中提供：{missing_str}")
-            label.setAlignment(Qt.AlignCenter)
-            label.setStyleSheet(
-                "font-size: 18px; color: #d14545; font-weight: bold; margin: 20px;"
-            )
-            layout.addWidget(label)
-            return tab
+        if use_benchmark_klines:
+            klines_full = self._convert_benchmark_to_klines(self.result.benchmark_df)
+            benchmark_symbol = self.result.benchmark_symbol or "000300.SH"
+            kline_title = f"K线图 - {self.BENCHMARK_NAME_MAP.get(benchmark_symbol, benchmark_symbol)}"
+        else:
+            required_params = {
+                "instrument_id": self.result.strategy_params.get("instrument_id"),
+                "exchange": self.result.strategy_params.get("exchange"),
+                "kline_style": self.result.strategy_params.get("kline_style"),
+            }
+            missing_params = [name for name, value in required_params.items() if not value]
 
-        if not hasattr(self.result, "klines") or not self.result.klines:
-            layout.addWidget(
-                QLabel(
-                    "无K线数据，无法生成图表。",
-                    alignment=Qt.AlignCenter,
-                    styleSheet="QLabel { font-size: 28px; font-weight: bold; }",
+            if missing_params:
+                missing_str = "、".join(missing_params)
+                label = QLabel(f"无法生成K线图，请在回测策略参数中提供：{missing_str}")
+                label.setAlignment(Qt.AlignCenter)
+                label.setStyleSheet(
+                    "font-size: 18px; color: #d14545; font-weight: bold; margin: 20px;"
                 )
-            )
-            return tab
+                layout.addWidget(label)
+                return tab
 
-        klines_full = self.result.klines[10:]
+            if not hasattr(self.result, "klines") or not self.result.klines:
+                layout.addWidget(
+                    QLabel(
+                        "无K线数据，无法生成图表。",
+                        alignment=Qt.AlignCenter,
+                        styleSheet="QLabel { font-size: 28px; font-weight: bold; }",
+                    )
+                )
+                return tab
+
+            klines_full = self.result.klines[10:]
+            kline_title = "K线图"
         if not klines_full:
             label = QLabel("K线数据量不足。", alignment=Qt.AlignCenter)
             label.setStyleSheet("QLabel { font-size: 28px; font-weight: bold; }")
@@ -417,7 +459,7 @@ class BacktestReportWindow(QMainWindow):
         plot_widget.setViewportUpdateMode(QGraphicsView.BoundingRectViewportUpdate)
         plot_widget.setCacheMode(QGraphicsView.CacheBackground)
         plot_widget.setBackground("#f7f7f7")
-        plot_widget.setTitle("K线图", color="k", size="16pt", bold=True)
+        plot_widget.setTitle(kline_title, color="k", size="16pt", bold=True)
         plot_widget.showGrid(x=True, y=True, alpha=0.3)
         plot_widget.getPlotItem().layout.setContentsMargins(10, 25, 10, 10)
 
@@ -1774,16 +1816,7 @@ class BacktestReportWindow(QMainWindow):
             benchmark_df = benchmark_df[benchmark_df.index >= trade_start_dt].copy()
         benchmark_symbol = self.result.benchmark_symbol or "000300.SH"
 
-        benchmark_name_map = {
-            "000300.SH": "沪深300",
-            "000016.SH": "上证50",
-            "000905.SH": "中证500",
-            "000852.SH": "中证1000",
-            "000001.SH": "上证指数",
-            "399001.SZ": "深证成指",
-            "399006.SZ": "创业板指",
-        }
-        benchmark_display_name = benchmark_name_map.get(benchmark_symbol, benchmark_symbol)
+        benchmark_display_name = self.BENCHMARK_NAME_MAP.get(benchmark_symbol, benchmark_symbol)
 
         if benchmark_df is None or benchmark_df.empty:
             layout.addWidget(

@@ -729,8 +729,8 @@ class BacktestAPI(BaseAPI):
             if benchmark_data is not None and not benchmark_data.empty:
                 if not isinstance(benchmark_data.index, pd.DatetimeIndex):
                     benchmark_data.index = pd.to_datetime(benchmark_data.index)
-                benchmark_data = benchmark_data[["close"]].copy()
-                benchmark_data.columns = ["close"]
+                keep_cols = [c for c in ["open", "high", "low", "close", "volume"] if c in benchmark_data.columns]
+                benchmark_data = benchmark_data[keep_cols].copy()
                 self._backtest_result.benchmark_df = benchmark_data
                 self._backtest_result.benchmark_symbol = self._benchmark
         except Exception:
