@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import (
     QAction,
     QLineEdit,
     QWidgetAction,
+    QTextEdit,
 )
 from PyQt5.QtGui import QFont, QColor, QPainter, QPicture, QBrush, QPen, QPolygonF
 from PyQt5.QtCore import Qt, QPointF, QRectF
@@ -310,7 +311,7 @@ class BacktestReportWindow(QMainWindow):
 
     def _create_crosshair_items(
         self, plot_widget: pg.PlotWidget
-    ) -> tuple[pg.InfiniteLine, pg.InfiniteLine, QLabel]:
+    ) -> tuple[pg.InfiniteLine, pg.InfiniteLine, QTextEdit]:
         vLine = pg.InfiniteLine(
             angle=90, movable=False, pen=pg.mkPen("k", style=Qt.DashLine)
         )
@@ -322,41 +323,86 @@ class BacktestReportWindow(QMainWindow):
         plot_widget.addItem(vLine, ignoreBounds=True)
         plot_widget.addItem(hLine, ignoreBounds=True)
 
-        tooltip_label = QLabel(plot_widget)
-        tooltip_label.setStyleSheet(
-            "background-color: rgba(255, 255, 255, 220); "
-            "border: 1px solid #cccccc; "
-            "padding: 4px; "
-            "font-size: 17px; "
-            "font-family: Microsoft YaHei;"
+        tooltip_edit = QTextEdit(plot_widget)
+        tooltip_edit.setReadOnly(True)
+        tooltip_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        tooltip_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        tooltip_edit.setFocusPolicy(Qt.WheelFocus)
+        tooltip_edit.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        tooltip_edit.setMinimumWidth(420)
+        tooltip_edit.setStyleSheet(
+            "QTextEdit {"
+            "  background-color: rgba(255, 255, 255, 235);"
+            "  border: 1px solid #cccccc;"
+            "  padding: 6px;"
+            "  font-size: 15px;"
+            "  font-family: Microsoft YaHei;"
+            "}"
+            "QTextEdit QScrollBar:vertical {"
+            "  width: 8px;"
+            "  background: rgba(240, 240, 240, 200);"
+            "}"
+            "QTextEdit QScrollBar::handle:vertical {"
+            "  background: rgba(180, 180, 180, 200);"
+            "  border-radius: 4px;"
+            "}"
         )
-        tooltip_label.setAlignment(Qt.AlignLeft)
-        tooltip_label.hide()
-        return vLine, hLine, tooltip_label
+        tooltip_edit.setLineWrapMode(QTextEdit.WidgetWidth)
+        tooltip_edit.hide()
+        return vLine, hLine, tooltip_edit
 
     def _update_tooltip_position(
         self,
-        tooltip_label: QLabel,
+        tooltip_widget: QWidget,
         scene_pos: QPointF,
         view_box: pg.ViewBox,
         margin: int = 10,
     ):
-        tooltip_pos = scene_pos.toPoint()
-        label_width = tooltip_label.width()
-        label_height = tooltip_label.height()
-        plot_rect = view_box.sceneBoundingRect()
+        # 将 scene 坐标映射到 tooltip 父控件（plot_widget）的局部坐标
+        plot_widget = tooltip_widget.parentWidget()
+        if plot_widget is None:
+            plot_widget = view_box.getViewWidget()
+        local_pos = plot_widget.mapFromScene(scene_pos)
+        tooltip_pos = local_pos
 
+        label_width = tooltip_widget.width()
+        label_height = tooltip_widget.height()
+        plot_rect = plot_widget.rect()
+
+        # 计算最大可用高度（窗口高度的 80%，防止超出屏幕）
+        window = plot_widget.window()
+        max_height = int(window.height() * 0.92) if window else plot_rect.height()
+        if label_height > max_height:
+            label_height = max_height
+            tooltip_widget.setFixedHeight(max_height)
+        else:
+            tooltip_widget.setFixedHeight(label_height)
+
+        # X 方向：优先放在鼠标右侧，超出右边界则放左侧
         if tooltip_pos.x() + label_width > plot_rect.right() - margin:
             x_pos = tooltip_pos.x() - label_width - margin
         else:
             x_pos = tooltip_pos.x() + margin
 
-        if tooltip_pos.y() - label_height < plot_rect.top() + margin:
+        # Y 方向：需要同时考虑顶部和底部边界
+        space_above = tooltip_pos.y() - plot_rect.top() - margin
+        space_below = plot_rect.bottom() - tooltip_pos.y() - margin
+
+        if label_height <= space_above:
+            # 上方空间足够，优先放上方（不遮挡鼠标下方内容）
+            y_pos = tooltip_pos.y() - label_height - margin
+        elif label_height <= space_below:
+            # 上方不够但下方够，放下方
             y_pos = tooltip_pos.y() + margin
         else:
-            y_pos = tooltip_pos.y() - label_height - margin
+            # 上下都不够，选择空间较大的一侧，并做偏移确保可见
+            if space_above >= space_below:
+                y_pos = plot_rect.top() + margin
+            else:
+                y_pos = plot_rect.bottom() - label_height - margin
 
-        tooltip_label.move(int(x_pos), int(y_pos))
+        tooltip_widget.move(int(x_pos), int(y_pos))
+        tooltip_widget.raise_()
 
     def _get_visible_data_slice(
         self, x_min: float, x_max: float, all_data: list
@@ -884,12 +930,62 @@ class BacktestReportWindow(QMainWindow):
         self.kline_vLine, self.kline_hLine, self.kline_tooltip_label = (
             self._create_crosshair_items(plot_widget)
         )
+        self._kline_tooltip_pinned = False
         self.kline_proxy = pg.SignalProxy(
             plot_widget.scene().sigMouseMoved, rateLimit=30, slot=self.kline_mouse_moved
         )
+        plot_widget.scene().sigMouseClicked.connect(self._kline_scene_clicked)
+
+    def _kline_scene_clicked(self, event):
+        if not hasattr(self, "kline_tooltip_label"):
+            return
+        if self._kline_tooltip_pinned:
+            self._kline_tooltip_pinned = False
+            self.kline_tooltip_label.setStyleSheet(
+                "QTextEdit {"
+                "  background-color: rgba(255, 255, 255, 235);"
+                "  border: 1px solid #cccccc;"
+                "  padding: 6px;"
+                "  font-size: 15px;"
+                "  font-family: Microsoft YaHei;"
+                "}"
+                "QTextEdit QScrollBar:vertical {"
+                "  width: 8px;"
+                "  background: rgba(240, 240, 240, 200);"
+                "}"
+                "QTextEdit QScrollBar::handle:vertical {"
+                "  background: rgba(180, 180, 180, 200);"
+                "  border-radius: 4px;"
+                "}"
+            )
+            self.kline_tooltip_label.hide()
+            self.kline_vLine.hide()
+            self.kline_hLine.hide()
+            return
+        if self.kline_tooltip_label.isVisible():
+            self._kline_tooltip_pinned = True
+            self.kline_tooltip_label.setStyleSheet(
+                "QTextEdit {"
+                "  background-color: rgba(255, 255, 255, 245);"
+                "  border: 2px solid #4a90d9;"
+                "  padding: 6px;"
+                "  font-size: 15px;"
+                "  font-family: Microsoft YaHei;"
+                "}"
+                "QTextEdit QScrollBar:vertical {"
+                "  width: 8px;"
+                "  background: rgba(240, 240, 240, 200);"
+                "}"
+                "QTextEdit QScrollBar::handle:vertical {"
+                "  background: rgba(180, 180, 180, 200);"
+                "  border-radius: 4px;"
+                "}"
+            )
 
     def kline_mouse_moved(self, event):
         if not hasattr(self, "kline_vLine") or not hasattr(self, "kline_data"):
+            return
+        if self._kline_tooltip_pinned:
             return
         pos = event[0]
         vb = self.kline_vLine.getViewBox()
@@ -921,12 +1017,12 @@ class BacktestReportWindow(QMainWindow):
                 datetime_str = self.kline_x_axis_ticks.get(kline["time"], "未知时间")
 
                 kline_parts = [
-                    f'<span style="font-size: 42px;"><b>{kline["time"]}</b></span>',
-                    f'<span style="font-size: 39px;"><b>时间</b>: {datetime_str}</span>',
-                    f'<span style="font-size: 39px;"><b>开盘</b>: <span style="color: #000000;">{kline["open"]:.2f}</span></span>',
-                    f'<span style="font-size: 39px;"><b>收盘</b>: <span style="color: #000000;">{kline["close"]:.2f}</span></span>',
-                    f'<span style="font-size: 39px;"><b>最高</b>: <span style="color: #000000;">{kline["high"]:.2f}</span></span>',
-                    f'<span style="font-size: 39px;"><b>最低</b>: <span style="color: #000000;">{kline["low"]:.2f}</span></span>',
+                    f'<span style="font-size: 16px;"><b>{kline["time"]}</b></span>',
+                    f'<span style="font-size: 15px;"><b>时间</b>: {datetime_str}</span>',
+                    f'<span style="font-size: 15px;"><b>开盘</b>: <span style="color: #000000;">{kline["open"]:.2f}</span></span>',
+                    f'<span style="font-size: 15px;"><b>收盘</b>: <span style="color: #000000;">{kline["close"]:.2f}</span></span>',
+                    f'<span style="font-size: 15px;"><b>最高</b>: <span style="color: #000000;">{kline["high"]:.2f}</span></span>',
+                    f'<span style="font-size: 15px;"><b>最低</b>: <span style="color: #000000;">{kline["low"]:.2f}</span></span>',
                 ]
 
                 trade_parts = []
@@ -943,7 +1039,7 @@ class BacktestReportWindow(QMainWindow):
 
                         trade_text = f"{trade_info.instrument_id} {action} {trade_info.volume} 手 @ {trade_info.trade_price:.2f}"
                         trade_parts.append(
-                            f'<span style="color: {color}; font-size: 39px;"><strong>{trade_text}</strong></span>'
+                            f'<span style="color: {color}; font-size: 15px;"><strong>{trade_text}</strong></span>'
                         )
 
                 final_html_parts = ["<br>".join(kline_parts)]
@@ -953,7 +1049,7 @@ class BacktestReportWindow(QMainWindow):
                     )
                     final_html_parts.append("<br>".join(trade_parts))
 
-                self.kline_tooltip_label.setText("".join(final_html_parts))
+                self.kline_tooltip_label.setHtml("".join(final_html_parts))
 
                 self.kline_tooltip_label.adjustSize()
                 self._update_tooltip_position(self.kline_tooltip_label, pos, vb)
@@ -1303,7 +1399,7 @@ class BacktestReportWindow(QMainWindow):
                 equity_value = self.result.df["PortfolioValue"].iloc[index]
                 self.vLine.setPos(index)
                 self.hLine.setPos(mousePoint.y())
-                self.info_label.setText(f"日期: {date_str}\n权益: {equity_value:,.2f}")
+                self.info_label.setPlainText(f"日期: {date_str}\n权益: {equity_value:,.2f}")
                 self.info_label.adjustSize()
                 self._update_tooltip_position(self.info_label, pos, vb)
                 self.info_label.show()
@@ -1378,7 +1474,7 @@ class BacktestReportWindow(QMainWindow):
                     hLine.show()
                     vLine.setPos(index)
                     hLine.setPos(y[index])
-                    pnl_info_label.setText(
+                    pnl_info_label.setPlainText(
                         f"日期: {date_strings[index]}\n收益: {y[index]:,.2f}"
                     )
                     pnl_info_label.adjustSize()
@@ -2133,7 +2229,7 @@ class BacktestReportWindow(QMainWindow):
                     strategy_nv = strategy_net_value[index]
                     benchmark_nv = benchmark_net_value[index]
                     excess = excess_return[index]
-                    info_label.setText(
+                    info_label.setPlainText(
                         f"日期: {date_str}\n"
                         f"策略净值: {strategy_nv:.4f}\n"
                         f"{benchmark_display_name}净值: {benchmark_nv:.4f}\n"
