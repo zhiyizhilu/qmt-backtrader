@@ -1386,6 +1386,7 @@ class BacktestReportWindow(QMainWindow):
                 trade.offset == "0",
                 trade.direction == "0",
             )
+            multiplier = multipliers.get(instrument, 1)
             trade_data = {
                 "order_id": trade.order_id,
                 "time": trade.trade_time,
@@ -1393,6 +1394,7 @@ class BacktestReportWindow(QMainWindow):
                 "volume": trade.volume,
                 "order_price": trade.order_price,
                 "price": trade.trade_price,
+                "turnover": trade.trade_price * abs(trade.volume) * multiplier,
                 "pnl": 0.0,
                 "fee": getattr(trade, "fee", 0.0),
                 "memo": trade.memo,
@@ -1679,6 +1681,7 @@ class BacktestReportWindow(QMainWindow):
             "数量",
             "报单价",
             "成交价",
+            "成交额",
             "盈亏",
             "手续费",
             "备注",
@@ -1797,9 +1800,10 @@ class BacktestReportWindow(QMainWindow):
             else:
                 display_action = action
 
-            price_text, pnl_text, fee_text = "--", "--", "--"
+            price_text, pnl_text, fee_text, turnover_text = "--", "--", "--", "--"
             if trade["order_id"] != -1:
                 price_text, fee_text = f"{trade['price']:.3f}", f"{trade['fee']:,.2f}"
+                turnover_text = f"{trade['turnover']:,.2f}"
                 if trade["pnl"] != 0:
                     pnl_text = f"{trade['pnl']:,.2f}"
 
@@ -1811,6 +1815,7 @@ class BacktestReportWindow(QMainWindow):
                 str(trade["volume"]),
                 f"{trade['order_price']:.3f}",
                 price_text,
+                turnover_text,
                 pnl_text,
                 fee_text,
                 trade["memo"],
@@ -1820,7 +1825,7 @@ class BacktestReportWindow(QMainWindow):
                 item.setTextAlignment(Qt.AlignCenter)
                 if col == 3:
                     item.setForeground(color)
-                if col == 7 and isinstance(trade["pnl"], (int, float)):
+                if col == 8 and isinstance(trade["pnl"], (int, float)):
                     if trade["pnl"] > 0:
                         item.setForeground(QColor("#d14545"))
                     elif trade["pnl"] < 0:
