@@ -23,12 +23,50 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QPushButton,
     QMessageBox,
+    QMenu,
+    QAction,
+    QLineEdit,
+    QWidgetAction,
 )
-from PyQt5.QtGui import QFont, QColor, QPainter, QPicture, QBrush, QPen
+from PyQt5.QtGui import QFont, QColor, QPainter, QPicture, QBrush, QPen, QPolygonF
 from PyQt5.QtCore import Qt, QPointF, QRectF
 from typing import Callable
 
 from core.models import BacktestingResult
+
+
+class FilterButton(QPushButton):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._active = False
+        self.setFixedSize(16, 16)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet("QPushButton { border: none; background: transparent; }")
+
+    def set_active(self, active):
+        self._active = active
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        color = QColor("#d14545") if self._active else QColor("#999999")
+        if self._active:
+            p.setBrush(QBrush(color))
+        else:
+            p.setBrush(QBrush(color))
+        p.setPen(Qt.NoPen)
+        w, h = self.width(), self.height()
+        funnel = [
+            QPointF(w * 0.1, h * 0.1),
+            QPointF(w * 0.9, h * 0.1),
+            QPointF(w * 0.55, h * 0.55),
+            QPointF(w * 0.55, h * 0.9),
+            QPointF(w * 0.45, h * 0.9),
+            QPointF(w * 0.45, h * 0.55),
+        ]
+        p.drawPolygon(QPolygonF(funnel))
+        p.end()
 
 
 class ClickableLegend(pg.LegendItem):
@@ -249,6 +287,8 @@ class BacktestReportWindow(QMainWindow):
         self._column_widths = {}
         self._instrument_hidden = False
         self._original_instruments = []
+        self._column_filters = {}
+        self._filter_buttons = {}
         self._saved_sort_column = -1
         self._saved_sort_order = Qt.AscendingOrder
 
@@ -1703,6 +1743,8 @@ class BacktestReportWindow(QMainWindow):
 
         self.trade_table.model().dataChanged.connect(self._on_data_changed)
 
+        self._setup_filter_buttons()
+
     def _on_column_resized(self, logical_index, old_size, new_size):
         self._user_adjusted_columns.add(logical_index)
         self._column_widths[logical_index] = new_size
@@ -1750,6 +1792,107 @@ class BacktestReportWindow(QMainWindow):
                 "提示",
                 "无法在隐藏状态下进行排序操作"
             )
+
+    def _setup_filter_buttons(self):
+        header = self.trade_table.horizontalHeader()
+        for col in range(self.trade_table.columnCount()):
+            btn = FilterButton(header)
+            btn.clicked.connect(lambda checked, c=col: self._show_filter_menu(c))
+            self._filter_buttons[col] = btn
+        self._update_filter_button_positions()
+
+    def _update_filter_button_positions(self):
+        header = self.trade_table.horizontalHeader()
+        for col, btn in self._filter_buttons.items():
+            x = header.sectionPosition(col) + header.sectionSize(col) - 18
+            y = (header.height() - 16) // 2
+            btn.move(x, y)
+            btn.setVisible(header.sectionSize(col) > 40)
+
+    def _show_filter_menu(self, col):
+        menu = QMenu(self)
+        menu.setStyleSheet("QMenu { font-family: Microsoft YaHei; font-size: 12px; }")
+
+        values = set()
+        for row in range(self.trade_table.rowCount()):
+            item = self.trade_table.item(row, col)
+            if item:
+                values.add(item.text())
+
+        sorted_values = sorted(values, key=lambda x: (x == "--", x))
+
+        search_edit = QLineEdit(menu)
+        search_edit.setPlaceholderText("搜索...")
+        search_edit.setClearButtonEnabled(True)
+        search_edit.setStyleSheet("QLineEdit { padding: 4px; }")
+        search_action = QWidgetAction(menu)
+        search_action.setDefaultWidget(search_edit)
+        menu.addAction(search_action)
+        menu.addSeparator()
+
+        select_all_action = QAction("(全选)", menu)
+        menu.addAction(select_all_action)
+
+        actions = []
+        for val in sorted_values:
+            action = QAction(val, menu)
+            action.setCheckable(True)
+            current_filter = self._column_filters.get(col)
+            if current_filter is None:
+                action.setChecked(True)
+            else:
+                action.setChecked(val in current_filter)
+            menu.addAction(action)
+            actions.append(action)
+
+        select_all_action.triggered.connect(lambda: self._toggle_all_filter(actions))
+        search_edit.textChanged.connect(lambda text: self._filter_menu_search(actions, text))
+
+        menu.exec_(self._filter_buttons[col].mapToGlobal(self._filter_buttons[col].rect().bottomLeft()))
+
+        selected = set()
+        all_checked = True
+        for action in actions:
+            if action.isChecked():
+                selected.add(action.text())
+            else:
+                all_checked = False
+
+        if all_checked:
+            self._column_filters.pop(col, None)
+        else:
+            self._column_filters[col] = selected
+
+        self._apply_filters()
+        self._update_filter_button_style(col)
+
+    def _toggle_all_filter(self, actions):
+        all_checked = all(action.isChecked() for action in actions)
+        for action in actions:
+            action.setChecked(not all_checked)
+
+    def _filter_menu_search(self, actions, text):
+        lower = text.lower()
+        for action in actions:
+            action.setVisible(lower in action.text().lower())
+
+    def _update_filter_button_style(self, col):
+        btn = self._filter_buttons.get(col)
+        if not btn:
+            return
+        btn.set_active(col in self._column_filters)
+
+    def _apply_filters(self):
+        self.trade_table.setSortingEnabled(False)
+        for row in range(self.trade_table.rowCount()):
+            show = True
+            for col, allowed in self._column_filters.items():
+                item = self.trade_table.item(row, col)
+                if item and item.text() not in allowed:
+                    show = False
+                    break
+            self.trade_table.setRowHidden(row, not show)
+        self.trade_table.setSortingEnabled(True)
 
     def _toggle_instrument_visibility(self):
         self._instrument_hidden = not self._instrument_hidden
@@ -1833,6 +1976,8 @@ class BacktestReportWindow(QMainWindow):
                 self.trade_table.setItem(row, col, item)
         self.trade_table.setSortingEnabled(True)
         self._auto_adjust_all_columns()
+        self._update_filter_button_positions()
+        self._apply_filters()
 
     def _create_benchmark_tab(self) -> QWidget:
         tab = QWidget()
