@@ -24,11 +24,45 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QMessageBox,
 )
-from PyQt5.QtGui import QFont, QColor, QPainter, QPicture
+from PyQt5.QtGui import QFont, QColor, QPainter, QPicture, QBrush, QPen
 from PyQt5.QtCore import Qt, QPointF, QRectF
 from typing import Callable
 
 from core.models import BacktestingResult
+
+
+class ClickableLegend(pg.LegendItem):
+    """支持点击隐藏/显示曲线的图例"""
+
+    def __init__(self, size=None, offset=None, **kwargs):
+        super().__init__(size=size, offset=offset, **kwargs)
+        self._curve_items = {}
+
+    def addItem(self, item, name):
+        super().addItem(item, name)
+        label = self.items[-1][1]
+        self._curve_items[label] = item
+        label.setAcceptHoverEvents(True)
+        label.setCursor(Qt.PointingHandCursor)
+        label.setToolTip("点击隐藏/显示")
+        label.mousePressEvent = lambda ev, lbl=label: self._toggle_curve(lbl)
+        label.hoverEvent = lambda ev, lbl=label: self._on_hover(ev, lbl)
+
+    def _toggle_curve(self, label):
+        curve = self._curve_items.get(label)
+        if curve is not None:
+            is_visible = curve.isVisible()
+            curve.setVisible(not is_visible)
+            label.setText(
+                f"<span style='color: #999999; text-decoration: line-through;'>{label.text}</span>"
+                if is_visible else label.text
+            )
+
+    def _on_hover(self, ev, label):
+        if ev.isEnter():
+            label.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
+        elif ev.isExit():
+            label.setFont(QFont("Microsoft YaHei", 10, QFont.Normal))
 
 
 class CandlestickItem(pg.GraphicsObject):
@@ -1895,26 +1929,36 @@ class BacktestReportWindow(QMainWindow):
 
         excess_return = [s / b for s, b in zip(strategy_net_value, benchmark_net_value)]
 
-        plot_widget.plot(
+        strategy_curve = plot_widget.plot(
             x,
             strategy_net_value,
-            pen=pg.mkPen("#007bff", width=2.5, style=Qt.SolidLine),
+            pen=pg.mkPen("#dc3545", width=2.5, style=Qt.SolidLine),
             name="策略净值",
         )
-        plot_widget.plot(
+        benchmark_curve = plot_widget.plot(
             x,
             benchmark_net_value,
-            pen=pg.mkPen("#ff7f0e", width=2.0, style=Qt.SolidLine),
+            pen=pg.mkPen("#007bff", width=2.0, style=Qt.SolidLine),
             name=benchmark_display_name,
         )
-        plot_widget.plot(
+        excess_curve = plot_widget.plot(
             x,
             excess_return,
-            pen=pg.mkPen("#2ca02c", width=1.5, style=Qt.SolidLine),
+            pen=pg.mkPen("#ff7f0e", width=1.5, style=Qt.SolidLine),
             name="超额收益",
         )
 
-        plot_widget.addLegend()
+        legend = ClickableLegend()
+        legend.setParentItem(plot_widget.getPlotItem().getViewBox())
+        legend.setBrush(QBrush(QColor("#f0f0f0")))
+        legend.setPen(QPen(QColor("#999999"), 1))
+        legend.setLabelTextColor(QColor("#333333"))
+        legend.setLabelTextSize("10pt")
+        legend.setOffset((10, 10))
+        plot_widget.getPlotItem().legend = legend
+        legend.addItem(strategy_curve, "策略净值")
+        legend.addItem(benchmark_curve, benchmark_display_name)
+        legend.addItem(excess_curve, "超额收益")
         plot_widget.setLabel("left", "净值 / 超额收益", **{"color": "k", "font-size": "12pt"})
 
         margin = 2
