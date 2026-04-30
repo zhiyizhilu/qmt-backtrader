@@ -4,7 +4,7 @@ from core.stock_selection import StockSelectionStrategy
 from strategies import register_strategy
 
 
-@register_strategy('high_dividend', default_kwargs={'max_stocks': 10},
+@register_strategy('high_dividend', default_kwargs={'max_stocks': 20},
                    backtest_config={'cash': 1000000, 'commission': 0.0001,
                                     'start_date': '2016-01-01', 'end_date': '2026-04-17'})
 class HighDividendStrategy(StockSelectionStrategy):
@@ -25,7 +25,7 @@ class HighDividendStrategy(StockSelectionStrategy):
 
     params = (
         ('rebalance_freq', 'monthly'),
-        ('max_stocks', 10),
+        ('max_stocks', 20),
         ('position_ratio', 0.95),
         ('stock_pool', None),
         ('min_roe', 0.0),
