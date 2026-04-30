@@ -2415,6 +2415,28 @@ class BacktestReportWindow(QMainWindow):
         title_label.setStyleSheet("color: #333; padding-bottom: 5px;")
         layout.addWidget(title_label)
 
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(20)
+
+        self.dp_instrument_toggle_button = QPushButton("隐藏标的")
+        self.dp_instrument_toggle_button.setFont(QFont("Microsoft YaHei", 12))
+        self.dp_instrument_toggle_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f0f0f0;
+                border: 1px solid #d0d0d0;
+                border-radius: 4px;
+                padding: 5px 15px;
+                min-height: 30px;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+            }
+        """)
+        self.dp_instrument_toggle_button.clicked.connect(self._toggle_dp_instrument_visibility)
+        btn_layout.addWidget(self.dp_instrument_toggle_button)
+
+        layout.addLayout(btn_layout)
+
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
         line.setFrameShadow(QFrame.Sunken)
@@ -2506,9 +2528,29 @@ class BacktestReportWindow(QMainWindow):
         for col in range(len(headers)):
             header.setSectionResizeMode(col, QHeaderView.Interactive)
 
+        header.sectionResized.connect(self._on_dp_column_resized)
+        header.sectionClicked.connect(self._on_dp_header_clicked)
+
+        self.daily_position_table.model().dataChanged.connect(self._on_dp_data_changed)
+
+        self._dp_user_adjusted_columns = set()
+        self._dp_column_widths = {}
+        self._dp_column_filters = {}
+        self._dp_filter_buttons = {}
+        self._dp_instrument_hidden = False
+        self._dp_original_instruments = []
+        self._dp_saved_sort_column = -1
+        self._dp_saved_sort_order = Qt.AscendingOrder
+
+        self._setup_dp_filter_buttons()
+
     def _populate_daily_position_table(self, daily_positions: list):
         self.daily_position_table.setSortingEnabled(False)
         self.daily_position_table.setRowCount(len(daily_positions))
+        self._dp_instrument_hidden = False
+        self._dp_original_instruments.clear()
+        if hasattr(self, 'dp_instrument_toggle_button'):
+            self.dp_instrument_toggle_button.setText("隐藏标的")
 
         for row, pos in enumerate(daily_positions):
             quantity = pos["quantity"]
@@ -2559,6 +2601,192 @@ class BacktestReportWindow(QMainWindow):
             max_width = min(max_width, 300)
             max_width = max(max_width, 80)
             header.resizeSection(col, max_width + 20)
+
+        self._auto_adjust_all_dp_columns()
+        self._update_dp_filter_button_positions()
+        self._apply_dp_filters()
+
+    def _on_dp_column_resized(self, logical_index, old_size, new_size):
+        self._dp_user_adjusted_columns.add(logical_index)
+        self._dp_column_widths[logical_index] = new_size
+
+    def _on_dp_data_changed(self, top_left, bottom_right, roles):
+        for col in range(top_left.column(), bottom_right.column() + 1):
+            if col not in self._dp_user_adjusted_columns:
+                self._adjust_dp_column_width(col)
+
+    def _adjust_dp_column_width(self, col):
+        header = self.daily_position_table.horizontalHeader()
+        max_width = 0
+        font_metrics = self.daily_position_table.fontMetrics()
+
+        header_text = self.daily_position_table.horizontalHeaderItem(col).text()
+        header_width = font_metrics.width(header_text) + 40
+        max_width = max(max_width, header_width)
+
+        for row in range(self.daily_position_table.rowCount()):
+            item = self.daily_position_table.item(row, col)
+            if item:
+                text = item.text()
+                text_width = font_metrics.width(text) + 30
+                max_width = max(max_width, text_width)
+
+        max_width = min(max_width, 300)
+        max_width = max(max_width, 80)
+
+        visual_margin = 20
+        final_width = max_width + visual_margin
+
+        if col not in self._dp_user_adjusted_columns:
+            header.resizeSection(col, final_width)
+            self._dp_column_widths[col] = final_width
+
+    def _auto_adjust_all_dp_columns(self):
+        for col in range(self.daily_position_table.columnCount()):
+            if col not in self._dp_user_adjusted_columns:
+                self._adjust_dp_column_width(col)
+
+    def _on_dp_header_clicked(self, logical_index):
+        if self._dp_instrument_hidden:
+            QMessageBox.warning(
+                self,
+                "提示",
+                "无法在隐藏状态下进行排序操作"
+            )
+
+    def _setup_dp_filter_buttons(self):
+        header = self.daily_position_table.horizontalHeader()
+        for col in range(self.daily_position_table.columnCount()):
+            btn = FilterButton(header)
+            btn.clicked.connect(lambda checked, c=col: self._show_dp_filter_menu(c))
+            self._dp_filter_buttons[col] = btn
+        self._update_dp_filter_button_positions()
+
+    def _update_dp_filter_button_positions(self):
+        header = self.daily_position_table.horizontalHeader()
+        for col, btn in self._dp_filter_buttons.items():
+            x = header.sectionPosition(col) + header.sectionSize(col) - 18
+            y = (header.height() - 16) // 2
+            btn.move(x, y)
+            btn.setVisible(header.sectionSize(col) > 40)
+
+    def _show_dp_filter_menu(self, col):
+        menu = QMenu(self)
+        menu.setStyleSheet("QMenu { font-family: Microsoft YaHei; font-size: 12px; }")
+
+        values = set()
+        for row in range(self.daily_position_table.rowCount()):
+            item = self.daily_position_table.item(row, col)
+            if item:
+                values.add(item.text())
+
+        sorted_values = sorted(values, key=lambda x: (x == "--", x))
+
+        search_edit = QLineEdit(menu)
+        search_edit.setPlaceholderText("搜索...")
+        search_edit.setClearButtonEnabled(True)
+        search_edit.setStyleSheet("QLineEdit { padding: 4px; }")
+        search_action = QWidgetAction(menu)
+        search_action.setDefaultWidget(search_edit)
+        menu.addAction(search_action)
+        menu.addSeparator()
+
+        select_all_action = QAction("(全选)", menu)
+        menu.addAction(select_all_action)
+
+        actions = []
+        for val in sorted_values:
+            action = QAction(val, menu)
+            action.setCheckable(True)
+            current_filter = self._dp_column_filters.get(col)
+            if current_filter is None:
+                action.setChecked(True)
+            else:
+                action.setChecked(val in current_filter)
+            menu.addAction(action)
+            actions.append(action)
+
+        select_all_action.triggered.connect(lambda: self._toggle_all_dp_filter(actions))
+        search_edit.textChanged.connect(lambda text: self._filter_dp_menu_search(actions, text))
+
+        menu.exec_(self._dp_filter_buttons[col].mapToGlobal(self._dp_filter_buttons[col].rect().bottomLeft()))
+
+        selected = set()
+        all_checked = True
+        for action in actions:
+            if action.isChecked():
+                selected.add(action.text())
+            else:
+                all_checked = False
+
+        if all_checked:
+            self._dp_column_filters.pop(col, None)
+        else:
+            self._dp_column_filters[col] = selected
+
+        self._apply_dp_filters()
+        self._update_dp_filter_button_style(col)
+
+    def _toggle_all_dp_filter(self, actions):
+        all_checked = all(action.isChecked() for action in actions)
+        for action in actions:
+            action.setChecked(not all_checked)
+
+    def _filter_dp_menu_search(self, actions, text):
+        lower = text.lower()
+        for action in actions:
+            action.setVisible(lower in action.text().lower())
+
+    def _update_dp_filter_button_style(self, col):
+        btn = self._dp_filter_buttons.get(col)
+        if not btn:
+            return
+        btn.set_active(col in self._dp_column_filters)
+
+    def _apply_dp_filters(self):
+        self.daily_position_table.setSortingEnabled(False)
+        for row in range(self.daily_position_table.rowCount()):
+            show = True
+            for col, allowed in self._dp_column_filters.items():
+                item = self.daily_position_table.item(row, col)
+                if item and item.text() not in allowed:
+                    show = False
+                    break
+            self.daily_position_table.setRowHidden(row, not show)
+        self.daily_position_table.setSortingEnabled(True)
+
+    def _toggle_dp_instrument_visibility(self):
+        self._dp_instrument_hidden = not self._dp_instrument_hidden
+
+        if self._dp_instrument_hidden:
+            header = self.daily_position_table.horizontalHeader()
+            self._dp_saved_sort_column = header.sortIndicatorSection()
+            self._dp_saved_sort_order = header.sortIndicatorOrder()
+
+            self.daily_position_table.setSortingEnabled(False)
+
+            self._dp_original_instruments.clear()
+
+            for row in range(self.daily_position_table.rowCount()):
+                item = self.daily_position_table.item(row, 1)
+                if item:
+                    self._dp_original_instruments.append((row, item.text()))
+                    item.setText('*' * len(item.text()))
+
+            self.dp_instrument_toggle_button.setText("显示标的")
+        else:
+            for saved_row, original_text in self._dp_original_instruments:
+                item = self.daily_position_table.item(saved_row, 1)
+                if item:
+                    item.setText(original_text)
+
+            self._dp_original_instruments.clear()
+
+            self.daily_position_table.setSortingEnabled(True)
+            if self._dp_saved_sort_column >= 0:
+                self.daily_position_table.sortByColumn(self._dp_saved_sort_column, self._dp_saved_sort_order)
+
+            self.dp_instrument_toggle_button.setText("隐藏标的")
 
 
 def generate_report(result: "BacktestingResult"):
