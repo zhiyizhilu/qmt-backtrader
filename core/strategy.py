@@ -173,7 +173,7 @@ class BaseStrategy(bt.Strategy):
 
         dt = self.datas[0].datetime.datetime(0) if self.datas else None
         if isinstance(dt, dt_module.datetime) and dt.hour == 0 and dt.minute == 0:
-            dt = dt.replace(hour=14, minute=50)
+            dt = dt.replace(hour=15, minute=0)
         symbol = getattr(trade.data, '_name', '') if hasattr(trade, 'data') else ''
         self._trade_records.append({
             "datetime": dt,
@@ -209,7 +209,7 @@ class BaseStrategy(bt.Strategy):
         if hasattr(self, 'datas') and self.datas and self.datas[0].datetime:
             order_datetime = self.datas[0].datetime.datetime(0)
             if isinstance(order_datetime, dt_module.datetime) and order_datetime.hour == 0 and order_datetime.minute == 0:
-                order_datetime = order_datetime.replace(hour=14, minute=50)
+                order_datetime = order_datetime.replace(hour=15, minute=0)
 
         return OrderInfo(
             order_id=str(id(order)),

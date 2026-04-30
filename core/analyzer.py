@@ -225,7 +225,7 @@ class PerformanceAnalyzer:
                 idx = -num_bars + 1 + i
                 bar_dt = data.datetime.datetime(idx)
                 if isinstance(bar_dt, dt_module.datetime) and bar_dt.hour == 0 and bar_dt.minute == 0:
-                    bar_dt = bar_dt.replace(hour=14, minute=50)
+                    bar_dt = bar_dt.replace(hour=15, minute=0)
                 kline = {
                     "datetime": bar_dt,
                     "open": float(data.open[idx]),
