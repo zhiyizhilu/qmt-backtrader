@@ -62,6 +62,7 @@ class ParameterOptimizer:
                 cerebro = bt.Cerebro()
                 cerebro.broker.setcash(initial_cash)
                 cerebro.broker.setcommission(commission=commission)
+                cerebro.broker.set_checksubmit(False)
 
                 for symbol, data in data_cache.items():
                     if data is not None and not data.empty:

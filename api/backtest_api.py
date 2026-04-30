@@ -629,6 +629,7 @@ class BacktestAPI(BaseAPI):
     def set_cash(self, cash: float):
         self._initial_cash = cash
         self.cerebro.broker.setcash(cash)
+        self.cerebro.broker.set_checksubmit(False)
 
     def set_trade_start_date(self, trade_start_date: str):
         self._trade_start_date = trade_start_date

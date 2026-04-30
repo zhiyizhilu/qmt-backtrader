@@ -62,6 +62,7 @@ class StockSelectionStrategy(StrategyLogic):
         self._rebalance_phase: int = self.PHASE_IDLE
         self._pending_sell_symbols: set = set()
         self._rebalance_target_stocks: List[str] = []
+        self._per_stock_target: float = 0.0
 
     def _is_live_trading(self) -> bool:
         from core.executor import QMTExecutor
@@ -106,7 +107,7 @@ class StockSelectionStrategy(StrategyLogic):
 
         if not self._pending_sell_symbols:
             self.log('所有卖出订单已确认，进入买入阶段')
-            self._rebalance_buy_phase(self._rebalance_target_stocks)
+            self._rebalance_buy_phase(self._rebalance_target_stocks, self._per_stock_target)
 
     def is_rebalance_day(self, current_date: dt_module.date) -> bool:
         """判断当前日期是否为调仓日"""
@@ -164,9 +165,16 @@ class StockSelectionStrategy(StrategyLogic):
         self.rebalance_to(target_stocks)
 
     def rebalance_to(self, target_stocks: List[str]):
-        """调仓到目标持仓 - 等权重再平衡
+        """调仓到目标持仓 - 等权重部分再平衡
 
-        回测模式：同步执行卖出和买入（backtrader 统一在下一根K线处理）
+        与全仓清仓再买入不同，此方法只调整偏差：
+        - 不在目标列表的股票：全部清仓
+        - 超出目标市值的持仓：卖出超出部分（减仓）
+        - 低于目标市值的持仓：买入不足部分（补仓）
+        - 新入选的股票：等权建仓
+
+        回测模式：同步执行，卖出和买入在同一 bar 内完成
+          （需配合 broker.set_checksubmit(False)，让卖出回款可用于买入）
         实盘模式：两阶段异步执行
           阶段1：下单卖出，通过 on_order 回调等待成交确认
           阶段2：所有卖出确认后，根据实际可用资金下单买入
@@ -177,20 +185,45 @@ class StockSelectionStrategy(StrategyLogic):
         current_symbols = set(self._current_holdings.keys())
         target_symbols = set(target_stocks)
 
-        sell_symbols = current_symbols - target_symbols
+        cash = self.get_cash()
+        position_value = 0.0
+        for symbol, volume in self._current_holdings.items():
+            price = self.get_current_price(symbol)
+            if price and price > 0:
+                position_value += price * volume
+
+        total_assets = cash + position_value
+        position_ratio = getattr(self.params, 'position_ratio', 0.95)
+        investable = total_assets * position_ratio
+        per_stock_target = investable / len(target_stocks) if target_stocks else 0
+
+        self._per_stock_target = per_stock_target
+
+        self.log(
+            f'调仓计算: 总资产={total_assets:.0f}, '
+            f'可投资={investable:.0f}, '
+            f'每只目标={per_stock_target:.0f}'
+        )
+
+        full_sell_symbols = current_symbols - target_symbols
         hold_symbols = current_symbols & target_symbols
 
-        all_sell_symbols = sell_symbols | hold_symbols
         has_sells = False
+        pending_sell_symbols = set()
 
-        for symbol in sell_symbols:
+        for symbol in full_sell_symbols:
             pos_size = self._current_holdings.get(symbol, 0)
             if pos_size > 0:
                 price = self.get_current_price(symbol)
                 if price and price > 0:
                     self.sell(symbol, price, pos_size)
-                    self.log(f'调仓卖出(清仓): {symbol}, 数量: {pos_size}, 价格: {price:.2f}')
+                    sell_value = price * pos_size
+                    self.log(
+                        f'调仓卖出(清仓): {symbol}, '
+                        f'数量: {pos_size}, 价格: {price:.2f}, 市值: {sell_value:.0f}'
+                    )
                     has_sells = True
+                    pending_sell_symbols.add(symbol)
             del self._current_holdings[symbol]
 
         for symbol in hold_symbols:
@@ -198,31 +231,48 @@ class StockSelectionStrategy(StrategyLogic):
             if pos_size > 0:
                 price = self.get_current_price(symbol)
                 if price and price > 0:
-                    self.sell(symbol, price, pos_size)
-                    self.log(f'调仓卖出(再平衡): {symbol}, 数量: {pos_size}, 价格: {price:.2f}')
-                    has_sells = True
-            del self._current_holdings[symbol]
+                    current_value = price * pos_size
+                    if current_value > per_stock_target * 1.01:
+                        excess_value = current_value - per_stock_target
+                        sell_volume = int(excess_value / price / 100) * 100
+                        if sell_volume >= 100:
+                            self.sell(symbol, price, sell_volume)
+                            self._current_holdings[symbol] = pos_size - sell_volume
+                            self.log(
+                                f'调仓卖出(减仓): {symbol}, '
+                                f'卖出: {sell_volume}, 剩余: {pos_size - sell_volume}, '
+                                f'价格: {price:.2f}'
+                            )
+                            has_sells = True
+                            pending_sell_symbols.add(symbol)
+                        else:
+                            self.log(
+                                f'调仓跳过(超出不足1手): {symbol}, 超出: {excess_value:.0f}'
+                            )
 
         if self._is_live_trading() and has_sells:
             self._rebalance_phase = self.PHASE_SELLING
-            self._pending_sell_symbols = all_sell_symbols.copy()
+            self._pending_sell_symbols = pending_sell_symbols
             self._rebalance_target_stocks = list(target_stocks)
-            self.log(f'再平衡阶段1: 等待 {len(all_sell_symbols)} 只股票卖出确认')
+            self.log(f'再平衡阶段1: 等待 {len(pending_sell_symbols)} 只股票卖出确认')
         else:
-            self._rebalance_buy_phase(target_stocks)
+            self._rebalance_buy_phase(target_stocks, per_stock_target)
 
-    def _rebalance_buy_phase(self, target_stocks: List[str]):
-        """调仓买入阶段 - 根据实际可用资金等权买入
+    def _rebalance_buy_phase(self, target_stocks: List[str], per_stock_target: float = None):
+        """调仓买入阶段 - 补仓至目标市值
 
-        在实盘模式下，此时所有卖出已确认成交，get_cash() 返回的资金
-        已包含卖出回款，可以安全地用于买入计算。
+        对于已持有但低于目标市值的股票，买入不足部分；
+        对于新入选的股票，按目标市值等权建仓。
+
+        Args:
+            target_stocks: 目标持仓股票列表
+            per_stock_target: 每只股票的目标市值（由 rebalance_to 预计算）
         """
         if self._is_live_trading():
             self._sync_holdings_from_executor()
 
-        cash = self.get_cash()
-        position_ratio = getattr(self.params, 'position_ratio', 0.95)
-        available_cash = cash * position_ratio
+        if per_stock_target is None:
+            per_stock_target = getattr(self, '_per_stock_target', None)
 
         tradeable_symbols = []
         skipped_symbols = []
@@ -240,16 +290,35 @@ class StockSelectionStrategy(StrategyLogic):
             self._rebalance_phase = self.PHASE_IDLE
             return
 
-        per_stock_cash = available_cash / len(tradeable_symbols)
+        if per_stock_target is None:
+            cash = self.get_cash()
+            position_value = 0.0
+            for symbol, volume in self._current_holdings.items():
+                price = self.get_current_price(symbol)
+                if price and price > 0:
+                    position_value += price * volume
+            total_assets = cash + position_value
+            position_ratio = getattr(self.params, 'position_ratio', 0.95)
+            investable = total_assets * position_ratio
+            per_stock_target = investable / len(tradeable_symbols)
+        elif len(tradeable_symbols) < len(target_stocks):
+            per_stock_target = per_stock_target * len(target_stocks) / len(tradeable_symbols)
 
         for symbol in tradeable_symbols:
+            current_volume = self._current_holdings.get(symbol, 0)
             price = self.get_current_price(symbol)
             if price and price > 0:
-                volume = int(per_stock_cash / price / 100) * 100
-                if volume >= 100:
-                    self.buy(symbol, price, volume)
-                    self._current_holdings[symbol] = volume
-                    self.log(f'调仓买入: {symbol}, 数量: {volume}, 价格: {price:.2f}')
+                current_value = current_volume * price
+                deficit = per_stock_target - current_value
+                if deficit > per_stock_target * 0.01:
+                    buy_volume = int(deficit / price / 100) * 100
+                    if buy_volume >= 100:
+                        self.buy(symbol, price, buy_volume)
+                        self._current_holdings[symbol] = current_volume + buy_volume
+                        self.log(
+                            f'调仓买入: {symbol}, '
+                            f'数量: {buy_volume}, 价格: {price:.2f}'
+                        )
 
         self._rebalance_phase = self.PHASE_IDLE
 
