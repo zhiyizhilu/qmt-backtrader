@@ -421,6 +421,13 @@ class BacktestAPI(BaseAPI):
         self._financial_adapter = FinancialDataAdapter(cache)
         self._stock_pool = stock_list
 
+        if sector:
+            from core.data.index_constituent import IndexConstituentManager
+            sector_benchmark = IndexConstituentManager.SECTOR_TO_INDEX.get(sector)
+            if sector_benchmark:
+                self._benchmark = sector_benchmark
+                self.logger.info(f"[基准] 根据 sector='{sector}' 自动设置基准为 {sector_benchmark}")
+
         self.logger.info(
             f"[阶段3/5] 财务数据适配器创建完成(按需加载模式): {len(stock_list)} 只股票待查询"
         )

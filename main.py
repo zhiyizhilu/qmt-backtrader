@@ -3,6 +3,7 @@ import os
 import logging
 from api.backtest_api import BacktestAPI
 from core.cache import cache_manager
+from core.data.index_constituent import IndexConstituentManager
 from api.qmt_api import QMTAPI
 from core.stock_selection import StockSelectionStrategy
 from strategies import (get_strategy, get_strategy_default_kwargs,
@@ -69,6 +70,9 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
         config['start_date'] = start_date
     if end_date:
         config['end_date'] = end_date
+
+    benchmark = IndexConstituentManager.SECTOR_TO_INDEX.get(pool, '000300.SH')
+    config.setdefault('benchmark', benchmark)
 
     api = BacktestAPI(proxy=proxy)
 
