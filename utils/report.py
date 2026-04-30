@@ -306,6 +306,9 @@ class BacktestReportWindow(QMainWindow):
         self.trade_analysis_tab = self._create_trade_log_tab()
         self.tabs.addTab(self.trade_analysis_tab, "交易明细")
 
+        self.daily_position_pnl_tab = self._create_daily_position_pnl_tab()
+        self.tabs.addTab(self.daily_position_pnl_tab, "每日持仓收益")
+
         self.benchmark_tab = self._create_benchmark_tab()
         self.tabs.addTab(self.benchmark_tab, "基准对比")
 
@@ -2260,6 +2263,302 @@ class BacktestReportWindow(QMainWindow):
             else [t for t in self.all_processed_trades if t["order_id"] != -1]
         )
         self._populate_trade_table(filtered_trades)
+
+    def _process_daily_positions(self) -> list:
+        trade_log = self.result.trade_log
+        instrument_close = self.result.instrument_close_prices or {}
+        df = self.plot_df
+        if not trade_log or df is None or df.empty:
+            return []
+
+        multipliers = {
+            iid: data.volume_multiple
+            for iid, data in self.result.instruments_data.items()
+        }
+
+        trading_dates = df["datetime"].dt.strftime("%Y-%m-%d").tolist()
+        portfolio_values = df["PortfolioValue"].tolist()
+
+        sorted_trades = sorted(
+            [t for t in trade_log if t.trade_price > 0 and t.order_id != -1],
+            key=lambda t: t.trade_time if t.trade_time else "",
+        )
+
+        trades_by_date = defaultdict(list)
+        for trade in sorted_trades:
+            if trade.trade_time:
+                if hasattr(trade.trade_time, "strftime"):
+                    date_str = trade.trade_time.strftime("%Y-%m-%d")
+                else:
+                    date_str = str(trade.trade_time)[:10]
+                trades_by_date[date_str].append(trade)
+
+        positions = {}
+        prev_closes = {}
+        result = []
+
+        for i, date_str in enumerate(trading_dates):
+            for trade in trades_by_date.get(date_str, []):
+                instrument = trade.instrument_id
+                is_buy = trade.direction == "0"
+                volume = trade.volume
+                price = trade.trade_price
+
+                if instrument not in positions:
+                    positions[instrument] = {"quantity": 0, "avg_price": 0.0}
+
+                pos = positions[instrument]
+                qty = pos["quantity"]
+                avg = pos["avg_price"]
+
+                if is_buy:
+                    if qty >= 0:
+                        new_qty = qty + volume
+                        pos["avg_price"] = (avg * qty + price * volume) / new_qty if new_qty > 0 else 0.0
+                        pos["quantity"] = new_qty
+                    else:
+                        if volume >= abs(qty):
+                            remaining = volume + qty
+                            pos["quantity"] = remaining
+                            pos["avg_price"] = price if remaining > 0 else 0.0
+                        else:
+                            pos["quantity"] = qty + volume
+                else:
+                    if qty <= 0:
+                        new_qty = qty - volume
+                        pos["avg_price"] = (avg * abs(qty) + price * volume) / abs(new_qty) if new_qty < 0 else 0.0
+                        pos["quantity"] = new_qty
+                    else:
+                        if volume >= qty:
+                            remaining = volume - qty
+                            pos["quantity"] = -remaining
+                            pos["avg_price"] = price if remaining > 0 else 0.0
+                        else:
+                            pos["quantity"] = qty - volume
+
+            portfolio_value = portfolio_values[i]
+
+            for instrument in list(positions.keys()):
+                pos = positions[instrument]
+                if pos["quantity"] == 0:
+                    continue
+
+                quantity = pos["quantity"]
+                avg_price = pos["avg_price"]
+                multiplier = multipliers.get(instrument, 1)
+
+                close_prices = instrument_close.get(instrument, {})
+                close_price = close_prices.get(date_str, 0.0)
+                if close_price == 0.0:
+                    close_price = avg_price
+
+                market_value = close_price * abs(quantity) * multiplier
+
+                prev_close = prev_closes.get(instrument, 0.0)
+                if prev_close > 0:
+                    daily_pnl = (close_price - prev_close) * quantity * multiplier
+                else:
+                    daily_pnl = (close_price - avg_price) * quantity * multiplier
+
+                total_pnl = (close_price - avg_price) * quantity * multiplier
+
+                position_ratio = market_value / portfolio_value if portfolio_value > 0 else 0.0
+                pnl_ratio = total_pnl / portfolio_value if portfolio_value > 0 else 0.0
+
+                result.append({
+                    "date": date_str,
+                    "instrument": instrument,
+                    "quantity": quantity,
+                    "avg_price": avg_price,
+                    "close_price": close_price,
+                    "market_value": market_value,
+                    "daily_pnl": daily_pnl,
+                    "total_pnl": total_pnl,
+                    "position_ratio": position_ratio,
+                    "pnl_ratio": pnl_ratio,
+                })
+
+                prev_closes[instrument] = close_price
+
+        return result
+
+    def _create_daily_position_pnl_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QHBoxLayout(tab)
+
+        daily_positions = self._process_daily_positions()
+
+        stats_panel = self._create_daily_position_stats_panel(daily_positions)
+        layout.addWidget(stats_panel)
+
+        self.daily_position_table = QTableWidget()
+        self._setup_daily_position_table()
+        self._populate_daily_position_table(daily_positions)
+        layout.addWidget(self.daily_position_table)
+
+        layout.setStretchFactor(stats_panel, 1)
+        layout.setStretchFactor(self.daily_position_table, 3)
+        return tab
+
+    def _create_daily_position_stats_panel(self, daily_positions: list) -> QWidget:
+        panel = QFrame()
+        panel.setFrameShape(QFrame.StyledPanel)
+        panel.setStyleSheet(
+            "QFrame { background-color: #f7f7f7; border: 1px solid #e0e0e0; border-radius: 8px; padding: 15px; }"
+            "QLabel { background-color: transparent; border: none; padding: 3px; }"
+        )
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(12)
+
+        title_label = QLabel("持仓收益统计")
+        title_label.setFont(QFont("Microsoft YaHei", 13, QFont.Bold))
+        title_label.setStyleSheet("color: #333; padding-bottom: 5px;")
+        layout.addWidget(title_label)
+
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        line.setStyleSheet("background-color: #e0e0e0; margin: 8px 0;")
+        layout.addWidget(line)
+
+        stats_layout = QGridLayout()
+        stats_layout.setVerticalSpacing(8)
+        stats_layout.setHorizontalSpacing(15)
+        stats_layout.setColumnMinimumWidth(0, 150)
+
+        if daily_positions:
+            unique_dates = len(set(d["date"] for d in daily_positions))
+            unique_instruments = len(set(d["instrument"] for d in daily_positions))
+            total_daily_pnl = sum(d["daily_pnl"] for d in daily_positions if d["date"] == daily_positions[-1]["date"])
+            last_date = daily_positions[-1]["date"]
+            last_day_positions = [d for d in daily_positions if d["date"] == last_date]
+            total_market_value = sum(d["market_value"] for d in last_day_positions)
+            total_unrealized_pnl = sum(d["total_pnl"] for d in last_day_positions)
+            max_daily_pnl = max(d["daily_pnl"] for d in daily_positions)
+            min_daily_pnl = min(d["daily_pnl"] for d in daily_positions)
+
+            daily_pnls_by_date = defaultdict(float)
+            for d in daily_positions:
+                daily_pnls_by_date[d["date"]] += d["daily_pnl"]
+            win_days = sum(1 for v in daily_pnls_by_date.values() if v > 0)
+            loss_days = sum(1 for v in daily_pnls_by_date.values() if v < 0)
+
+            stats = {
+                "持仓交易日数": f"{unique_dates}",
+                "持仓标的数": f"{unique_instruments}",
+                "最新持仓市值": f"{total_market_value:,.2f}",
+                "最新未实现盈亏": f"{total_unrealized_pnl:,.2f}",
+                "": "",
+                "最新日盈亏": f"{total_daily_pnl:,.2f}",
+                "单日最大盈亏": f"{max_daily_pnl:,.2f}",
+                "单日最小盈亏": f"{min_daily_pnl:,.2f}",
+                " ": "",
+                "持仓盈利天数": f"{win_days}",
+                "持仓亏损天数": f"{loss_days}",
+                "持仓日胜率": f"{win_days / (win_days + loss_days):.2%}" if (win_days + loss_days) > 0 else "N/A",
+            }
+        else:
+            stats = {
+                "持仓交易日数": "0",
+                "持仓标的数": "0",
+                "最新持仓市值": "0.00",
+                "最新未实现盈亏": "0.00",
+            }
+
+        row = 0
+        for name, value in stats.items():
+            name_label, value_label = QLabel(name), QLabel(value)
+            name_label.setFont(QFont("Microsoft YaHei", 10))
+            name_label.setStyleSheet("color: #666;")
+            value_label.setFont(QFont("Arial", 10, QFont.Bold))
+            value_label.setAlignment(Qt.AlignRight)
+            stats_layout.addWidget(name_label, row, 0)
+            stats_layout.addWidget(value_label, row, 1)
+            row += 1
+
+        layout.addLayout(stats_layout)
+        layout.addStretch()
+        panel.setMinimumWidth(320)
+        panel.setMinimumHeight(700)
+        return panel
+
+    def _setup_daily_position_table(self):
+        headers = [
+            "日期",
+            "标的",
+            "数量",
+            "开仓均价",
+            "收盘价",
+            "市值",
+            "当日盈亏",
+            "总盈亏",
+            "仓位占比",
+            "盈亏占比",
+        ]
+        self.daily_position_table.setColumnCount(len(headers))
+        self.daily_position_table.setHorizontalHeaderLabels(headers)
+        self.daily_position_table.setSortingEnabled(True)
+        self.daily_position_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.daily_position_table.verticalHeader().setVisible(False)
+
+        header = self.daily_position_table.horizontalHeader()
+        header.setSectionsMovable(False)
+        for col in range(len(headers)):
+            header.setSectionResizeMode(col, QHeaderView.Interactive)
+
+    def _populate_daily_position_table(self, daily_positions: list):
+        self.daily_position_table.setSortingEnabled(False)
+        self.daily_position_table.setRowCount(len(daily_positions))
+
+        for row, pos in enumerate(daily_positions):
+            quantity = pos["quantity"]
+            is_long = quantity > 0
+
+            items_to_add = [
+                pos["date"],
+                pos["instrument"],
+                str(quantity),
+                f"{pos['avg_price']:.3f}",
+                f"{pos['close_price']:.3f}",
+                f"{pos['market_value']:,.2f}",
+                f"{pos['daily_pnl']:,.2f}",
+                f"{pos['total_pnl']:,.2f}",
+                f"{pos['position_ratio']:.2%}",
+                f"{pos['pnl_ratio']:.2%}",
+            ]
+
+            for col, item_text in enumerate(items_to_add):
+                item = QTableWidgetItem(item_text)
+                item.setTextAlignment(Qt.AlignCenter)
+
+                if col == 2:
+                    item.setForeground(QColor("#d14545") if is_long else QColor("#3f993f"))
+                elif col in (6, 7):
+                    val = pos["daily_pnl"] if col == 6 else pos["total_pnl"]
+                    if val > 0:
+                        item.setForeground(QColor("#d14545"))
+                    elif val < 0:
+                        item.setForeground(QColor("#3f993f"))
+
+                self.daily_position_table.setItem(row, col, item)
+
+        self.daily_position_table.setSortingEnabled(True)
+
+        header = self.daily_position_table.horizontalHeader()
+        font_metrics = self.daily_position_table.fontMetrics()
+        for col in range(self.daily_position_table.columnCount()):
+            max_width = 0
+            header_text = self.daily_position_table.horizontalHeaderItem(col).text()
+            header_width = font_metrics.width(header_text) + 40
+            max_width = max(max_width, header_width)
+            for row in range(min(self.daily_position_table.rowCount(), 100)):
+                item = self.daily_position_table.item(row, col)
+                if item:
+                    text_width = font_metrics.width(item.text()) + 30
+                    max_width = max(max_width, text_width)
+            max_width = min(max_width, 300)
+            max_width = max(max_width, 80)
+            header.resizeSection(col, max_width + 20)
 
 
 def generate_report(result: "BacktestingResult"):

@@ -51,6 +51,7 @@ class BacktestingResult:
         benchmark_df: Optional[pd.DataFrame] = None,
         benchmark_symbol: str = "",
         trade_start_date: Optional[str] = None,
+        instrument_close_prices: Optional[Dict[str, Dict[str, float]]] = None,
     ):
         self.account = account or AccountInfo()
         self.config = config or BacktestConfig()
@@ -62,6 +63,7 @@ class BacktestingResult:
         self.benchmark_df = benchmark_df
         self.benchmark_symbol = benchmark_symbol
         self.trade_start_date: Optional[str] = trade_start_date
+        self.instrument_close_prices = instrument_close_prices or {}
         self.turnover: float = 0.0
         self.total_volume: int = 0
         self.total_trading_days: int = 0

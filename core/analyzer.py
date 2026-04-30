@@ -38,6 +38,7 @@ class PerformanceAnalyzer:
         trade_log = self._build_trade_log()
         klines = self._build_klines()
         instruments_data = self._build_instruments_data()
+        instrument_close_prices = self._build_instrument_close_prices()
 
         result = BacktestingResult(
             account=account,
@@ -48,6 +49,7 @@ class PerformanceAnalyzer:
             df=df,
             instruments_data=instruments_data,
             trade_start_date=trade_start_date,
+            instrument_close_prices=instrument_close_prices,
         )
 
         result.turnover = self._calc_turnover(trade_log)
@@ -249,6 +251,34 @@ class PerformanceAnalyzer:
                     instruments_data[symbol] = InstrumentData(volume_multiple=1.0)
 
         return instruments_data
+
+    def _build_instrument_close_prices(self) -> Dict[str, Dict[str, float]]:
+        strat = self._strategy
+        if not hasattr(strat, "datas") or not strat.datas:
+            return {}
+
+        result = {}
+        for data_feed in strat.datas:
+            symbol = getattr(data_feed, "_name", "")
+            if not symbol:
+                continue
+            try:
+                num_bars = len(data_feed)
+            except Exception:
+                continue
+
+            close_prices = {}
+            for i in range(num_bars):
+                try:
+                    idx = -num_bars + 1 + i
+                    bar_dt = data_feed.datetime.datetime(idx)
+                    date_str = bar_dt.strftime("%Y-%m-%d")
+                    close_prices[date_str] = float(data_feed.close[idx])
+                except Exception:
+                    continue
+            if close_prices:
+                result[symbol] = close_prices
+        return result
 
     def _calc_total_fee(self, strat) -> float:
         total_fee = 0.0
