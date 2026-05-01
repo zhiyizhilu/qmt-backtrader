@@ -7,13 +7,14 @@
 - **多模式支持**：回测、模拟交易、实盘交易
 - **高性能回测**：基于 Backtrader 引擎
 - **QMT 集成**：支持通过 QMT 进行模拟和实盘交易
-- **多数据源**：支持 QMT、AkShare、Baostock 等数据源
-- **智能缓存**：内存 + 磁盘双层缓存，支持 parquet 格式，中断后自动恢复
-- **策略模板**：内置双均线策略、高股息策略、ETF 轮动策略等
-- **参数优化**：支持网格搜索和遗传算法
-- **可视化**：提供回测结果和实时监控的可视化
-- **机器学习集成**：支持机器学习模型的训练和预测
-- **选股策略**：支持基于基本面的股票选择策略
+- **双数据源架构**：QMT 为主数据源 + OpenData（腾讯财经）自动补充，数据范围远超单一数据源
+- **历史成分股支持**：内置指数和申万行业历史成分股数据，回测时使用对应时点的真实成分股
+- **智能缓存**：内存 + 磁盘双层缓存 + 缓存索引管理，支持 parquet 格式，中断后自动恢复
+- **策略模板**：内置双均线策略、高股息策略、小市值策略、ETF 轮动策略、基本面策略等
+- **参数优化**：支持网格搜索
+- **可视化**：提供基于 PyQt5 的回测结果展示和基于 Dash 的实时监控
+- **选股策略**：支持基于基本面的股票选择策略，行业分散配置
+- **防未来数据**：财务数据按公告日期索引，回测时只使用已披露数据
 
 ## 项目结构
 
@@ -21,7 +22,7 @@
 qmt_backtrader/
 ├── README.md                    # 项目说明文档
 ├── main.py                      # 主入口文件
-├── requirements.txt             # 依赖包管理
+├── .gitignore                   # Git 忽略配置
 ├── .cache/                      # 数据缓存目录（自动创建）
 ├── api/                         # API 接口
 │   ├── __init__.py
@@ -30,34 +31,55 @@ qmt_backtrader/
 │   └── qmt_api.py               # QMT 交易 API
 ├── core/                        # 核心模块
 │   ├── __init__.py
-│   ├── analyzer.py              # 分析器
-│   ├── cache.py                 # 智能缓存系统（内存+磁盘+增量合并）
-│   ├── data.py                  # 数据处理（QMT/AkShare/Baostock）
-│   ├── data_adapter.py          # 数据适配器
-│   ├── executor.py              # 执行器
-│   ├── financial_data.py        # 财务数据处理
+│   ├── analyzer.py              # 回测分析器
+│   ├── cache.py                 # 智能缓存系统（内存+磁盘+索引+增量合并）
+│   ├── data/                    # 数据处理模块
+│   │   ├── __init__.py
+│   │   ├── base.py              # 数据处理器基类 + 缓存序列化工具
+│   │   ├── csv.py               # CSV 数据处理器
+│   │   ├── factory.py           # 数据处理器工厂
+│   │   ├── index_constituent.py # 指数历史成分股管理器
+│   │   ├── industry_constituent.py # 申万行业历史成分股管理器
+│   │   ├── opendata.py          # OpenData 数据处理器（腾讯财经/AkShare）
+│   │   └── qmt.py               # QMT 数据处理器（主数据源 + OpenData 补充）
+│   ├── data_adapter.py          # 数据适配器（回测/实盘统一接口）
+│   ├── executor.py              # 执行器（回测/QMT 统一接口）
+│   ├── financial_data.py        # 财务数据缓存（按需加载）
 │   ├── models.py                # 数据模型
 │   ├── stock_selection.py       # 选股策略基类
-│   ├── strategy.py              # 策略基类
-│   └── strategy_logic.py        # 策略逻辑
+│   ├── strategy.py              # 回测策略适配层（Backtrader 桥接）
+│   └── strategy_logic.py        # 策略逻辑基类（与执行环境解耦）
 ├── example/                     # 示例文档
+│   ├── 小市值策略 — 降低回撤、提升收益.md
+│   └── 高股息行业均仓策略，夏普1.2，稳稳的幸福.md
+├── localdata/                   # 本地静态数据
+│   ├── index_constituent/       # 指数历史成分股 CSV
+│   │   ├── 000016.SH.csv        # 上证50
+│   │   ├── 000300.SH.csv        # 沪深300
+│   │   ├── 000852.SH.csv        # 中证1000
+│   │   └── 000905.SH.csv        # 中证500
+│   └── industry_constituent/    # 申万一级行业历史成分股 CSV
+│       ├── SW1银行.csv
+│       ├── SW1电子.csv
+│       └── ...                  # 共31个行业
 ├── logs/                        # 日志目录
 ├── monitor/                     # 监控模块
 │   ├── __init__.py
-│   └── realtime_monitor.py      # 实时监控
+│   └── realtime_monitor.py      # 实时监控（基于 Dash）
 ├── strategies/                  # 策略目录
-│   ├── __init__.py
-│   ├── config.py                # 策略配置
+│   ├── __init__.py              # 策略注册与自动发现
+│   ├── config.py                # 策略配置（ETF 代码等）
 │   ├── etf_rotation_strategy.py # ETF 轮动策略
-│   ├── example_strategy.py      # 示例策略
-│   ├── fundamental_strategy.py  # 基本面策略
-│   └── high_dividend_strategy.py # 高股息策略
+│   ├── example_strategy.py      # 双均线示例策略
+│   ├── fundamental_strategy.py  # 基本面策略（ROE + 成长性）
+│   ├── high_dividend_strategy.py # 高股息策略
+│   └── small_cap_strategy.py    # 小市值策略
 └── utils/                       # 工具函数
     ├── __init__.py
     ├── logger.py                # 日志管理
-    ├── parameter_optimizer.py   # 参数优化工具
-    ├── report.py                # 报告生成
-    └── visualization.py         # 可视化工具
+    ├── parameter_optimizer.py   # 参数优化工具（网格搜索）
+    ├── report.py                # 报告生成（PyQt5 可视化）
+    └── visualization.py         # 可视化工具（Matplotlib/Plotly）
 ```
 
 ## 环境搭建
@@ -80,28 +102,74 @@ qmt_backtrader/
 ### 1. 运行回测
 
 ```bash
-python main.py --mode backtest --strategy high_dividend --period 1d --pool 沪深300 --start 2025-04-21 --end 2026-04-21 --data-source baostock
+python main.py --mode backtest --strategy high_dividend --period 1d --pool 沪深300 --start 2016-01-01 --end 2026-04-17
 ```
 
 **参数说明**：
 - `--mode`：运行模式，可选值：`backtest`（回测）、`sim`（模拟交易）、`real`（实盘交易）
-- `--strategy`：策略类型，可选值：`double_ma`、`high_dividend`、`etf_rotation` 等
+- `--strategy`：策略类型，可选值：`double_ma`、`high_dividend`、`small_cap`、`etf_rotation`、`fundamental_roe`、`fundamental_growth` 等
 - `--period`：数据周期，可选值：`1d`（日线）、`1m`、`5m`、`15m`、`30m`、`60m`、`tick`
-- `--pool`：股票池板块名称，如 `沪深300`、`沪深A股`、`上证50`
+- `--pool`：股票池板块名称，如 `沪深300`、`沪深A股`、`上证50`、`中证500`、`中证1000`
 - `--start`：回测起始日期，格式：`YYYY-MM-DD`
 - `--end`：回测结束日期，格式：`YYYY-MM-DD`
-- `--data-source`：数据源，可选值：`qmt`（需 QMT 客户端）、`akshare`（免费在线）、`baostock`（免费在线）
+- `--qmt-path`：QMT userdata_mini 路径（默认 `D:\qmt\userdata_mini`）
+- `--account`：QMT 资金账号，不传则自动获取第一个
+- `--cache-dir`：自定义缓存数据存储目录（默认项目根目录下 `.cache`）
+- `--mem-limit`：内存缓存最大对象数量限制（默认 500）
+- `--debug`：启用 DEBUG 日志模式，输出详细调试信息
 
 ### 2. 运行模拟交易
 
 ```bash
-python main.py --mode sim --strategy double_ma
+python main.py --mode sim --strategy double_ma --qmt-path D:\qmt\userdata_mini
 ```
 
 ### 3. 运行实盘交易
 
 ```bash
-python main.py --mode real --strategy double_ma
+python main.py --mode real --strategy double_ma --qmt-path D:\qmt\userdata_mini --account 12345678
+```
+
+## 架构设计
+
+### 策略架构
+
+框架采用 **策略逻辑与执行环境解耦** 的架构设计：
+
+```
+StrategyLogic（策略逻辑基类）
+├── on_bar()       → K线事件
+├── on_order()     → 委托事件
+├── on_trade()     → 成交事件
+├── 数据适配器接口  → get_current_price / get_close_prices / ...
+└── 执行器接口     → buy / sell / cancel_order / ...
+
+    ├── BaseStrategy（回测适配层，桥接 Backtrader）
+    └── QMTExecutor（实盘适配层，桥接 QMT）
+```
+
+- **StrategyLogic**：纯策略逻辑，不依赖任何执行环境
+- **BaseStrategy**：将 StrategyLogic 适配到 Backtrader 框架的回测适配层
+- **StockSelectionStrategy**：选股策略基类，只需实现 `select_stocks()` 方法，框架自动处理调仓
+
+### 数据架构
+
+```
+DataProcessor（数据处理器基类）
+├── QMTDataProcessor（主数据源：QMT + OpenData 自动补充）
+├── OpenDataProcessor（补充数据源：腾讯财经/AkShare，数据范围远超 QMT）
+└── CSVDataProcessor（CSV 文件数据源）
+```
+
+- **QMT 为主，OpenData 补充**：QMT 数据不足时自动用 OpenData 填充，对策略层完全透明
+- **历史成分股**：内置聚宽下载的指数和行业历史成分股 CSV，回测时使用对应时点的真实成分股
+
+### 执行器架构
+
+```
+StrategyExecutor（执行器基类）
+├── BacktestExecutor（回测执行器，通过 Backtrader 执行）
+└── QMTExecutor（实盘执行器，通过 QMT 交易接口执行）
 ```
 
 ## 智能缓存系统
@@ -112,6 +180,7 @@ python main.py --mode real --strategy double_ma
 
 - **内存缓存（MemCache）**：基于 OrderedDict 的线程安全 LRU 缓存，默认容量 500
 - **磁盘缓存（DiskCache）**：支持 parquet 和 pickle 两种格式，按命名空间隔离
+- **缓存索引（CacheIndexManager）**：维护行情/财报数据的年份索引，支持增量更新
 
 ### 缓存特性
 
@@ -120,65 +189,84 @@ python main.py --mode real --strategy double_ma
 3. **增量更新**：行情数据支持智能增量更新，只下载缺失部分
 4. **格式优化**：默认使用 pyarrow parquet 格式，比 pickle 更快更紧凑
 5. **原子写入**：使用临时文件 + 原子重命名，避免写入中断导致文件损坏
+6. **缓存索引**：维护年份索引，快速判断缓存覆盖范围，避免重复下载
 
 ### 缓存目录
 
 缓存文件默认存储在项目根目录的 `.cache/` 文件夹下：
 ```
 .cache/
-├── BaoStockDataProcessor/           # Baostock 行情数据缓存
-├── BaoStockDataProcessor_Financial/ # Baostock 财务数据缓存
-│   ├── 600000.SH_2024Q1_2026Q1.parquet
-│   └── merged_300_2025-04-21_2026-04-21.parquet
-└── AKShareDataProcessor/            # AkShare 数据缓存
+├── index/                           # 缓存索引
+│   ├── market_index.json            # 行情数据索引
+│   └── financial_index.json         # 财务数据索引
+├── QMTDataProcessor/                # QMT 行情数据缓存
+├── QMTDataProcessor_Financial/      # QMT 财务数据缓存
+├── OpenData/                        # OpenData 行情数据缓存
+│   └── financial/                   # OpenData 财务数据缓存
+│       ├── 000001.SZ_Balance.parquet
+│       ├── 000001.SZ_CashFlow.parquet
+│       ├── 000001.SZ_Income.parquet
+│       └── 000001.SZ_Pershareindex.parquet
+└── ...
 ```
 
 ### 环境变量
 
 - `QMT_CACHE_DIR`：自定义缓存目录路径
 - `QMT_MEM_CACHE_LIMIT`：内存缓存容量限制（默认 500）
+- `QMT_LOG_LEVEL`：日志级别（默认 `INFO`，设为 `DEBUG` 输出详细调试信息）
 
 ## 策略开发
 
 ### 创建自定义策略
 
 1. 在 `strategies` 目录下创建新的策略文件
-2. 继承 `core.strategy.BaseStrategy` 类（单标的策略）或 `core.stock_selection.StockSelectionStrategy` 类（多标的选股策略）
+2. 继承 `core.strategy_logic.StrategyLogic` 类（单标的策略）或 `core.stock_selection.StockSelectionStrategy` 类（多标的选股策略）
 3. 使用 `@register_strategy` 装饰器注册策略
 4. 实现相应的策略逻辑方法
+
+> **注意**：策略文件放入 `strategies/` 目录后会自动被发现和注册，无需手动导入。
 
 ### 示例策略
 
 #### 单标的策略示例
 
 ```python
-from core.strategy import BaseStrategy
-import backtrader as bt
+from core.strategy_logic import StrategyLogic, BarData
 from strategies import register_strategy
 
 @register_strategy('my_strategy', default_kwargs={'fast_period': 5, 'slow_period': 20},
                    backtest_config={'cash': 100000, 'commission': 0.0001,
                                     'start_date': '2025-01-01', 'end_date': '2026-04-17'})
-class MyStrategy(BaseStrategy):
+class MyStrategy(StrategyLogic):
     params = (
         ('fast_period', 5),
         ('slow_period', 20),
+        ('symbol', '000001.SZ'),
+        ('position_ratio', 0.9),
     )
-    
-    def __init__(self):
-        super().__init__()
-        # 初始化指标
-        self.fast_ma = bt.indicators.SimpleMovingAverage(self.datas[0].close, period=self.params.fast_period)
-        self.slow_ma = bt.indicators.SimpleMovingAverage(self.datas[0].close, period=self.params.slow_period)
-    
-    def next(self):
-        # 策略逻辑
-        if self.fast_ma[0] > self.slow_ma[0] and self.fast_ma[-1] <= self.slow_ma[-1]:
-            if not self.position:
-                self.buy()
-        elif self.fast_ma[0] < self.slow_ma[0] and self.fast_ma[-1] >= self.slow_ma[-1]:
-            if self.position:
-                self.sell()
+
+    def on_bar(self, bar: BarData):
+        symbol = self.params.symbol
+        close_prices = self.get_close_prices(symbol)
+
+        if len(close_prices) < self.params.slow_period:
+            return
+
+        fast_ma = sum(close_prices[-self.params.fast_period:]) / self.params.fast_period
+        slow_ma = sum(close_prices[-self.params.slow_period:]) / self.params.slow_period
+
+        pos_size = self.get_position_size(symbol)
+
+        if fast_ma > slow_ma and pos_size == 0:
+            price = self.get_current_price(symbol)
+            cash = self.get_cash()
+            volume = int(cash * self.params.position_ratio / price / 100) * 100
+            if volume >= 100:
+                self.buy(symbol, price, volume)
+        elif fast_ma < slow_ma and pos_size > 0:
+            price = self.get_current_price(symbol)
+            self.sell(symbol, price, pos_size)
 ```
 
 #### 选股策略示例
@@ -202,38 +290,64 @@ class MySelectionStrategy(StockSelectionStrategy):
     def select_stocks(self):
         """选股逻辑"""
         pool = self.get_stock_pool()
-        # 实现自定义选股逻辑
-        # ...
-        return selected_stocks
+        filtered = self.screen_stocks(
+            lambda s: (self.get_financial_field(s, 'Pershareindex', 'roe_diluted') or 0) > 0.10,
+            pool
+        )
+        ranked = self.rank_stocks(
+            lambda s: self.get_financial_field(s, 'Pershareindex', 'roe_diluted') or 0,
+            stock_pool=filtered,
+            top_n=self.params.max_stocks
+        )
+        return [stock for stock, _ in ranked]
 ```
 
 ## 内置策略
 
 ### 1. 双均线策略 (double_ma)
 - 基于短期和长期移动平均线的交叉信号
-- 适用于趋势跟踪
+- 适用于单标的趋势跟踪
+- 继承 `StrategyLogic`，通过 `on_bar()` 事件驱动
 
 ### 2. 高股息策略 (high_dividend)
 - 基于股息率选股，行业分散配置
-- 规避高股息陷阱，要求 ROE>0、净利润增速>0、经营现金流>0
+- 规避高股息陷阱，要求 ROE>0、归母净利润增速>0、经营现金流>0
 - 月度调仓，等权重持仓
 - **防未来数据**：财务数据按公告日期索引，回测时只使用已披露数据
 
-### 3. ETF 轮动策略 (etf_rotation)
-- 基于 ETF 的动量和波动率进行轮动
-- 选择表现较好的 ETF 进行配置
+### 3. 小市值策略 (small_cap)
+- 基本面过滤 + 行业分散 + 动量确认的小市值选股策略
+- 四重基本面过滤：ROE>0、营收增速>0、经营现金流>0、资产负债率<阈值
+- 每个申万一级行业选市值最小的1只，避免行业集中暴露
+- 动量确认：近N日涨幅>0，避免在下跌趋势中接飞刀
+- 月度调仓，等权重持仓
 
-### 4. 基本面策略 (fundamental)
-- 基于基本面指标选股
-- 可自定义多种财务指标过滤条件
+### 4. ETF 轮动策略 (etf_rotation)
+- 基于 ETF 的动量进行轮动
+- 覆盖创业板、纳指、黄金、国债等资产类别
+- 继承 `StrategyLogic`，通过 `on_bar()` 事件驱动
 
-## 数据源对比
+### 5. ROE 基本面策略 (fundamental_roe)
+- 基于 ROE（净资产收益率）筛选优质股票
+- 要求 ROE > 阈值且 EPS > 阈值
+- 按 ROE 降序排列，取前 N 只等权重持仓
+- 月度调仓
 
-| 数据源 | 实时性 | 数据范围 | 使用门槛 | 推荐场景 |
-|--------|--------|----------|----------|----------|
-| QMT | 实时 | A股全市场 | 需开户+客户端 | 实盘/模拟交易 |
-| AkShare | 延迟 | A股/期货/外汇等 | 免费，无需账户 | 研究/回测 |
-| Baostock | 延迟 | A股历史数据 | 免费，无需账户 | 历史回测 |
+### 6. 成长性策略 (fundamental_growth)
+- 基于营收和利润增长率筛选成长股
+- 月度调仓
+
+## 数据源架构
+
+| 数据源 | 实时性 | 数据范围 | 使用门槛 | 角色 |
+|--------|--------|----------|----------|------|
+| QMT | 实时 | A股全市场（行情约1年） | 需开户+客户端 | 主数据源 |
+| OpenData | 延迟 | A股全市场（历史数据丰富） | 免费，需 akshare | 补充数据源 |
+| CSV | - | 自定义 | 无 | 自定义数据源 |
+
+**数据获取策略**：QMT 为主数据源，当 QMT 数据不足时自动用 OpenData 补充，对策略层完全透明。
+
+**历史成分股**：基于聚宽下载的 CSV 文件，支持沪深300、中证500、中证1000、上证50及31个申万一级行业的历史成分股查询，回测时使用对应时点的真实成分股，超出范围时自动从 QMT 获取最新数据并更新文件。
 
 ## 注意事项
 
@@ -241,12 +355,12 @@ class MySelectionStrategy(StockSelectionStrategy):
 2. **QMT 依赖**：使用 QMT 接口需要安装 QMT 客户端和 XtQuant 库
 3. **数据质量**：回测结果依赖于数据质量，请确保数据的准确性
 4. **策略优化**：参数优化可能导致过拟合，请谨慎使用优化结果
-5. **数据源选择**：不同数据源的质量和覆盖范围不同，请根据需要选择合适的数据源
-6. **缓存清理**：如遇到数据异常，可手动删除 `.cache/` 目录下的对应文件重新下载
+5. **缓存清理**：如遇到数据异常，可手动删除 `.cache/` 目录下的对应文件重新下载
+6. **历史成分股**：`localdata/` 下的 CSV 文件为聚宽下载的历史数据，超出日期范围时会自动从 QMT 获取最新数据
 
 ## 后续计划
 
-- [ ] 支持更多交易接口（如tushare、yahoo等）
+- [ ] 支持更多交易接口（如 tushare、yahoo 等）
 - [ ] 实现策略自动优化
 - [ ] 增加深度学习模型集成
 - [ ] 开发 Web 界面
