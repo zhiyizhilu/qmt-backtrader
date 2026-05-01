@@ -62,6 +62,7 @@ class CacheIndexManager:
         self.logger = logging.getLogger(self.__class__.__name__)
         self._market_index: Dict[str, Dict[str, Dict]] = {}
         self._financial_index: Dict[str, Dict[str, Dict]] = {}
+        self._dividend_checked: Dict[str, str] = {}
         self._dirty = False
         self.load_index()
 
@@ -73,10 +74,15 @@ class CacheIndexManager:
     def financial_index_path(self) -> Path:
         return self.cache_dir / 'index' / 'financial_index.json'
 
+    @property
+    def dividend_checked_path(self) -> Path:
+        return self.cache_dir / 'index' / 'dividend_checked.json'
+
     def load_index(self) -> None:
         for path, attr in [
             (self.market_index_path, '_market_index'),
             (self.financial_index_path, '_financial_index'),
+            (self.dividend_checked_path, '_dividend_checked'),
         ]:
             if path.exists():
                 try:
@@ -84,7 +90,7 @@ class CacheIndexManager:
                         setattr(self, attr, json.load(f))
                 except Exception as e:
                     self.logger.warning(f"加载索引文件失败: {path}, 错误: {e}")
-                    setattr(self, attr, {})
+                    setattr(self, attr, {} if attr != '_dividend_checked' else {})
 
     def save_index(self) -> None:
         if not self._dirty:
@@ -93,6 +99,7 @@ class CacheIndexManager:
             for path, data in [
                 (self.market_index_path, self._market_index),
                 (self.financial_index_path, self._financial_index),
+                (self.dividend_checked_path, self._dividend_checked),
             ]:
                 try:
                     path.parent.mkdir(parents=True, exist_ok=True)
@@ -201,6 +208,28 @@ class CacheIndexManager:
                 except Exception:
                     continue
             return valid_years
+
+    def update_checked_dividend_stocks(self, stocks: List[str]) -> None:
+        with self.lock:
+            now = pd.Timestamp.now().strftime('%Y-%m-%dT%H:%M:%S')
+            for stock in stocks:
+                self._dividend_checked[stock] = now
+            self._dirty = True
+
+    def get_checked_dividend_stocks(self, max_age_days: int = 30) -> set:
+        with self.lock:
+            if not self._dividend_checked:
+                return set()
+            now = pd.Timestamp.now()
+            valid = set()
+            for stock, check_time in self._dividend_checked.items():
+                try:
+                    check_dt = pd.Timestamp(check_time)
+                    if (now - check_dt).days < max_age_days:
+                        valid.add(stock)
+                except Exception:
+                    continue
+            return valid
 
     def rebuild_index_from_disk(self, disk_cache: 'DiskCache') -> None:
         """从磁盘文件重建索引（用于索引损坏或首次迁移时）"""

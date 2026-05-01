@@ -1608,6 +1608,7 @@ class QMTDataProcessor(DataProcessor):
 
         使用单一合并缓存文件（dividend_all），避免产生大量单独文件。
         加载时从合并缓存读取已有数据，仅下载缺失的股票，下载后增量合并回缓存。
+        对无分红数据的股票，记录到索引中避免重复下载（30天内有效）。
 
         Args:
             stock_list: 股票代码列表
@@ -1644,9 +1645,21 @@ class QMTDataProcessor(DataProcessor):
             missing_stocks = sorted(stock_list)
             self.logger.info(f"无分红合并缓存, 需下载 {len(missing_stocks)} 只股票")
 
+        checked_stocks = cache_manager.index_manager.get_checked_dividend_stocks()
+        if checked_stocks:
+            before = len(missing_stocks)
+            missing_stocks = sorted(set(missing_stocks) - checked_stocks)
+            skipped = before - len(missing_stocks)
+            if skipped > 0:
+                self.logger.info(
+                    f"分红已检查跳过: {skipped} 只股票近期已确认无分红数据"
+                )
+
         if missing_stocks:
             download_hits = 0
+            empty_hits = 0
             fail_count = 0
+            empty_stocks = []
             total = len(missing_stocks)
             phase_start = time.time()
 
@@ -1658,11 +1671,18 @@ class QMTDataProcessor(DataProcessor):
                     if df is not None and not df.empty:
                         df = self._normalize_qmt_dividend_df(df)
                         result[stock] = df
-                    download_hits += 1
-                    self.logger.info(
-                        f"[ {i} / {total} ] {stock} 分红数据已下载 "
-                        f"({dl_elapsed:.1f}秒)"
-                    )
+                        download_hits += 1
+                        self.logger.info(
+                            f"[ {i} / {total} ] {stock} 分红数据已下载 "
+                            f"({len(df)} 条, {dl_elapsed:.1f}秒)"
+                        )
+                    else:
+                        empty_hits += 1
+                        empty_stocks.append(stock)
+                        self.logger.info(
+                            f"[ {i} / {total} ] {stock} 无分红数据 "
+                            f"({dl_elapsed:.1f}秒)"
+                        )
                 except Exception as e:
                     fail_count += 1
                     self.logger.warning(
@@ -1670,10 +1690,14 @@ class QMTDataProcessor(DataProcessor):
                     )
                     continue
 
+            if empty_stocks:
+                cache_manager.index_manager.update_checked_dividend_stocks(empty_stocks)
+                cache_manager.index_manager.save_index()
+
             phase_elapsed = time.time() - phase_start
             self.logger.info(
-                f"分红数据下载完成: 新下载 {download_hits}, "
-                f"失败 {fail_count}, 耗时 {phase_elapsed:.1f}秒"
+                f"分红数据下载完成: 有数据 {download_hits}, "
+                f"无数据 {empty_hits}, 失败 {fail_count}, 耗时 {phase_elapsed:.1f}秒"
             )
 
             if result:
