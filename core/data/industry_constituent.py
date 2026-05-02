@@ -26,7 +26,7 @@ class IndustryConstituentManager:
     2. get_industry_mapping(stock_list, date) → 股票→行业的映射字典
     """
 
-    DEFAULT_DATA_DIR = Path(__file__).parent.parent.parent / 'localdata' / 'industry_constituent'
+    DEFAULT_DATA_DIR = Path(__file__).parent.parent.parent / '.cache' / 'JQData' / 'industry_constituent'
 
     SW1_INDUSTRIES = [
         '交通运输', '传媒', '公用事业', '农林牧渔', '医药生物',

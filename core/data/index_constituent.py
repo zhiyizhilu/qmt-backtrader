@@ -23,7 +23,7 @@ class IndexConstituentManager:
     查询时取 <= 查询日期 的最近一行。
     """
 
-    DEFAULT_DATA_DIR = Path(__file__).parent.parent.parent / 'localdata' / 'index_constituent'
+    DEFAULT_DATA_DIR = Path(__file__).parent.parent.parent / '.cache' / 'JQData' / 'index_constituent'
 
     SECTOR_TO_INDEX = {
         '沪深300': '000300.SH',
