@@ -128,7 +128,6 @@ class BacktestAPI(BaseAPI):
         super().__init__()
         self.cerebro = bt.Cerebro()
         self.data_processor = create_data_processor(fallback_to_simulated=True, proxy=proxy)
-        # 财务数据处理器（仅使用 QMT，禁用 OpenData 补充）
         self._financial_data_processor = create_data_processor(fallback_to_simulated=True, proxy=proxy, use_opendata=False)
         self._symbols: List[str] = []
         self._strategy_logic_class: Optional[Type[StrategyLogic]] = None
@@ -144,6 +143,7 @@ class BacktestAPI(BaseAPI):
         self._custom_analyzers_added = False
         self._financial_adapter: Optional[FinancialDataAdapter] = None
         self._stock_pool: Optional[List[str]] = None
+        self._ai_mode: bool = False
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
 
     def configure(self, cash: float = 200000, commission: float = 0.0001,
@@ -748,8 +748,20 @@ class BacktestAPI(BaseAPI):
     def get_result(self):
         return self._backtest_result
 
+    def set_ai_mode(self, enabled: bool):
+        self._ai_mode = enabled
+        from utils.report import set_ai_mode as set_report_ai_mode
+        set_report_ai_mode(enabled)
+        self.logger.info(f"AI自动运行模式: {'开启' if enabled else '关闭'}")
+
+    def is_ai_mode(self) -> bool:
+        return self._ai_mode
+
     def show_report(self):
         if self._backtest_result is None:
+            return
+        if self._ai_mode:
+            self.logger.info("AI自动运行模式下跳过报告绘图")
             return
         from utils.report import generate_report
         generate_report(self._backtest_result)

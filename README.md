@@ -105,8 +105,14 @@ qmt_backtrader/
 
 ### 1. 运行回测
 
+**高股息策略回测：**
 ```bash
-python main.py --mode backtest --strategy high_dividend --period 1d --pool 沪深300 --start 2016-01-01 --end 2026-04-17
+python main.py --mode backtest --strategy high_dividend --period 1d --pool 沪深300 --start 2026-01-01 --end 2026-04-28 --debug
+```
+
+**小市值策略回测：**
+```bash
+python main.py --mode backtest --strategy small_cap --period 1d --pool 中证1000 --start 2026-01-01 --end 2026-04-28 --debug
 ```
 
 **参数说明**：
@@ -409,6 +415,6 @@ class MySelectionStrategy(StockSelectionStrategy):
 
 如果您对项目有任何问题或建议，欢迎添加作者微信交流：
 
-![微信二维码](https://mmbiz.qpic.cn/sz_mmbiz_jpg/bibrY3tFKMBH9VM46EcxmAIG1rwQR3ZEibueW40mJb38Fib4RU7AzrSqfYxLH0pAibHiaYUxbwQtQrv1iaticN7JmRRiaQ/640?wx_fmt=other&from=appmsg#imgIndex=7)
+![微信二维码](码上生财.jpg)
 
 扫描上方二维码添加好友，获取更多项目更新和技术支持。

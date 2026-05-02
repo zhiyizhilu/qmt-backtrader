@@ -32,6 +32,9 @@ class ParameterOptimizer:
             initial_cash: 初始资金
             commission: 佣金费率
         """
+        from utils.report import set_ai_mode
+        set_ai_mode(True)
+
         from api.backtest_api import BacktestAPI
         import datetime
 
@@ -107,4 +110,5 @@ class ParameterOptimizer:
             except Exception as e:
                 logger.error(f"参数组合 {param_dict} 回测失败: {e}")
 
+        set_ai_mode(False)
         return best_params, best_score

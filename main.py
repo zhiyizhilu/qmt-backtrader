@@ -52,7 +52,7 @@ def _resolve_strategy(strategy_name: str):
 
 
 def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
-                 start_date=None, end_date=None, proxy=''):
+                 start_date=None, end_date=None, proxy='', ai_mode=False):
     """运行回测"""
     _setup_debug_logging()
     log_file = Logger.setup_global_file_handler(strategy_name)
@@ -61,6 +61,8 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
     logger.info(f"开始回测 (周期: {period})")
     if proxy:
         logger.info(f"使用代理: {proxy}")
+    if ai_mode:
+        logger.info("AI自动运行模式已启用，将跳过所有图形界面渲染")
 
     strategy_class, default_kwargs, backtest_config = _resolve_strategy(strategy_name)
 
@@ -75,6 +77,8 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
     config.setdefault('benchmark', benchmark)
 
     api = BacktestAPI(proxy=proxy)
+    if ai_mode:
+        api.set_ai_mode(True)
 
     if issubclass(strategy_class, StockSelectionStrategy):
         api.configure(**config)
@@ -157,6 +161,10 @@ def main():
     parser.add_argument('--debug', action='store_true', default=False,
                         help='启用DEBUG日志模式，输出详细调试信息')
 
+    # AI自动运行模式
+    parser.add_argument('--ai-mode', action='store_true', default=False,
+                        help='启用AI自动运行模式，跳过所有图形界面渲染，适用于AI自动优化策略')
+
     args = parser.parse_args()
 
     # 设置调试模式
@@ -168,7 +176,7 @@ def main():
         cache_manager.configure(cache_dir=args.cache_dir, mem_limit=args.mem_limit)
 
     if args.mode == 'backtest':
-        run_backtest(args.strategy, args.period, args.pool, args.start, args.end, args.proxy)
+        run_backtest(args.strategy, args.period, args.pool, args.start, args.end, args.proxy, args.ai_mode)
     elif args.mode == 'sim':
         run_sim_trade(args.strategy, args.qmt_path, args.account)
     elif args.mode == 'real':

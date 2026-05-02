@@ -35,6 +35,17 @@ from typing import Callable
 
 from core.models import BacktestingResult
 
+_ai_mode = False
+
+
+def set_ai_mode(enabled: bool):
+    global _ai_mode
+    _ai_mode = enabled
+
+
+def is_ai_mode() -> bool:
+    return _ai_mode
+
 
 class FilterButton(QPushButton):
     def __init__(self, parent=None):
@@ -311,6 +322,9 @@ class BacktestReportWindow(QMainWindow):
 
         self.benchmark_tab = self._create_benchmark_tab()
         self.tabs.addTab(self.benchmark_tab, "基准对比")
+
+        self.turnover_tab = self._create_turnover_tab()
+        self.tabs.addTab(self.turnover_tab, "换手率评估")
 
     def _create_crosshair_items(
         self, plot_widget: pg.PlotWidget
@@ -2788,8 +2802,459 @@ class BacktestReportWindow(QMainWindow):
 
             self.dp_instrument_toggle_button.setText("隐藏标的")
 
+    def _calc_turnover_rates(self):
+        df = self.plot_df
+        trade_log = self.result.trade_log
+        if df is None or df.empty or not trade_log:
+            return None
+
+        multipliers = {
+            iid: data.volume_multiple
+            for iid, data in self.result.instruments_data.items()
+        }
+
+        trade_amounts_by_date = defaultdict(float)
+        for trade in trade_log:
+            if trade.trade_price <= 0 or trade.order_id == -1 or not trade.trade_time:
+                continue
+            if hasattr(trade.trade_time, "strftime"):
+                date_str = trade.trade_time.strftime("%Y-%m-%d")
+            else:
+                date_str = str(trade.trade_time)[:10]
+            multiplier = multipliers.get(trade.instrument_id, 1)
+            trade_amount = trade.trade_price * abs(trade.volume) * multiplier
+            trade_amounts_by_date[date_str] += trade_amount
+
+        dates = df["datetime"].dt.strftime("%Y-%m-%d").tolist()
+        portfolio_values = df["PortfolioValue"].tolist()
+
+        daily_turnover = []
+        for i, date_str in enumerate(dates):
+            amount = trade_amounts_by_date.get(date_str, 0.0)
+            pv = portfolio_values[i]
+            rate = amount / 2 / pv if pv > 0 else 0.0
+            daily_turnover.append({
+                "date": date_str,
+                "portfolio_value": pv,
+                "trade_amount": amount,
+                "turnover_rate": rate,
+            })
+
+        if not daily_turnover:
+            return None
+
+        daily_df = pd.DataFrame(daily_turnover)
+        daily_df["datetime"] = pd.to_datetime(daily_df["date"])
+
+        weekly_turnover = []
+        daily_df["week"] = daily_df["datetime"].dt.isocalendar().week.astype(int)
+        daily_df["year_week"] = (
+            daily_df["datetime"].dt.year.astype(str)
+            + "-W"
+            + daily_df["week"].astype(str).str.zfill(2)
+        )
+        for yw, group in daily_df.groupby("year_week"):
+            total_amount = group["trade_amount"].sum()
+            avg_pv = group["portfolio_value"].mean()
+            rate = total_amount / 2 / avg_pv if avg_pv > 0 else 0.0
+            weekly_turnover.append({
+                "period": yw,
+                "trade_amount": total_amount,
+                "avg_portfolio_value": avg_pv,
+                "turnover_rate": rate,
+                "start_date": group["date"].iloc[0],
+                "end_date": group["date"].iloc[-1],
+            })
+
+        monthly_turnover = []
+        daily_df["year_month"] = daily_df["datetime"].dt.to_period("M").astype(str)
+        for ym, group in daily_df.groupby("year_month"):
+            total_amount = group["trade_amount"].sum()
+            avg_pv = group["portfolio_value"].mean()
+            rate = total_amount / 2 / avg_pv if avg_pv > 0 else 0.0
+            monthly_turnover.append({
+                "period": ym,
+                "trade_amount": total_amount,
+                "avg_portfolio_value": avg_pv,
+                "turnover_rate": rate,
+                "start_date": group["date"].iloc[0],
+                "end_date": group["date"].iloc[-1],
+            })
+
+        return {
+            "daily": daily_turnover,
+            "weekly": weekly_turnover,
+            "monthly": monthly_turnover,
+        }
+
+    def _create_turnover_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QHBoxLayout(tab)
+
+        turnover_data = self._calc_turnover_rates()
+        if turnover_data is None:
+            layout.addWidget(
+                QLabel(
+                    "无交易数据，无法计算换手率",
+                    alignment=Qt.AlignCenter,
+                    styleSheet="QLabel { font-size: 28px; font-weight: bold; }",
+                )
+            )
+            return tab
+
+        stats_panel = self._create_turnover_stats_panel(turnover_data)
+        layout.addWidget(stats_panel)
+
+        chart_panel = self._create_turnover_chart_panel(turnover_data)
+        layout.addWidget(chart_panel)
+
+        layout.setStretchFactor(stats_panel, 1)
+        layout.setStretchFactor(chart_panel, 3)
+        return tab
+
+    def _create_turnover_stats_panel(self, turnover_data: dict) -> QWidget:
+        panel = QFrame()
+        panel.setFrameShape(QFrame.StyledPanel)
+        panel.setStyleSheet(
+            "QFrame { background-color: #f7f7f7; border: 1px solid #e0e0e0; border-radius: 8px; padding: 15px; }"
+            "QLabel { background-color: transparent; border: none; padding: 3px; }"
+        )
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(12)
+
+        title_label = QLabel("换手率统计")
+        title_label.setFont(QFont("Microsoft YaHei", 13, QFont.Bold))
+        title_label.setStyleSheet("color: #333; padding-bottom: 5px;")
+        layout.addWidget(title_label)
+
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        line.setStyleSheet("background-color: #e0e0e0; margin: 8px 0;")
+        layout.addWidget(line)
+
+        daily = turnover_data["daily"]
+        weekly = turnover_data["weekly"]
+        monthly = turnover_data["monthly"]
+
+        daily_rates = [d["turnover_rate"] for d in daily]
+        weekly_rates = [w["turnover_rate"] for w in weekly]
+        monthly_rates = [m["turnover_rate"] for m in monthly]
+
+        daily_amounts = [d["trade_amount"] for d in daily]
+        weekly_amounts = [w["trade_amount"] for w in weekly]
+        monthly_amounts = [m["trade_amount"] for m in monthly]
+
+        trading_days_with_trades = sum(1 for r in daily_rates if r > 0)
+        total_days = len(daily_rates)
+
+        stats = {}
+
+        section_title = QLabel("日换手率")
+        section_title.setFont(QFont("Microsoft YaHei", 11, QFont.Bold))
+        section_title.setStyleSheet("color: #d14545; padding-top: 5px;")
+        layout.addWidget(section_title)
+
+        daily_stats = {
+            "日均换手率": f"{np.mean(daily_rates):.4f}" if daily_rates else "N/A",
+            "日最大换手率": f"{np.max(daily_rates):.4f}" if daily_rates else "N/A",
+            "日最小换手率": f"{np.min(daily_rates):.4f}" if daily_rates else "N/A",
+            "日换手率中位数": f"{np.median(daily_rates):.4f}" if daily_rates else "N/A",
+            "日均成交额": f"{np.mean(daily_amounts):,.2f}" if daily_amounts else "N/A",
+            "有交易天数": f"{trading_days_with_trades}/{total_days}",
+        }
+        stats_layout = QGridLayout()
+        stats_layout.setVerticalSpacing(8)
+        stats_layout.setHorizontalSpacing(15)
+        stats_layout.setColumnMinimumWidth(0, 150)
+        row = 0
+        for name, value in daily_stats.items():
+            name_label = QLabel(name)
+            name_label.setFont(QFont("Microsoft YaHei", 10))
+            name_label.setStyleSheet("color: #666;")
+            value_label = QLabel(str(value))
+            value_label.setFont(QFont("Arial", 10, QFont.Bold))
+            value_label.setAlignment(Qt.AlignRight)
+            stats_layout.addWidget(name_label, row, 0)
+            stats_layout.addWidget(value_label, row, 1)
+            row += 1
+        layout.addLayout(stats_layout)
+
+        spacer = QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Fixed)
+        layout.addItem(spacer)
+
+        section_title2 = QLabel("周换手率")
+        section_title2.setFont(QFont("Microsoft YaHei", 11, QFont.Bold))
+        section_title2.setStyleSheet("color: #007bff; padding-top: 5px;")
+        layout.addWidget(section_title2)
+
+        weekly_stats = {
+            "周均换手率": f"{np.mean(weekly_rates):.4f}" if weekly_rates else "N/A",
+            "周最大换手率": f"{np.max(weekly_rates):.4f}" if weekly_rates else "N/A",
+            "周最小换手率": f"{np.min(weekly_rates):.4f}" if weekly_rates else "N/A",
+            "周换手率中位数": f"{np.median(weekly_rates):.4f}" if weekly_rates else "N/A",
+            "周均成交额": f"{np.mean(weekly_amounts):,.2f}" if weekly_amounts else "N/A",
+        }
+        stats_layout2 = QGridLayout()
+        stats_layout2.setVerticalSpacing(8)
+        stats_layout2.setHorizontalSpacing(15)
+        stats_layout2.setColumnMinimumWidth(0, 150)
+        row = 0
+        for name, value in weekly_stats.items():
+            name_label = QLabel(name)
+            name_label.setFont(QFont("Microsoft YaHei", 10))
+            name_label.setStyleSheet("color: #666;")
+            value_label = QLabel(str(value))
+            value_label.setFont(QFont("Arial", 10, QFont.Bold))
+            value_label.setAlignment(Qt.AlignRight)
+            stats_layout2.addWidget(name_label, row, 0)
+            stats_layout2.addWidget(value_label, row, 1)
+            row += 1
+        layout.addLayout(stats_layout2)
+
+        spacer2 = QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Fixed)
+        layout.addItem(spacer2)
+
+        section_title3 = QLabel("月换手率")
+        section_title3.setFont(QFont("Microsoft YaHei", 11, QFont.Bold))
+        section_title3.setStyleSheet("color: #3f993f; padding-top: 5px;")
+        layout.addWidget(section_title3)
+
+        monthly_stats = {
+            "月均换手率": f"{np.mean(monthly_rates):.4f}" if monthly_rates else "N/A",
+            "月最大换手率": f"{np.max(monthly_rates):.4f}" if monthly_rates else "N/A",
+            "月最小换手率": f"{np.min(monthly_rates):.4f}" if monthly_rates else "N/A",
+            "月换手率中位数": f"{np.median(monthly_rates):.4f}" if monthly_rates else "N/A",
+            "月均成交额": f"{np.mean(monthly_amounts):,.2f}" if monthly_amounts else "N/A",
+        }
+        stats_layout3 = QGridLayout()
+        stats_layout3.setVerticalSpacing(8)
+        stats_layout3.setHorizontalSpacing(15)
+        stats_layout3.setColumnMinimumWidth(0, 150)
+        row = 0
+        for name, value in monthly_stats.items():
+            name_label = QLabel(name)
+            name_label.setFont(QFont("Microsoft YaHei", 10))
+            name_label.setStyleSheet("color: #666;")
+            value_label = QLabel(str(value))
+            value_label.setFont(QFont("Arial", 10, QFont.Bold))
+            value_label.setAlignment(Qt.AlignRight)
+            stats_layout3.addWidget(name_label, row, 0)
+            stats_layout3.addWidget(value_label, row, 1)
+            row += 1
+        layout.addLayout(stats_layout3)
+
+        layout.addStretch()
+        panel.setMinimumWidth(320)
+        panel.setMinimumHeight(700)
+        return panel
+
+    def _create_turnover_chart_panel(self, turnover_data: dict) -> QWidget:
+        panel = QWidget()
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(10, 20, 10, 10)
+
+        daily = turnover_data["daily"]
+        weekly = turnover_data["weekly"]
+        monthly = turnover_data["monthly"]
+
+        daily_dates = [d["date"] for d in daily]
+        daily_rates = [d["turnover_rate"] * 100 for d in daily]
+        daily_amounts = [d["trade_amount"] for d in daily]
+
+        axis = DateAxis(x_values=daily_dates, orientation="bottom")
+        if 0 < len(daily_dates) <= 3:
+            axis.setTicks([[(i, date) for i, date in enumerate(daily_dates)]])
+
+        plot_widget = pg.PlotWidget(axisItems={"bottom": axis})
+        plot_widget.setTitle("日换手率", color="k", size="16pt", bold=True)
+        plot_widget.setBackground("#f7f7f7")
+        plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        plot_widget.getPlotItem().layout.setContentsMargins(10, 25, 10, 10)
+        plot_widget.setLabel("left", "换手率 (%)", **{"color": "k", "font-size": "12pt"})
+
+        view_box = plot_widget.getViewBox()
+        view_box.setMouseEnabled(x=True, y=False)
+
+        x = list(range(len(daily_dates)))
+
+        bar_item = pg.BarGraphItem(
+            x=x,
+            height=daily_rates,
+            width=0.6,
+            brushes=["#d14545" if val >= 0 else "#3f993f" for val in daily_rates],
+        )
+        plot_widget.addItem(bar_item)
+
+        margin = 2
+        initial_x_min = -margin
+        initial_x_max = len(x) - 1 + margin if x else margin
+        plot_widget.setXRange(initial_x_min, initial_x_max, padding=0)
+
+        vLine, hLine, info_label = self._create_crosshair_items(plot_widget)
+
+        def mouse_moved_turnover(event):
+            pos = event
+            vb = plot_widget.getViewBox()
+            if vb.sceneBoundingRect().contains(pos):
+                index = int(round(vb.mapSceneToView(pos).x()))
+                if 0 <= index < len(daily_dates):
+                    vLine.show()
+                    hLine.show()
+                    vLine.setPos(index)
+                    hLine.setPos(daily_rates[index])
+                    info_label.setPlainText(
+                        f"日期: {daily_dates[index]}\n"
+                        f"换手率: {daily_rates[index]:.4f}%\n"
+                        f"成交额: {daily_amounts[index]:,.2f}"
+                    )
+                    info_label.adjustSize()
+                    self._update_tooltip_position(info_label, pos, vb)
+                    info_label.show()
+                else:
+                    info_label.hide()
+                    vLine.hide()
+                    hLine.hide()
+            else:
+                info_label.hide()
+                vLine.hide()
+                hLine.hide()
+
+        plot_widget.scene().sigMouseMoved.connect(mouse_moved_turnover)
+        panel_layout.addWidget(plot_widget, stretch=1)
+
+        weekly_dates = [w["start_date"] for w in weekly]
+        weekly_rates = [w["turnover_rate"] * 100 for w in weekly]
+        weekly_amounts = [w["trade_amount"] for w in weekly]
+
+        if weekly_dates:
+            w_axis = DateAxis(x_values=weekly_dates, orientation="bottom")
+            if 0 < len(weekly_dates) <= 3:
+                w_axis.setTicks([[(i, date) for i, date in enumerate(weekly_dates)]])
+
+            w_plot = pg.PlotWidget(axisItems={"bottom": w_axis})
+            w_plot.setTitle("周换手率", color="k", size="16pt", bold=True)
+            w_plot.setBackground("#f7f7f7")
+            w_plot.showGrid(x=True, y=True, alpha=0.3)
+            w_plot.getPlotItem().layout.setContentsMargins(10, 25, 10, 10)
+            w_plot.setLabel("left", "换手率 (%)", **{"color": "k", "font-size": "12pt"})
+
+            w_vb = w_plot.getViewBox()
+            w_vb.setMouseEnabled(x=True, y=False)
+
+            w_x = list(range(len(weekly_dates)))
+            w_bar = pg.BarGraphItem(
+                x=w_x,
+                height=weekly_rates,
+                width=0.6,
+                brushes=["#007bff"] * len(weekly_rates),
+            )
+            w_plot.addItem(w_bar)
+
+            w_margin = 2
+            w_plot.setXRange(-w_margin, len(w_x) - 1 + w_margin if w_x else w_margin, padding=0)
+
+            w_vLine, w_hLine, w_info = self._create_crosshair_items(w_plot)
+
+            def mouse_moved_weekly(event):
+                pos = event
+                vb = w_plot.getViewBox()
+                if vb.sceneBoundingRect().contains(pos):
+                    index = int(round(vb.mapSceneToView(pos).x()))
+                    if 0 <= index < len(weekly_dates):
+                        w_vLine.show()
+                        w_hLine.show()
+                        w_vLine.setPos(index)
+                        w_hLine.setPos(weekly_rates[index])
+                        w_info.setPlainText(
+                            f"周起始: {weekly_dates[index]}\n"
+                            f"周换手率: {weekly_rates[index]:.4f}%\n"
+                            f"周成交额: {weekly_amounts[index]:,.2f}"
+                        )
+                        w_info.adjustSize()
+                        self._update_tooltip_position(w_info, pos, vb)
+                        w_info.show()
+                    else:
+                        w_info.hide()
+                        w_vLine.hide()
+                        w_hLine.hide()
+                else:
+                    w_info.hide()
+                    w_vLine.hide()
+                    w_hLine.hide()
+
+            w_plot.scene().sigMouseMoved.connect(mouse_moved_weekly)
+            panel_layout.addWidget(w_plot, stretch=1)
+
+        monthly_dates = [m["start_date"] for m in monthly]
+        monthly_rates_pct = [m["turnover_rate"] * 100 for m in monthly]
+        monthly_amounts = [m["trade_amount"] for m in monthly]
+
+        if monthly_dates:
+            m_axis = DateAxis(x_values=monthly_dates, orientation="bottom")
+            if 0 < len(monthly_dates) <= 3:
+                m_axis.setTicks([[(i, date) for i, date in enumerate(monthly_dates)]])
+
+            m_plot = pg.PlotWidget(axisItems={"bottom": m_axis})
+            m_plot.setTitle("月换手率", color="k", size="16pt", bold=True)
+            m_plot.setBackground("#f7f7f7")
+            m_plot.showGrid(x=True, y=True, alpha=0.3)
+            m_plot.getPlotItem().layout.setContentsMargins(10, 25, 10, 10)
+            m_plot.setLabel("left", "换手率 (%)", **{"color": "k", "font-size": "12pt"})
+
+            m_vb = m_plot.getViewBox()
+            m_vb.setMouseEnabled(x=True, y=False)
+
+            m_x = list(range(len(monthly_dates)))
+            m_bar = pg.BarGraphItem(
+                x=m_x,
+                height=monthly_rates_pct,
+                width=0.6,
+                brushes=["#3f993f"] * len(monthly_rates_pct),
+            )
+            m_plot.addItem(m_bar)
+
+            m_margin = 2
+            m_plot.setXRange(-m_margin, len(m_x) - 1 + m_margin if m_x else m_margin, padding=0)
+
+            m_vLine, m_hLine, m_info = self._create_crosshair_items(m_plot)
+
+            def mouse_moved_monthly(event):
+                pos = event
+                vb = m_plot.getViewBox()
+                if vb.sceneBoundingRect().contains(pos):
+                    index = int(round(vb.mapSceneToView(pos).x()))
+                    if 0 <= index < len(monthly_dates):
+                        m_vLine.show()
+                        m_hLine.show()
+                        m_vLine.setPos(index)
+                        m_hLine.setPos(monthly_rates_pct[index])
+                        m_info.setPlainText(
+                            f"月起始: {monthly_dates[index]}\n"
+                            f"月换手率: {monthly_rates_pct[index]:.4f}%\n"
+                            f"月成交额: {monthly_amounts[index]:,.2f}"
+                        )
+                        m_info.adjustSize()
+                        self._update_tooltip_position(m_info, pos, vb)
+                        m_info.show()
+                    else:
+                        m_info.hide()
+                        m_vLine.hide()
+                        m_hLine.hide()
+                else:
+                    m_info.hide()
+                    m_vLine.hide()
+                    m_hLine.hide()
+
+            m_plot.scene().sigMouseMoved.connect(mouse_moved_monthly)
+            panel_layout.addWidget(m_plot, stretch=1)
+
+        return panel
+
 
 def generate_report(result: "BacktestingResult"):
+    if is_ai_mode():
+        return
     app = QApplication.instance() or QApplication(sys.argv)
     window = BacktestReportWindow(result)
     window.show()
