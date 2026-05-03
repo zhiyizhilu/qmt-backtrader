@@ -1,0 +1,14 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 3840637.407935116,
+  "total_return_pct": 284.0637407935116,
+  "sharpe_ratio": 0.9396949536568026,
+  "max_drawdown_pct": -30.14890702426997,
+  "annual_return_pct": 26.265835047101028,
+  "trading_days": 1454,
+  "label": "opt02_volume_confirm",
+  "extra_params": {
+    "min_avg_volume_ratio": 1.0
+  },
+  "timestamp": "2026-05-03T08:47:49.084104"
+}

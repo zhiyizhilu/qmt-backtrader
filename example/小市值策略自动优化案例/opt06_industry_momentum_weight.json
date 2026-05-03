@@ -1,0 +1,14 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 3137489.2703476185,
+  "total_return_pct": 213.74892703476183,
+  "sharpe_ratio": 0.8936853480725618,
+  "max_drawdown_pct": -37.65111791398926,
+  "annual_return_pct": 21.917247496582615,
+  "trading_days": 1454,
+  "label": "opt06_industry_momentum_weight",
+  "extra_params": {
+    "use_industry_momentum": true
+  },
+  "timestamp": "2026-05-03T11:35:10.590672"
+}

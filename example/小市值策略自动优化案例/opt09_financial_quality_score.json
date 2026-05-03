@@ -1,0 +1,14 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 5233284.792519905,
+  "total_return_pct": 423.32847925199053,
+  "sharpe_ratio": 1.250601080913056,
+  "max_drawdown_pct": -29.772312824703985,
+  "annual_return_pct": 33.22151706643426,
+  "trading_days": 1454,
+  "label": "opt09_financial_quality_score",
+  "extra_params": {
+    "use_quality_score": true
+  },
+  "timestamp": "2026-05-03T13:27:51.045255"
+}
