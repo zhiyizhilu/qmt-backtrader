@@ -194,10 +194,9 @@ def wrap_html(
     metrics_fig: str,
     trade_table_html: str,
     title: str,
+    plotly_js_src: str = '../plotly.min.js',
 ) -> str:
-    import plotly
-
-    plotly_js = f'<script type="text/javascript">{plotly.offline.get_plotlyjs()}</script>'
+    plotly_js = f'<script src="{plotly_js_src}"></script>'
 
     return f'''<!DOCTYPE html>
 <html lang="zh-CN">
