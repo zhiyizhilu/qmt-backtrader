@@ -52,7 +52,8 @@ def _resolve_strategy(strategy_name: str):
 
 
 def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
-                 start_date=None, end_date=None, proxy='', ai_mode=False):
+                 start_date=None, end_date=None, proxy='', ai_mode=False,
+                 no_record=False):
     """运行回测"""
     _setup_debug_logging()
     log_file = Logger.setup_global_file_handler(strategy_name)
@@ -79,6 +80,11 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
     api = BacktestAPI(proxy=proxy)
     if ai_mode:
         api.set_ai_mode(True)
+    if no_record:
+        api.set_no_record(True)
+
+    api.set_strategy_name(strategy_name)
+    api.set_backtest_config(config)
 
     if issubclass(strategy_class, StockSelectionStrategy):
         api.configure(**config)
@@ -165,6 +171,10 @@ def main():
     parser.add_argument('--ai-mode', action='store_true', default=False,
                         help='启用AI自动运行模式，跳过所有图形界面渲染，适用于AI自动优化策略')
 
+    # 回测记录
+    parser.add_argument('--no-record', action='store_true', default=False,
+                        help='禁用回测结果自动记录到本地文件')
+
     args = parser.parse_args()
 
     # 设置调试模式
@@ -176,7 +186,7 @@ def main():
         cache_manager.configure(cache_dir=args.cache_dir, mem_limit=args.mem_limit)
 
     if args.mode == 'backtest':
-        run_backtest(args.strategy, args.period, args.pool, args.start, args.end, args.proxy, args.ai_mode)
+        run_backtest(args.strategy, args.period, args.pool, args.start, args.end, args.proxy, args.ai_mode, args.no_record)
     elif args.mode == 'sim':
         run_sim_trade(args.strategy, args.qmt_path, args.account)
     elif args.mode == 'real':

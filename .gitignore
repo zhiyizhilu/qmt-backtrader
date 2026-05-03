@@ -10,3 +10,5 @@ logs/*
 .codebuddy
 
 test.*
+
+backtest_results

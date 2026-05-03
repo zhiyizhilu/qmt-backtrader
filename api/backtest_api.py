@@ -144,6 +144,9 @@ class BacktestAPI(BaseAPI):
         self._financial_adapter: Optional[FinancialDataAdapter] = None
         self._stock_pool: Optional[List[str]] = None
         self._ai_mode: bool = False
+        self._no_record: bool = False
+        self._strategy_name: str = ''
+        self._backtest_config: Dict[str, Any] = {}
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
 
     def configure(self, cash: float = 200000, commission: float = 0.0001,
@@ -696,6 +699,9 @@ class BacktestAPI(BaseAPI):
             self._fetch_benchmark_data()
             self._log_summary(strategy)
 
+            if not self._no_record:
+                self._auto_record()
+
         return results
 
     def _log_summary(self, strategy):
@@ -756,6 +762,37 @@ class BacktestAPI(BaseAPI):
 
     def is_ai_mode(self) -> bool:
         return self._ai_mode
+
+    def set_no_record(self, no_record: bool):
+        self._no_record = no_record
+
+    def set_strategy_name(self, name: str):
+        self._strategy_name = name
+
+    def set_backtest_config(self, config: Dict[str, Any]):
+        self._backtest_config = config
+
+    def _auto_record(self):
+        try:
+            from utils.backtest_recorder import BacktestRecorder
+            recorder = BacktestRecorder()
+            strategy_name = self._strategy_name or (
+                self._strategy_logic_class.__name__ if self._strategy_logic_class else 'unknown'
+            )
+            config = dict(self._backtest_config)
+            config.setdefault('initial_cash', self._initial_cash)
+            config.setdefault('period', self._period)
+            config.setdefault('benchmark', self._benchmark)
+            if self._data_start_date:
+                config.setdefault('data_start_date', self._data_start_date)
+            if self._data_end_date:
+                config.setdefault('data_end_date', self._data_end_date)
+            if self._trade_start_date:
+                config.setdefault('trade_start_date', self._trade_start_date)
+            run_id = recorder.record(self._backtest_result, strategy_name, config)
+            self.logger.info(f'[run] 回测结果已自动记录: {run_id}')
+        except Exception as e:
+            self.logger.warning(f'[run] 回测结果自动记录失败: {e}')
 
     def show_report(self):
         if self._backtest_result is None:
