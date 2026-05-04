@@ -5,7 +5,9 @@ from api.backtest_api import BacktestAPI
 from core.cache import cache_manager
 from core.data.index_constituent import IndexConstituentManager
 from api.qmt_api import QMTAPI
+from api.instance_manager import StrategyInstanceManager
 from core.stock_selection import StockSelectionStrategy
+from core.virtual_book import VirtualBook
 from strategies import (get_strategy, get_strategy_default_kwargs,
                         get_strategy_choices, get_strategy_backtest_config)
 from utils.logger import Logger
@@ -49,6 +51,28 @@ def _resolve_strategy(strategy_name: str):
     default_kwargs = get_strategy_default_kwargs(strategy_name)
     backtest_config = get_strategy_backtest_config(strategy_name)
     return strategy_class, default_kwargs, backtest_config
+
+
+def _init_virtual_book_from_account(api: QMTAPI, book: VirtualBook):
+    """从账户实际状态初始化 VirtualBook"""
+    if not api.trader:
+        return
+    actual_positions = {}
+    actual_cash = 0.0
+    try:
+        positions = api.trader.get_position()
+        if positions:
+            for pos in positions:
+                symbol = getattr(pos, 'stock_code', str(pos))
+                volume = getattr(pos, 'volume', 0)
+                if volume > 0:
+                    actual_positions[symbol] = volume
+        account = api.trader.get_account()
+        if account and hasattr(account, 'cash'):
+            actual_cash = account.cash
+    except Exception:
+        pass
+    book.initialize_from_account(actual_positions, actual_cash, set())
 
 
 def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
@@ -114,9 +138,10 @@ def run_sim_trade(strategy_name='double_ma', path=r'D:\qmt\userdata_mini', accou
     strategy_class, default_kwargs, _ = _resolve_strategy(strategy_name)
 
     api = QMTAPI(is_sim=True, path=path, account_id=account_id)
-    api.add_strategy(strategy_class, **default_kwargs)
-    
-    # 根据需要使用 run() 或 run_loop()。如果是日内连续运行，请使用 api.run_loop() 并保持主线程存活。
+    book = VirtualBook(strategy_id=strategy_name)
+    api.add_strategy(strategy_class, instance_id=strategy_name, virtual_book=book, **default_kwargs)
+    _init_virtual_book_from_account(api, book)
+
     api.run()
     api.close()
 
@@ -133,13 +158,49 @@ def run_real_trade(strategy_name='double_ma', path=r'D:\qmt\userdata_mini', acco
     strategy_class, default_kwargs, _ = _resolve_strategy(strategy_name)
 
     api = QMTAPI(is_sim=False, path=path, account_id=account_id)
-    api.add_strategy(strategy_class, **default_kwargs)
-    
-    # 根据需要使用 run() 或 run_loop()。如果是日内连续运行，请使用 api.run_loop() 并保持主线程存活。
+    book = VirtualBook(strategy_id=strategy_name)
+    api.add_strategy(strategy_class, instance_id=strategy_name, virtual_book=book, **default_kwargs)
+    _init_virtual_book_from_account(api, book)
+
     api.run()
     api.close()
 
     logger.info("实盘交易完成")
+
+
+def run_instances(config_path: str):
+    """运行多策略实例模式"""
+    import strategies
+
+    log_file = Logger.setup_global_file_handler('instances')
+    logger = Logger.get_default_logger('instances')
+    logger.info(f"日志文件: {log_file}")
+    logger.info(f"多策略实例模式，配置文件: {config_path}")
+
+    manager = StrategyInstanceManager()
+    manager.load_config(config_path)
+
+    instances = manager.list_instances()
+    logger.info(f"共加载 {len(instances)} 个策略实例:")
+    for inst in instances:
+        logger.info(
+            f"  - {inst['instance_id']}: "
+            f"{inst['strategy_name']} ({inst['mode']}), "
+            f"账户={inst['account_id']}, "
+            f"初始资金={inst['initial_capital']}"
+        )
+
+    try:
+        manager.start_all()
+        logger.info("所有策略实例已启动，按 Ctrl+C 停止")
+        while True:
+            import time
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("收到停止信号")
+    finally:
+        manager.stop_all()
+        logger.info("所有策略实例已停止")
 
 
 def main():
@@ -147,7 +208,9 @@ def main():
     import strategies
 
     parser = argparse.ArgumentParser(description='量化交易框架')
-    parser.add_argument('--mode', type=str, default='backtest', choices=['backtest', 'sim', 'real'], help='运行模式')
+    parser.add_argument('--mode', type=str, default='backtest',
+                        choices=['backtest', 'sim', 'real', 'instances'],
+                        help='运行模式: backtest=回测, sim=模拟交易, real=实盘交易, instances=多策略实例')
     parser.add_argument('--strategy', type=str, default='double_ma', choices=get_strategy_choices(), help='策略类型')
     parser.add_argument('--period', type=str, default='1d', choices=['1d', '1m', '5m', '15m', '30m', '60m', 'tick'], help='数据周期')
     parser.add_argument('--pool', type=str, default='沪深A股', help='股票池板块名称')
@@ -156,6 +219,8 @@ def main():
     parser.add_argument('--proxy', type=str, default='', help='代理地址，格式 host:port（已弃用，保留参数用于兼容性）')
     parser.add_argument('--qmt-path', type=str, default=r'D:\qmt\userdata_mini', help='QMT userdata_mini 路径')
     parser.add_argument('--account', type=str, default=None, help='QMT 资金账号，不传则自动获取第一个')
+    parser.add_argument('--instances', type=str, default=None,
+                        help='策略实例配置文件路径（JSON），用于 --mode instances 模式')
 
     # 缓存配置
     parser.add_argument('--cache-dir', type=str, default=None,
@@ -191,6 +256,11 @@ def main():
         run_sim_trade(args.strategy, args.qmt_path, args.account)
     elif args.mode == 'real':
         run_real_trade(args.strategy, args.qmt_path, args.account)
+    elif args.mode == 'instances':
+        if not args.instances:
+            print('错误: --mode instances 需要指定 --instances 参数（配置文件路径）')
+            return
+        run_instances(args.instances)
 
 
 if __name__ == '__main__':

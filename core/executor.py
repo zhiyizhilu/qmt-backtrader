@@ -1,6 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, TYPE_CHECKING
 import logging
+
+if TYPE_CHECKING:
+    from core.virtual_book import VirtualBook
+    from core.order_router import OrderRouter
 
 
 class StrategyExecutor(ABC):
@@ -135,18 +139,39 @@ class BacktestExecutor(StrategyExecutor):
 
 
 class QMTExecutor(StrategyExecutor):
-    """QMT执行器 - 通过QMT接口执行交易"""
+    """QMT执行器 - 通过QMT接口执行交易
 
-    def __init__(self, qmt_api):
-        """初始化QMT执行器"""
+    支持虚拟簿记模式：当传入 virtual_book 时，持仓和资金查询
+    走 VirtualBook，而非直接查账户，实现策略级隔离。
+    """
+
+    def __init__(self, qmt_api, virtual_book: 'VirtualBook' = None):
+        """初始化QMT执行器
+
+        Args:
+            qmt_api: QMTTrader 实例，用于执行实际交易操作
+            virtual_book: 虚拟持仓簿，可选。传入后持仓/资金查询走簿记
+        """
         self.qmt_api = qmt_api
+        self.virtual_book = virtual_book
+        self._order_router: Optional['OrderRouter'] = None
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
+
+    def set_order_router(self, order_router: 'OrderRouter'):
+        """设置订单路由器"""
+        self._order_router = order_router
 
     def execute_buy(self, symbol: str, price: float, volume: int) -> Any:
         """执行买入操作"""
         result = self.qmt_api.buy(symbol, price, volume)
         if result is None:
             self.logger.error(f'买入失败: {symbol}, 价格: {price}, 数量: {volume}')
+        else:
+            order_id = str(result)
+            if self.virtual_book:
+                self.virtual_book.on_buy_submitted(symbol, price, volume, order_id)
+            if self._order_router and self.virtual_book:
+                self._order_router.register_order(order_id, self.virtual_book.strategy_id)
         return result
 
     def execute_sell(self, symbol: str, price: float, volume: int) -> Any:
@@ -154,6 +179,12 @@ class QMTExecutor(StrategyExecutor):
         result = self.qmt_api.sell(symbol, price, volume)
         if result is None:
             self.logger.error(f'卖出失败: {symbol}, 价格: {price}, 数量: {volume}')
+        else:
+            order_id = str(result)
+            if self.virtual_book:
+                self.virtual_book.on_sell_submitted(symbol, price, volume, order_id)
+            if self._order_router and self.virtual_book:
+                self._order_router.register_order(order_id, self.virtual_book.strategy_id)
         return result
 
     def cancel_order(self, order_id: str) -> bool:
@@ -169,14 +200,18 @@ class QMTExecutor(StrategyExecutor):
         return self.qmt_api.get_account()
 
     def get_cash(self) -> float:
-        """获取可用现金"""
+        """获取可用现金 - 优先走 VirtualBook"""
+        if self.virtual_book:
+            return self.virtual_book.get_cash()
         account = self.qmt_api.get_account()
         if account and hasattr(account, 'cash'):
             return account.cash
         return 0.0
 
     def get_position_size(self, symbol: str) -> int:
-        """获取指定标的的持仓数量"""
+        """获取指定标的的持仓数量 - 优先走 VirtualBook"""
+        if self.virtual_book:
+            return self.virtual_book.get_position_size(symbol)
         position = self.qmt_api.get_position(symbol)
         if position and hasattr(position, 'volume'):
             return position.volume

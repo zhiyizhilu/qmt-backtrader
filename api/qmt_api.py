@@ -8,6 +8,8 @@ from core.executor import QMTExecutor
 from core.data_adapter import LiveDataAdapter
 from core.data import QMTDataProcessor
 from core.strategy_logic import StrategyLogic, BarData, OrderInfo, TradeInfo
+from core.virtual_book import VirtualBook
+from core.order_router import OrderRouter
 
 
 class QMTTrader:
@@ -158,6 +160,10 @@ class QMTAPI(BaseAPI):
 
     交易执行委托给QMTTrader，策略通过QMTExecutor间接调用QMTTrader。
 
+    支持两种模式：
+    - 单策略模式：add_strategy() 不传 instance_id，兼容旧用法
+    - 多策略模式：add_strategy() 传入 instance_id + virtual_book，支持同账户多策略
+
     运行模式：
     - 单次模式: run() 加载历史数据并触发一次 on_bar
     - 持续模式: run_loop() 持续接收行情并定时触发 on_bar
@@ -177,6 +183,10 @@ class QMTAPI(BaseAPI):
         self.data_processor = QMTDataProcessor()
         self._running = False
         self._loop_thread: Optional[threading.Thread] = None
+        self.order_router = OrderRouter()
+        self._strategies: Dict[str, StrategyLogic] = {}
+        self._executors: Dict[str, QMTExecutor] = {}
+        self._virtual_books: Dict[str, VirtualBook] = {}
         self._init_api()
 
     def _init_api(self):
@@ -242,23 +252,36 @@ class QMTAPI(BaseAPI):
 
         self.trader = QMTTrader(xttrader=self.xttrader, xtaccount=self.xtaccount)
 
-    def add_strategy(self, strategy_logic_class: type, **kwargs):
-        """添加策略 - 实例化StrategyLogic，注入QMT执行器"""
-        executor = QMTExecutor(self.trader)
-        self.strategy = strategy_logic_class(executor=executor, **kwargs)
+    def add_strategy(self, strategy_logic_class: type, instance_id: str = None,
+                     virtual_book: VirtualBook = None, **kwargs):
+        """添加策略 - 实例化StrategyLogic，注入QMT执行器
+
+        Args:
+            strategy_logic_class: 策略逻辑类
+            instance_id: 策略实例ID，用于多策略模式下的订单路由
+            virtual_book: 虚拟持仓簿，传入后持仓/资金查询走簿记
+            **kwargs: 策略参数
+        """
+        executor = QMTExecutor(self.trader, virtual_book=virtual_book)
+
+        if instance_id:
+            executor.set_order_router(self.order_router)
+            strategy = strategy_logic_class(executor=executor, **kwargs)
+            self._strategies[instance_id] = strategy
+            self._executors[instance_id] = executor
+            if virtual_book:
+                self._virtual_books[instance_id] = virtual_book
+            self.order_router.register_instance(instance_id, strategy)
+            self.strategy = strategy
+        else:
+            self.strategy = strategy_logic_class(executor=executor, **kwargs)
 
     def _on_qmt_order(self, qmt_order):
         """将QMT委托主推桥接到策略的 on_order 回调
 
-        QMT委托状态映射到统一的 OrderInfo 状态：
-        - MARGIN_CALL / UNKNOWN / INIT / SUBMITTED / ACCEPTED → 活跃状态
-        - FILLED → 已完成
-        - CANCELED / PARTIAL_CANCEL → 已撤单
-        - REJECTED → 已拒绝
+        优先通过 OrderRouter 路由到对应策略实例，
+        如果路由失败则回退到单策略模式直接推送。
         """
-        if not self.strategy:
-            return
-
         try:
             from xtquant import xtconstant
 
@@ -278,15 +301,25 @@ class QMTAPI(BaseAPI):
                 executed_price=float(getattr(qmt_order, 'traded_price', 0)),
             )
 
-            self.strategy.on_order(order_info)
+            order_id = order_info.order_id
+            if self.order_router.has_order(order_id):
+                self.order_router.route_order(order_id, order_info)
+                if not order_info.is_active:
+                    self.order_router.cleanup_order(order_id)
+                    if order_info.is_completed or order_info.status == OrderInfo.STATUS_CANCELED:
+                        for book in self._virtual_books.values():
+                            book.on_order_completed(order_id)
+            elif self.strategy:
+                self.strategy.on_order(order_info)
         except Exception as e:
             self.logger.error(f'桥接委托回调失败: {e}')
 
     def _on_qmt_trade(self, qmt_trade):
-        """将QMT成交主推桥接到策略的 on_trade 回调"""
-        if not self.strategy:
-            return
+        """将QMT成交主推桥接到策略的 on_trade 回调
 
+        优先通过 OrderRouter 路由到对应策略实例，
+        路由时同步更新 VirtualBook 的簿记。
+        """
         try:
             from xtquant import xtconstant
 
@@ -301,7 +334,24 @@ class QMTAPI(BaseAPI):
                 volume=int(getattr(qmt_trade, 'traded_volume', 0)),
             )
 
-            self.strategy.on_trade(trade_info)
+            order_id = trade_info.order_id
+            if self.order_router.has_order(order_id):
+                instance_id = self.order_router.get_instance_id(order_id)
+                self.order_router.route_trade(order_id, trade_info)
+                if instance_id and instance_id in self._virtual_books:
+                    book = self._virtual_books[instance_id]
+                    if trade_info.is_buy:
+                        book.on_buy_filled(
+                            trade_info.symbol, trade_info.price,
+                            trade_info.volume, trade_info.commission
+                        )
+                    else:
+                        book.on_sell_filled(
+                            trade_info.symbol, trade_info.price,
+                            trade_info.volume, trade_info.commission
+                        )
+            elif self.strategy:
+                self.strategy.on_trade(trade_info)
         except Exception as e:
             self.logger.error(f'桥接成交回调失败: {e}')
 
