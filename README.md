@@ -4,7 +4,8 @@
 
 ## 功能特点
 
-- **多模式支持**：回测、模拟交易、实盘交易
+- **多模式支持**：回测、模拟交易、实盘交易、多策略实例
+- **多策略实例隔离**：同账户多策略独立运行，虚拟簿记实现持仓/资金级隔离，互不干扰
 - **高性能回测**：基于 Backtrader 引擎
 - **QMT 集成**：支持通过 QMT 进行模拟和实盘交易
 - **双数据源架构**：QMT 为主数据源 + OpenData（腾讯财经）自动补充，数据范围远超单一数据源
@@ -15,6 +16,7 @@
 - **可视化**：提供基于 PyQt5 的回测结果展示和基于 Dash 的实时监控
 - **选股策略**：支持基于基本面的股票选择策略，行业分散配置
 - **防未来数据**：财务数据按公告日期索引，回测时只使用已披露数据
+- **自动对账**：每日开盘前自动校验虚拟簿记与账户实际状态的一致性，偏差自动校准
 
 ## 项目结构
 
@@ -38,6 +40,7 @@ qmt_backtrader/
 │   ├── __init__.py
 │   ├── backtest_api.py          # 回测 API（基于 Backtrader）
 │   ├── base_api.py              # API 基类
+│   ├── instance_manager.py      # 策略实例管理器（多策略模式）
 │   └── qmt_api.py               # QMT 交易 API
 ├── core/                        # 核心模块
 │   ├── __init__.py
@@ -56,9 +59,13 @@ qmt_backtrader/
 │   ├── executor.py              # 执行器（回测/QMT 统一接口）
 │   ├── financial_data.py        # 财务数据缓存（按需加载）
 │   ├── models.py                # 数据模型
+│   ├── order_router.py          # 订单路由（多策略回调分发）
+│   ├── reconciler.py            # 对账器（虚拟簿记校验与校准）
 │   ├── stock_selection.py       # 选股策略基类
 │   ├── strategy.py              # 回测策略适配层（Backtrader 桥接）
-│   └── strategy_logic.py        # 策略逻辑基类（与执行环境解耦）
+│   ├── strategy_logic.py        # 策略逻辑基类（与执行环境解耦）
+│   └── virtual_book.py          # 虚拟持仓簿（策略级持仓/资金隔离）
+├── config/                      # 配置目录（策略实例配置等）
 ├── example/                     # 示例文档
 │   ├── 小市值策略 — 降低回撤、提升收益.md
 │   └── 高股息行业均仓策略，夏普1.2，稳稳的幸福.md
@@ -116,7 +123,7 @@ python main.py --mode backtest --strategy small_cap --period 1d --pool 中证100
 ```
 
 **参数说明**：
-- `--mode`：运行模式，可选值：`backtest`（回测）、`sim`（模拟交易）、`real`（实盘交易）
+- `--mode`：运行模式，可选值：`backtest`（回测）、`sim`（模拟交易）、`real`（实盘交易）、`instances`（多策略实例）
 - `--strategy`：策略类型，可选值：`double_ma`、`high_dividend`、`small_cap`、`etf_rotation`、`fundamental_roe`、`fundamental_growth` 等
 - `--period`：数据周期，可选值：`1d`（日线）、`1m`、`5m`、`15m`、`30m`、`60m`、`tick`
 - `--pool`：股票池板块名称，如 `沪深300`、`沪深A股`、`上证50`、`中证500`、`中证1000`
@@ -124,6 +131,7 @@ python main.py --mode backtest --strategy small_cap --period 1d --pool 中证100
 - `--end`：回测结束日期，格式：`YYYY-MM-DD`
 - `--qmt-path`：QMT userdata_mini 路径（默认 `D:\qmt\userdata_mini`）
 - `--account`：QMT 资金账号，不传则自动获取第一个
+- `--instances`：策略实例配置文件路径（JSON），用于 `--mode instances` 模式
 - `--cache-dir`：自定义缓存数据存储目录（默认项目根目录下 `.cache`）
 - `--mem-limit`：内存缓存最大对象数量限制（默认 500）
 - `--debug`：启用 DEBUG 日志模式，输出详细调试信息
@@ -139,6 +147,54 @@ python main.py --mode sim --strategy double_ma --qmt-path D:\qmt\userdata_mini
 ```bash
 python main.py --mode real --strategy double_ma --qmt-path D:\qmt\userdata_mini --account 12345678
 ```
+
+### 4. 运行多策略实例
+
+当需要在同一账户下同时运行多个策略时，使用多策略实例模式。每个策略实例拥有独立的虚拟持仓簿，实现持仓和资金的策略级隔离。
+
+**创建配置文件** `config/instances.json`：
+
+```json
+{
+  "instances": [
+    {
+      "instance_id": "small_cap_sim",
+      "strategy_name": "small_cap",
+      "mode": "sim",
+      "account_id": "12345678",
+      "initial_capital": 500000,
+      "claim_existing_positions": true,
+      "kwargs": {}
+    },
+    {
+      "instance_id": "high_div_sim",
+      "strategy_name": "high_dividend",
+      "mode": "sim",
+      "account_id": "12345678",
+      "initial_capital": 500000,
+      "claim_existing_positions": true,
+      "kwargs": {}
+    }
+  ]
+}
+```
+
+**配置说明**：
+- `instance_id`：策略实例唯一标识，用于日志隔离和订单路由
+- `strategy_name`：策略名称，对应 `--strategy` 参数的可选值
+- `mode`：运行模式，`sim`（模拟）或 `real`（实盘）
+- `account_id`：QMT 资金账号，相同账户的策略共享一个 QMTAPI 实例
+- `initial_capital`：策略初始资金，用于虚拟簿记
+- `claim_existing_positions`：是否认领账户现有持仓（首次启动时按标的分配给策略）
+- `kwargs`：策略参数，覆盖默认参数
+
+**启动多策略**：
+
+```bash
+python main.py --mode instances --instances config/instances.json
+```
+
+> **注意**：单策略模式（`sim`/`real`）也默认启用虚拟簿记，无需额外配置即可享受策略级隔离。
 
 ## 架构设计
 
@@ -180,7 +236,57 @@ DataProcessor（数据处理器基类）
 StrategyExecutor（执行器基类）
 ├── BacktestExecutor（回测执行器，通过 Backtrader 执行）
 └── QMTExecutor（实盘执行器，通过 QMT 交易接口执行）
+    ├── virtual_book → VirtualBook（虚拟持仓簿，策略级隔离）
+    └── order_router → OrderRouter（订单路由，回调分发）
 ```
+
+### 多策略实例架构
+
+当同一账户下运行多个策略时，框架通过虚拟簿记实现策略级隔离：
+
+```
+QMTAPI（一个账户一个实例）
+├── OrderRouter（订单路由：订单ID → 策略实例映射）
+├── Strategy A
+│   ├── QMTExecutor → VirtualBook A（独立持仓/资金视图）
+│   └── on_order / on_trade ← OrderRouter 路由
+├── Strategy B
+│   ├── QMTExecutor → VirtualBook B（独立持仓/资金视图）
+│   └── on_order / on_trade ← OrderRouter 路由
+└── Reconciler（对账器：校验所有 VirtualBook 之和 = 账户实际）
+```
+
+**核心组件**：
+
+| 组件 | 职责 |
+|------|------|
+| **VirtualBook** | 维护策略实例的独立持仓和资金视图，交易记录是持仓的唯一真相来源 |
+| **OrderRouter** | 维护订单ID与策略实例的映射，将 QMT 委托/成交回调正确分发到对应策略 |
+| **Reconciler** | 校验所有策略簿记之和与账户实际状态的一致性，偏差自动校准 |
+| **StrategyInstanceManager** | 从 JSON 配置加载多策略实例，按账户分组初始化，协调对账 |
+
+**数据流**：
+
+```
+下单: Strategy → QMTExecutor.execute_buy() → QMTTrader.buy()
+                                          ↓
+                              VirtualBook.on_buy_submitted()
+                              OrderRouter.register_order()
+
+回调: QMT → _on_qmt_trade() → OrderRouter.route_trade()
+                                    ↓
+                        VirtualBook.on_buy_filled()（更新簿记）
+                        Strategy.on_trade()（通知策略）
+```
+
+**对账策略**：
+
+| 场景 | 处理方式 |
+|------|---------|
+| 独占标的（仅一个策略持有） | 自动校准到实际值 |
+| 共享标的 + 正偏差（如送股） | 按持仓比例分配 |
+| 共享标的 + 负偏差 | 报警，需人工确认 |
+| 无持有人但有实际持仓 | 报警，标记未归属 |
 
 ## 智能缓存系统
 
@@ -385,6 +491,9 @@ class MySelectionStrategy(StockSelectionStrategy):
 
 ## 后续计划
 
+- [x] 多策略实例隔离（VirtualBook + OrderRouter + Reconciler）
+- [x] 同账户多策略虚拟簿记与自动对账
+- [x] 日志按策略实例隔离
 - [ ] 支持更多交易接口（如 tushare、yahoo 等）
 - [ ] 实现策略自动优化
 - [ ] 增加深度学习模型集成
