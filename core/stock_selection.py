@@ -15,6 +15,10 @@ class StockSelectionStrategy(StrategyLogic):
     2. select_stocks() 返回目标持仓列表
     3. rebalance_to() 自动计算买卖并执行调仓
 
+    交易时间：
+    - 回测模式：日线 bar 时间戳为 00:00，直接执行
+    - 实盘/模拟盘模式：只在 14:50 执行调仓，与回测使用的收盘价保持一致
+
     调仓模式：
     - 回测模式：同步执行，卖出和买入在同一 bar 内完成
       （backtrader 会在下一根K线统一处理，先卖后买，资金自动衔接）
@@ -42,6 +46,8 @@ class StockSelectionStrategy(StrategyLogic):
         ('max_stocks', 10),
         ('position_ratio', 0.95),
         ('stock_pool', None),
+        ('trade_hour', 14),
+        ('trade_minute', 50),
     )
 
     REBALANCE_FREQ_WEEKLY = 'weekly'
@@ -69,10 +75,28 @@ class StockSelectionStrategy(StrategyLogic):
         return isinstance(self.executor, QMTExecutor)
 
     def on_bar(self, bar: BarData):
-        """K线数据到达 - 执行选股调仓逻辑"""
+        """K线数据到达 - 执行选股调仓逻辑
+
+        回测模式下日线 bar 时间戳为 00:00，直接执行调仓。
+        实盘/模拟盘模式下，只在临近收盘（默认14:50）执行调仓，
+        以确保使用接近收盘价的价格交易，与回测保持一致。
+        """
         current_date = self.get_current_date()
         if current_date is None:
             return
+
+        # 实盘/模拟盘时间过滤：只在指定时间执行调仓
+        bar_datetime = getattr(bar, 'datetime', None)
+        if bar_datetime and isinstance(bar_datetime, dt_module.datetime):
+            hour = bar_datetime.hour
+            minute = bar_datetime.minute
+            # 回测模式：日线 bar 时间戳为 00:00，允许执行
+            if hour != 0 or minute != 0:
+                # 实盘/模拟盘：只在指定时间（默认14:50）执行
+                trade_hour = getattr(self.params, 'trade_hour', 14)
+                trade_minute = getattr(self.params, 'trade_minute', 50)
+                if hour != trade_hour or minute != trade_minute:
+                    return
 
         if self._rebalance_phase != self.PHASE_IDLE:
             return
