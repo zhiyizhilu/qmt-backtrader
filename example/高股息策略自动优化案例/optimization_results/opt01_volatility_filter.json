@@ -1,0 +1,14 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 3797097.048390019,
+  "total_return_pct": 279.7097048390019,
+  "sharpe_ratio": 1.3776715194391544,
+  "max_drawdown_pct": -22.235797834870095,
+  "annual_return_pct": 26.01657359412275,
+  "trading_days": 1454,
+  "label": "opt01_volatility_filter",
+  "extra_params": {
+    "max_volatility": 0.04
+  },
+  "timestamp": "2026-05-04T20:58:08.531524"
+}

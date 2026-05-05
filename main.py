@@ -98,6 +98,8 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
     if end_date:
         config['end_date'] = end_date
 
+    pool = backtest_config.get('pool', pool)
+
     benchmark = IndexConstituentManager.SECTOR_TO_INDEX.get(pool, '000300.SH')
     config.setdefault('benchmark', benchmark)
 

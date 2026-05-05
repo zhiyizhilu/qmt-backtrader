@@ -1,0 +1,14 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 4116000.4289438287,
+  "total_return_pct": 311.60004289438285,
+  "sharpe_ratio": 1.3914605281408334,
+  "max_drawdown_pct": -19.074156170965868,
+  "annual_return_pct": 27.790274107301816,
+  "trading_days": 1454,
+  "label": "opt07_quarterly_rebalance",
+  "extra_params": {
+    "rebalance_freq": "quarterly"
+  },
+  "timestamp": "2026-05-05T00:05:11.439393"
+}

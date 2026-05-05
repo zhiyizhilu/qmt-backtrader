@@ -1,0 +1,14 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 4046546.336614665,
+  "total_return_pct": 304.6546336614665,
+  "sharpe_ratio": 1.4053228472817014,
+  "max_drawdown_pct": -21.008839637748007,
+  "annual_return_pct": 27.413911687876215,
+  "trading_days": 1454,
+  "label": "opt08_dividend_stability",
+  "extra_params": {
+    "min_dividend_years": 3
+  },
+  "timestamp": "2026-05-05T00:25:13.002567"
+}

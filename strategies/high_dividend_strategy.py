@@ -1,12 +1,13 @@
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List
 from core.stock_selection import StockSelectionStrategy
 from strategies import register_strategy
 
 
-@register_strategy('high_dividend', default_kwargs={'max_stocks': 20},
+@register_strategy('high_dividend', default_kwargs={'max_stocks': 15},
                    backtest_config={'cash': 1000000, 'commission': 0.0001,
-                                    'start_date': '2016-01-01', 'end_date': '2026-04-17'})
+                                    'start_date': '2020-04-28', 'end_date': '2026-04-28',
+                                    'period': '1d', 'pool': '中证1000'})
 class HighDividendStrategy(StockSelectionStrategy):
     """高股息行业均仓策略 - 规避高股息陷阱，行业分散选股
 
@@ -24,16 +25,19 @@ class HighDividendStrategy(StockSelectionStrategy):
     """
 
     params = (
-        ('rebalance_freq', 'monthly'),
-        ('max_stocks', 20),
+        ('rebalance_freq', 'biweekly'),
+        ('max_stocks', 15),
         ('position_ratio', 0.95),
         ('stock_pool', None),
         ('min_roe', 0.0),
         ('min_profit_growth', 0.0),
         ('min_operate_cashflow', 0.0),
         ('use_avg_dividend', True),
-        ('skip_fundamental_if_missing', True),  # 财务数据缺失时跳过基本面过滤
+        ('skip_fundamental_if_missing', True),
     )
+
+    def __init__(self, executor=None, **kwargs):
+        super().__init__(executor, **kwargs)
 
     def select_stocks(self) -> List[str]:
         pool = self.get_stock_pool()
@@ -81,20 +85,16 @@ class HighDividendStrategy(StockSelectionStrategy):
                 stock, 'Pershareindex', 'inc_net_profit_rate'
             )
             ocf = self.get_financial_field(stock, 'Pershareindex', 's_fa_ocfps')
-            
+
             self.log(f'  {stock} ROE={roe}% 归母净利润增速={profit_growth}% 经营现金流={ocf}')
 
-            # 记录前3条缺失调试信息
             if debug_logged < 3 and roe is None:
                 self.log(f'[DEBUG] {stock} ROE=None (Pershareindex.du_return_on_equity)')
                 debug_logged += 1
 
-            # 统计缺失情况
             if roe is None and profit_growth is None and ocf is None:
                 missing_count += 1
 
-
-            # 正常过滤逻辑
             if roe is None or roe <= self.params.min_roe:
                 continue
             if profit_growth is None or profit_growth <= self.params.min_profit_growth:
@@ -104,7 +104,6 @@ class HighDividendStrategy(StockSelectionStrategy):
 
             result.append(stock)
 
-        # 降级逻辑：如果全部股票都缺少财务数据，且允许跳过，则返回整个池子
         if not result and missing_count == len(pool) and self.params.skip_fundamental_if_missing:
             self.log(f'[WARN] 所有股票财务数据缺失({missing_count}/{len(pool)})，跳过基本面过滤')
             return pool
