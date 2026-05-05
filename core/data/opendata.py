@@ -75,13 +75,22 @@ class OpenDataProcessor(DataProcessor):
 
     @smart_cache(cache_type='market', incremental=True)
     def get_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> pd.DataFrame:
-        """获取行情数据（仅使用腾讯财经）"""
+        """获取行情数据（个股用腾讯财经，指数用akshare指数接口）"""
         if not self._ak:
             if self._fallback_to_simulated:
                 return self._generate_simulated_data(start_date, end_date, symbol)
             raise RuntimeError("akshare 未安装，请 pip install akshare")
 
-        # 使用腾讯财经获取数据
+        # 判断是否为指数
+        if symbol in self.INDEX_CODE_MAP or symbol.replace('.', '') in self.INDEX_CODE_MAP.values():
+            df = self._get_index_data(symbol, start_date, end_date, period)
+            if df is not None and not df.empty:
+                return df
+            if self._fallback_to_simulated:
+                return self._generate_simulated_data(start_date, end_date, symbol)
+            raise ValueError(f"{symbol} 在 {start_date} 到 {end_date} 期间没有数据")
+
+        # 使用腾讯财经获取个股数据
         df = self._get_data_from_tx(symbol, start_date, end_date)
         if df is not None and not df.empty:
             return self._process_akshare_data(df, symbol, start_date, end_date)
@@ -107,6 +116,37 @@ class OpenDataProcessor(DataProcessor):
                 return df
         except Exception as e:
             self.logger.debug(f"腾讯财经接口失败: {e}")
+        return None
+
+    def _get_index_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d") -> Optional[pd.DataFrame]:
+        """从akshare获取指数历史行情数据"""
+        # 转换为 akshare 指数接口格式: 000300.SH -> sh000300
+        if '.' in symbol:
+            code, suffix = symbol.split('.')
+            em_symbol = f"{suffix.lower()}{code}"
+            sina_symbol = f"{suffix.lower()}{code}"
+        else:
+            em_symbol = symbol
+            sina_symbol = symbol
+
+        try:
+            # 东方财富指数接口，日期格式为 YYYYMMDD
+            em_start = start_date.replace('-', '')
+            em_end = end_date.replace('-', '')
+            df = self._ak.stock_zh_index_daily_em(symbol=em_symbol, start_date=em_start, end_date=em_end)
+            if df is not None and not df.empty:
+                return self._process_akshare_data(df, symbol, start_date, end_date)
+        except Exception as e:
+            self.logger.debug(f"东方财富指数接口失败: {e}")
+
+        try:
+            # 备用：新浪指数接口（返回全部历史数据，需要自行过滤）
+            df = self._ak.stock_zh_index_daily(symbol=sina_symbol)
+            if df is not None and not df.empty:
+                return self._process_akshare_data(df, symbol, start_date, end_date)
+        except Exception as e:
+            self.logger.debug(f"新浪指数接口失败: {e}")
+
         return None
 
     def _process_akshare_data(self, df: pd.DataFrame, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -1246,13 +1286,22 @@ class OpenDataProcessor(DataProcessor):
         return result
 
     def _generate_simulated_data(self, start_date: str, end_date: str, symbol: str = None) -> pd.DataFrame:
+        """生成模拟数据（fallback，仅当真实数据完全不可用时使用）"""
         date_range = pd.date_range(start=start_date, end=end_date, freq='B')
         seed = hash(symbol) % 10000 if symbol else 42
         rng = np.random.default_rng(seed)
-        base_price = 10.0 + rng.random() * 5.0
+
+        # 根据symbol类型设置合理的基准价格
+        if symbol and ('300' in symbol or '000016' in symbol):
+            base_price = 4000.0  # 沪深300/上证50 约4000点
+        elif symbol and ('905' in symbol or '852' in symbol):
+            base_price = 6000.0  # 中证500/1000 约6000点
+        else:
+            base_price = 10.0 + rng.random() * 5.0
+
         prices = []
         for i in range(len(date_range)):
-            base_price *= (1 + rng.normal(0, 0.02))
+            base_price *= (1 + rng.normal(0, 0.015))
             prices.append(base_price)
         df = pd.DataFrame({
             'open': [p * 0.999 for p in prices], 'high': [p * 1.002 for p in prices],
