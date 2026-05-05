@@ -1,4 +1,4 @@
-# 小市值策略 — 降低回撤、提升收益
+# 小市值优化策略 — 降低回撤、提升收益
 
 ## 一、策略背景
 
@@ -11,9 +11,7 @@
 - **流动性风险**：小盘股成交低迷，冲击成本高，实盘滑点大
 - **壳价值衰减**：注册制推行后，壳资源价值大幅缩水，小市值因子长期溢价在收窄
 
-## 二、策略逻辑
-
-### 选股流程
+## 二、选股流程
 
 ```
 股票池 → 基本面过滤 → 市值计算 → [市值上限过滤] → 波动率过滤 → 动量过滤 → 行业分散选股 → 止损检查 → 取前N只
@@ -32,7 +30,7 @@
 | 经营现金流 > 0 | Pershareindex | `s_fa_ocfps` | `min_operate_cashflow=0.0` |
 | 资产负债率 < 60% | Balance | `total_liabilities / total_assets` | `max_debt_ratio=0.6` |
 
-**容错机制：** 当某个字段数据缺失时，跳过该条检查而非直接排除股票；仅当所有基本面字段（ROE、营收增速、经营现金流）全部缺失时才排除。这样避免因数据覆盖不全导致大量股票被误杀。
+**容错机制：** 当某个字段数据缺失时，跳过该条检查而非直接排除股票；仅当所有基本面字段全部缺失时才排除。这样避免因数据覆盖不全导致大量股票被误杀。
 
 **降级机制：** 当所有股票的财务数据全部缺失时，若 `skip_fundamental_if_missing=True`，则跳过基本面过滤，返回整个股票池。
 
@@ -134,58 +132,36 @@
 | `volatility_period` | `20` | 波动率计算回看天数 |
 | `stop_loss_pct` | `0.08` | 止损阈值（8%），调仓时亏损超此比例的股票被剔除 |
 
-## 五、策略实现
+## 五、回测配置
 
-```python
-from collections import defaultdict
-from typing import Dict, List
-from core.stock_selection import StockSelectionStrategy
-from strategies import register_strategy
+| 配置项 | 值 |
+|--------|-----|
+| 初始资金 | 1,000,000 |
+| 手续费 | 0.01% |
+| 回测区间 | 2016-01-01 ~ 2026-04-17 |
+| 数据周期 | 日线 |
+| 股票池 | 全市场（从财务数据缓存获取） |
 
+## 六、优化记录
 
-@register_strategy('small_cap', default_kwargs={'max_stocks': 10},
-                   backtest_config={'cash': 1000000, 'commission': 0.0001,
-                                    'start_date': '2016-01-01', 'end_date': '2026-04-17'})
-class SmallCapStrategy(StockSelectionStrategy):
-    """小市值优化策略 - 基本面过滤+行业分散+动量确认+波动率过滤+止损
+优化案例位于 `optimization/` 目录：
 
-    选股逻辑：
-    1. 基本面过滤：ROE > 0、营收增速 > 0、经营现金流 > 0、资产负债率 < 阈值
-    2. 行业分散：申万一级行业各选市值最小的1只
-    3. 动量确认：近N日涨幅 > 0
-    4. 波动率过滤：日波动率 <= 4%（事前风控）
-    5. 止损机制：持仓亏损 >= 8%时在调仓时止损卖出（事后风控）
-    6. 按市值升序排列，取前N只
-    7. 等权重持仓，月度调仓
+| 优化项 | 说明 |
+|--------|------|
+| baseline | 基线配置 |
+| opt01_volatility_filter | 波动率过滤 |
+| opt02_volume_confirm | 成交量确认 |
+| opt03_multi_factor_score | 多因子评分 |
+| opt04_biweekly_rebalance | 双周调仓 |
+| opt05_relative_momentum | 相对动量 |
+| opt06_industry_momentum_weight | 行业动量加权 |
+| opt07_stop_loss | 止损机制 |
+| opt08_min_market_cap | 最小市值限制 |
+| opt09_financial_quality_score | 财务质量评分 |
+| opt10_turnover_control | 换手率控制 |
+| opt11_combined_vol_stoploss | 组合优化（波动率+止损） |
 
-    降低回撤机制：
-    - 基本面过滤：排除"垃圾小盘"，剔除亏损、高负债、现金流断裂的公司
-    - 行业分散：避免重仓单一周期行业
-    - 动量确认：避免在下跌趋势中接飞刀
-    - 波动率过滤：剔除日波动率过高的投机标的
-    - 止损机制：截断单股深度亏损的尾部风险
-    """
-
-    params = (
-        ('rebalance_freq', 'monthly'),
-        ('max_stocks', 10),
-        ('position_ratio', 0.95),
-        ('stock_pool', None),
-        ('min_roe', 0.0),
-        ('min_revenue_growth', 0.0),
-        ('min_operate_cashflow', 0.0),
-        ('max_debt_ratio', 0.6),
-        ('momentum_period', 20),
-        ('min_momentum', 0.0),
-        ('max_market_cap', None),
-        ('skip_fundamental_if_missing', True),
-        ('max_volatility', 0.04),
-        ('volatility_period', 20),
-        ('stop_loss_pct', 0.08),
-    )
-```
-
-## 六、回测结果
+## 七、回测结果
 
 回测区间：2020-04-28 ~ 2026-04-28，股票池：中证1000
 
@@ -206,7 +182,14 @@ class SmallCapStrategy(StockSelectionStrategy):
 - **止损机制**（事后风控）：8%止损截断尾部亏损，夏普比率 +12.8%
 - **组合效果**：两项优化互补叠加，夏普比率 +22.5%
 
-**风险提示：**
-1. 注册制全面推行后，小市值因子长期溢价可能持续收窄
-2. 小盘股流动性差，实盘冲击成本远高于回测
-3. 任何历史回测都不能保证未来收益
+## 八、风险提示
+
+1. **注册制全面推行后**，小市值因子长期溢价可能持续收窄
+2. **小盘股流动性差**，实盘冲击成本远高于回测
+3. **任何历史回测都不能保证未来收益**
+
+## 九、策略文件
+
+- [small_cap_strategy.py](small_cap_strategy.py) - 策略主文件
+- [optimization/](optimization/) - 自动优化案例
+- [backtest_results/](backtest_results/) - 回测结果记录

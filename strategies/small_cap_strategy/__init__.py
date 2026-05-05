@@ -1,0 +1,1 @@
+from .small_cap_strategy import SmallCapStrategy

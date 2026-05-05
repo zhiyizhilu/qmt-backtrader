@@ -16,6 +16,19 @@ _INDEX_FILE = 'index.json'
 _FRAMEWORK_VERSION = '1.0'
 
 
+def _get_strategy_backtest_dir(strategy_name: str) -> Optional[str]:
+    """根据策略名获取策略目录下的 backtest_results 路径，不存在则返回 None"""
+    try:
+        from strategies import get_strategy_dir
+        strategy_dir = get_strategy_dir(strategy_name)
+        if strategy_dir:
+            bt_dir = os.path.join(strategy_dir, 'backtest_results')
+            return bt_dir
+    except Exception:
+        pass
+    return None
+
+
 def _ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
@@ -148,13 +161,18 @@ class BacktestRecorder:
             'benchmark_curve': benchmark_curve,
         }
 
-        strategy_dir = os.path.join(self.results_dir, strategy_name)
+        strategy_bt_dir = _get_strategy_backtest_dir(strategy_name)
+        if strategy_bt_dir:
+            strategy_dir = strategy_bt_dir
+        else:
+            strategy_dir = os.path.join(self.results_dir, strategy_name)
         _ensure_dir(strategy_dir)
 
         file_path = os.path.join(strategy_dir, f'{run_id}.json')
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
+        rel_file = os.path.relpath(file_path, self.results_dir).replace('\\', '/')
         index_entry = {
             'run_id': run_id,
             'strategy_name': strategy_name,
@@ -164,7 +182,7 @@ class BacktestRecorder:
             'sharpe_ratio': metrics['sharpe_ratio'],
             'max_drawdown_pct': metrics['max_drawdown_pct'],
             'total_trading_days': metrics['total_trading_days'],
-            'file': f'{strategy_name}/{run_id}.json',
+            'file': rel_file,
         }
         self._update_index(index_entry)
 

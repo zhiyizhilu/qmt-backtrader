@@ -21,7 +21,7 @@ description: "系统性地通过回测优化量化交易策略。当用户需要
 ### 阶段一：理解策略
 
 1. 读取策略文件，理解当前逻辑和参数
-2. 读取 `example/` 目录下对应的策略文档
+2. 读取策略目录下的 `readme.md` 文档
 3. 运行基线回测，记录当前性能指标
 4. 确定核心评估指标（默认：夏普比率）
 
@@ -57,7 +57,7 @@ python main.py --mode backtest --strategy <策略名> --period 1d --pool <股票
 
 #### 程序化回测模板
 
-在结果目录中创建 `run_optimization.py` 脚本：
+在策略目录下的 `optimization/` 目录中创建 `run_optimization.py` 脚本：
 
 ```python
 import os
@@ -66,18 +66,23 @@ import json
 import datetime
 import traceback
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, PROJECT_ROOT)
+
 os.environ['QMT_LOG_LEVEL'] = 'WARNING'
 
 from api.backtest_api import BacktestAPI
 from core.stock_selection import StockSelectionStrategy
-from strategies import get_strategy, get_strategy_default_kwargs, get_strategy_backtest_config
+from strategies import get_strategy, get_strategy_default_kwargs, get_strategy_backtest_config, get_strategy_dir
 from core.data.index_constituent import IndexConstituentManager
 
+STRATEGY_NAME = '<策略注册名>'
+STRATEGY_DIR = get_strategy_dir(STRATEGY_NAME)
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'optimization_results')
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
-def run_backtest_with_params(strategy_name, extra_params=None, label='test',
+def run_backtest_with_params(strategy_name=STRATEGY_NAME, extra_params=None, label='test',
                               pool='中证1000', start_date='2020-04-28', end_date='2026-04-28'):
     strategy_class = get_strategy(strategy_name)
     default_kwargs = get_strategy_default_kwargs(strategy_name)
@@ -152,11 +157,13 @@ def run_backtest_with_params(strategy_name, extra_params=None, label='test',
 ### 阶段六：清理与文档
 
 1. **清理策略代码**：删除所有无效优化的参数和方法
-2. **更新策略文档**：仅反映保留的优化内容
-3. **生成对比图表**：使用 matplotlib 可视化结果
-4. **撰写优化报告**：包含所有结果、分析和经验总结
+2. **更新策略目录下的 `readme.md`**：仅反映保留的优化内容
+3. **生成对比图表**：使用 matplotlib 可视化结果，保存到 `optimization/optimization_results/optimization_comparison.png`
+4. **撰写优化报告**：保存到 `optimization/优化报告.md`，包含所有结果、分析和经验总结
 
 #### 可视化模板
+
+在策略目录下的 `optimization/` 目录中创建 `plot_comparison.py` 脚本：
 
 ```python
 import json
@@ -167,6 +174,8 @@ import matplotlib.pyplot as plt
 
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
+
+RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'optimization_results')
 
 # 从 optimization_results/ 读取所有 JSON 结果
 # 创建 2x2 子图：夏普比率、总收益、最大回撤、夏普变化百分比
@@ -228,17 +237,48 @@ class MyStrategy(StockSelectionStrategy):
 
 ## 输出目录结构
 
+优化结果保存在策略目录下的 `optimization/` 子目录中：
+
 ```
-example/<策略名>自动优化案例/
-├── run_optimization.py          # 自动化回测运行脚本
-├── plot_comparison.py           # 可视化脚本
-├── optimization_comparison.png  # 对比图表
-├── 优化报告.md                   # 完整优化报告
-├── baseline.json                # 基线结果
-├── opt01_xxx.json               # 优化1结果
-├── opt02_xxx.json               # 优化2结果
-├── ...
-└── optNN_combined.json          # 组合优化结果
+strategies/<策略目录>/
+├── <策略名>.py                  # 策略主文件
+├── readme.md                    # 策略文档
+├── backtest_results/            # 回测结果记录
+│   └── YYYYMMDD_HHMMSS_<策略名>.json
+└── optimization/                # 优化案例目录
+    ├── run_optimization.py          # 自动化回测运行脚本
+    ├── generate_report.py           # 报告生成脚本
+    ├── plot_comparison.py           # 可视化脚本
+    ├── optimization_results/        # 优化回测结果
+    │   ├── baseline.json            # 基线结果
+    │   ├── opt01_xxx.json           # 优化1结果
+    │   ├── opt02_xxx.json           # 优化2结果
+    │   ├── ...
+    │   ├── optNN_combined.json      # 组合优化结果
+    │   └── optimization_comparison.png  # 对比图表
+    ├── optimization_report.json     # 优化报告数据
+    └── 优化报告.md                   # 完整优化报告
+```
+
+### 策略目录与注册名映射
+
+| 策略注册名 | 策略目录 |
+|-----------|---------|
+| `small_cap` | `strategies/small_cap_strategy/` |
+| `high_dividend` | `strategies/high_dividend_strategy/` |
+| `double_ma` | `strategies/example_strategy/` |
+| `fundamental_roe` | `strategies/fundamental_strategy/` |
+| `fundamental_growth` | `strategies/fundamental_strategy/` |
+| `etf_rotation` | `strategies_for_vip/etf_rotation_strategy/` |
+
+### 获取策略目录
+
+通过 `get_strategy_dir()` 函数获取策略的绝对路径：
+
+```python
+from strategies import get_strategy_dir
+strategy_dir = get_strategy_dir('small_cap')
+# => 'E:\...\strategies\small_cap_strategy'
 ```
 
 ## 优化报告模板
