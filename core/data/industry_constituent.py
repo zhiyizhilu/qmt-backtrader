@@ -257,7 +257,8 @@ class IndustryConstituentManager:
                               date: Optional[str] = None) -> Dict[str, str]:
         """获取股票→行业的映射字典
 
-        遍历所有行业，查找每只股票所属的行业。
+        如果已预加载，直接使用 bisect 快速路径（O(logN)）。
+        否则遍历所有行业，查找每只股票所属的行业。
 
         Args:
             stock_list: 股票代码列表（QMT格式）
@@ -269,6 +270,12 @@ class IndustryConstituentManager:
         """
         if date is None:
             date = datetime.now().strftime('%Y-%m-%d')
+
+        # 快速路径：如果已预加载，直接使用 bisect 查找
+        if self._preloaded_dates is not None:
+            full_mapping = self.get_industry_mapping_fast(date)
+            stock_set = set(stock_list)
+            return {s: industry for s, industry in full_mapping.items() if s in stock_set}
 
         stock_set = set(stock_list)
         mapping: Dict[str, str] = {}

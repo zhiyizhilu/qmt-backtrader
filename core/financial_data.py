@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Any, Callable
 import logging
+import threading
 
 
 class FinancialDataCache:
@@ -35,6 +36,7 @@ class FinancialDataCache:
         self._effective_filter_start = None
         self._effective_filter_end = None
         self._loaded = False
+        self._lock = threading.Lock()
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
 
         # 预加载的数据直接注入（兼容旧调用方式）
@@ -135,6 +137,14 @@ class FinancialDataCache:
         if not available_years:
             available_years = cache_manager.disk_cache.list_yearly_files(namespace, stock_code, table_suffix)
 
+        # 按回测时间范围过滤年份，避免加载无关历史数据
+        if available_years and self._effective_filter_start is not None:
+            needed_start_year = self._effective_filter_start.year
+            needed_end_year = (self._effective_filter_end.year + 1) if self._effective_filter_end else 9999
+            filtered_years = [y for y in available_years if needed_start_year <= y <= needed_end_year]
+            if filtered_years:
+                available_years = filtered_years
+
         if available_years:
             df = cache_manager.disk_cache.get_yearly_range(namespace, stock_code, sorted(available_years), table_suffix)
             if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
@@ -143,6 +153,9 @@ class FinancialDataCache:
                 df = self._ensure_datetime_index(df, stock_code, table_name)
                 if not df.empty:
                     df = df.sort_index()
+                    # 按时间范围截断，减少内存占用
+                    if self._effective_filter_start is not None and isinstance(df.index, pd.DatetimeIndex):
+                        df = df[df.index >= self._effective_filter_start]
                 self._data[stock_code][table_name] = df
                 self._loaded_tables[(stock_code, table_name)] = True
                 self.logger.debug(f"从年份缓存加载: {stock_code}.{table_name} (年份: {available_years})")
@@ -524,6 +537,7 @@ class FinancialDataCache:
 
         财务数据预加载时会自动往前延伸1年（用于同比增长等计算），
         避免回测早期（如2026年）加载到过老的数据（如2008年）。
+        使用多线程并发加载以提升速度。
 
         Args:
             stock_list: 股票代码列表
@@ -540,8 +554,33 @@ class FinancialDataCache:
             except Exception:
                 pass
 
-        for stock_code in stock_list:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        completed = 0
+        total = len(stock_list)
+
+        def _load_one(stock_code):
             self.preload_stock(stock_code, tables, extended_start_time, extended_end_time)
+            return stock_code
+
+        # 磁盘I/O密集型任务，使用4线程并发
+        max_workers = min(4, len(stock_list))
+        if max_workers <= 1 or len(stock_list) <= 10:
+            for stock_code in stock_list:
+                self.preload_stock(stock_code, tables, extended_start_time, extended_end_time)
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_load_one, s): s for s in stock_list}
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                        completed += 1
+                        if completed % 100 == 0 or completed == total:
+                            self.logger.info(f"财务数据预加载进度: {completed}/{total}")
+                    except Exception as e:
+                        completed += 1
+                        symbol = futures[future]
+                        self.logger.warning(f"预加载 {symbol} 失败: {e}")
 
     def get_latest_batch(self, stock_list: List[str], table_name: str,
                          date: datetime.date, fields: List[str]) -> Dict[str, Dict[str, Any]]:
