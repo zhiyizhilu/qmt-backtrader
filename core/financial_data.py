@@ -131,68 +131,64 @@ class FinancialDataCache:
 
         table_suffix = f"{table_name}_{self._report_type}"
 
-        if self._data_processor is not None and 'OpenData' in self._data_processor.__class__.__name__:
-            self.logger.debug(f"[加载流程] {stock_code}.{table_name} 使用 OpenDataProcessor，跳过本地缓存逻辑")
-            pass
-        else:
-            available_years = cache_manager.index_manager.get_available_financial_years(stock_code, table_suffix)
-            if not available_years:
-                available_years = cache_manager.disk_cache.list_yearly_files(namespace, stock_code, table_suffix)
+        available_years = cache_manager.index_manager.get_available_financial_years(stock_code, table_suffix)
+        if not available_years:
+            available_years = cache_manager.disk_cache.list_yearly_files(namespace, stock_code, table_suffix)
 
-            if available_years:
-                df = cache_manager.disk_cache.get_yearly_range(namespace, stock_code, sorted(available_years), table_suffix)
-                if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
-                    if stock_code not in self._data:
-                        self._data[stock_code] = {}
-                    df = self._ensure_datetime_index(df, stock_code, table_name)
-                    if not df.empty:
-                        df = df.sort_index()
-                    self._data[stock_code][table_name] = df
-                    self._loaded_tables[(stock_code, table_name)] = True
-                    self.logger.debug(f"从年份缓存加载: {stock_code}.{table_name} (年份: {available_years})")
-                    return
-
-            time_suffix = f"_{self._start_time}_{self._end_time}" if self._start_time or self._end_time else ""
-            cache_key = f"{stock_code}{time_suffix}_{table_name}_{self._report_type}"
-
-            cached = cache_manager.disk_cache.get(namespace, cache_key, 'parquet')
-            if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
+        if available_years:
+            df = cache_manager.disk_cache.get_yearly_range(namespace, stock_code, sorted(available_years), table_suffix)
+            if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
                 if stock_code not in self._data:
                     self._data[stock_code] = {}
-                cached = self._ensure_datetime_index(cached, stock_code, table_name)
-                if not cached.empty:
-                    cached = cached.sort_index()
-                self._data[stock_code][table_name] = cached
+                df = self._ensure_datetime_index(df, stock_code, table_name)
+                if not df.empty:
+                    df = df.sort_index()
+                self._data[stock_code][table_name] = df
                 self._loaded_tables[(stock_code, table_name)] = True
-
-                if isinstance(cached.index, pd.DatetimeIndex) and not cached.empty:
-                    written = cache_manager.disk_cache.put_yearly_from_df(namespace, stock_code, table_suffix, cached)
-                    for y in written:
-                        cache_manager.index_manager.update_financial_index(stock_code, table_suffix, y)
-                    cache_manager.index_manager.save_index()
-
-                self.logger.debug(f"从旧格式缓存加载并迁移: {stock_code}.{table_name}")
+                self.logger.debug(f"从年份缓存加载: {stock_code}.{table_name} (年份: {available_years})")
                 return
 
-            cached_pkl = cache_manager.disk_cache.get(namespace, cache_key, 'pkl')
-            if cached_pkl is not None and isinstance(cached_pkl, pd.DataFrame) and not cached_pkl.empty:
-                if stock_code not in self._data:
-                    self._data[stock_code] = {}
-                cached_pkl = self._ensure_datetime_index(cached_pkl, stock_code, table_name)
-                if not cached_pkl.empty:
-                    cached_pkl = cached_pkl.sort_index()
-                self._data[stock_code][table_name] = cached_pkl
-                self._loaded_tables[(stock_code, table_name)] = True
+        time_suffix = f"_{self._start_time}_{self._end_time}" if self._start_time or self._end_time else ""
+        cache_key = f"{stock_code}{time_suffix}_{table_name}_{self._report_type}"
 
-                if isinstance(cached_pkl.index, pd.DatetimeIndex) and not cached_pkl.empty:
-                    written = cache_manager.disk_cache.put_yearly_from_df(namespace, stock_code, table_suffix, cached_pkl)
-                    for y in written:
-                        cache_manager.index_manager.update_financial_index(stock_code, table_suffix, y)
-                    cache_manager.index_manager.save_index()
+        cached = cache_manager.disk_cache.get(namespace, cache_key, 'parquet')
+        if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
+            cached = self._ensure_datetime_index(cached, stock_code, table_name)
+            if not cached.empty:
+                cached = cached.sort_index()
+            self._data[stock_code][table_name] = cached
+            self._loaded_tables[(stock_code, table_name)] = True
 
-                cache_manager.disk_cache.delete(namespace, cache_key, 'pkl')
-                self.logger.info(f"旧pkl缓存已迁移为parquet: {stock_code}.{table_name}")
-                return
+            if isinstance(cached.index, pd.DatetimeIndex) and not cached.empty:
+                written = cache_manager.disk_cache.put_yearly_from_df(namespace, stock_code, table_suffix, cached)
+                for y in written:
+                    cache_manager.index_manager.update_financial_index(stock_code, table_suffix, y)
+                cache_manager.index_manager.save_index()
+
+            self.logger.debug(f"从旧格式缓存加载并迁移: {stock_code}.{table_name}")
+            return
+
+        cached_pkl = cache_manager.disk_cache.get(namespace, cache_key, 'pkl')
+        if cached_pkl is not None and isinstance(cached_pkl, pd.DataFrame) and not cached_pkl.empty:
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
+            cached_pkl = self._ensure_datetime_index(cached_pkl, stock_code, table_name)
+            if not cached_pkl.empty:
+                cached_pkl = cached_pkl.sort_index()
+            self._data[stock_code][table_name] = cached_pkl
+            self._loaded_tables[(stock_code, table_name)] = True
+
+            if isinstance(cached_pkl.index, pd.DatetimeIndex) and not cached_pkl.empty:
+                written = cache_manager.disk_cache.put_yearly_from_df(namespace, stock_code, table_suffix, cached_pkl)
+                for y in written:
+                    cache_manager.index_manager.update_financial_index(stock_code, table_suffix, y)
+                cache_manager.index_manager.save_index()
+
+            cache_manager.disk_cache.delete(namespace, cache_key, 'pkl')
+            self.logger.info(f"旧pkl缓存已迁移为parquet: {stock_code}.{table_name}")
+            return
 
         if self._data_processor is not None:
             try:
@@ -215,19 +211,15 @@ class FinancialDataCache:
                             if not df.empty:
                                 df = df.sort_index()
 
-                            if 'OpenData' not in self._data_processor.__class__.__name__:
-                                if isinstance(df.index, pd.DatetimeIndex) and not df.empty:
-                                    written = cache_manager.disk_cache.put_yearly_from_df(namespace, stock_code, table_suffix, df)
-                                    for y in written:
-                                        cache_manager.index_manager.update_financial_index(stock_code, table_suffix, y)
-                                    cache_manager.index_manager.save_index()
-                                else:
-                                    time_suffix = f"_{self._start_time}_{self._end_time}" if self._start_time or self._end_time else ""
-                                    cache_key = f"{stock_code}{time_suffix}_{table_name}_{self._report_type}"
-                                    cache_manager.disk_cache.put(namespace, cache_key, df, 'parquet')
-
-                            if 'OpenData' in self._data_processor.__class__.__name__:
-                                df = self._ensure_column_mapping(df, table_name)
+                            if isinstance(df.index, pd.DatetimeIndex) and not df.empty:
+                                written = cache_manager.disk_cache.put_yearly_from_df(namespace, stock_code, table_suffix, df)
+                                for y in written:
+                                    cache_manager.index_manager.update_financial_index(stock_code, table_suffix, y)
+                                cache_manager.index_manager.save_index()
+                            else:
+                                time_suffix = f"_{self._start_time}_{self._end_time}" if self._start_time or self._end_time else ""
+                                cache_key = f"{stock_code}{time_suffix}_{table_name}_{self._report_type}"
+                                cache_manager.disk_cache.put(namespace, cache_key, df, 'parquet')
 
                             if self._effective_filter_start or self._effective_filter_end:
                                 original_len = len(df)
@@ -243,10 +235,7 @@ class FinancialDataCache:
                                 self._data[stock_code] = {}
                             self._data[stock_code][table_name] = df
                             self._loaded_tables[(stock_code, table_name)] = True
-                            if 'OpenData' in self._data_processor.__class__.__name__:
-                                self.logger.debug(f"从data_processor加载: {stock_code}.{table_name}")
-                            else:
-                                self.logger.debug(f"从API下载并缓存: {stock_code}.{table_name}")
+                            self.logger.debug(f"从API下载并缓存: {stock_code}.{table_name}")
                             return
                         else:
                             self.logger.debug(f"[加载结果] {stock_code}.{table_name} df为空，可能是新股或暂无财务数据")
@@ -321,72 +310,6 @@ class FinancialDataCache:
                 f'[_ensure_datetime_index] {stock_code}.{table_name} '
                 f'无法构建DatetimeIndex, index类型={type(df.index).__name__}'
             )
-
-        return df
-
-    def _ensure_column_mapping(self, df: pd.DataFrame, table_name: str) -> pd.DataFrame:
-        """确保财务数据字段名已转换为英文（保险机制）
-        
-        当 OpenDataProcessor 返回的数据字段名仍为中文时，进行转换。
-        这是一个保险机制，防止字段名未正确转换导致策略无法获取数据。
-        
-        Args:
-            df: 财务数据 DataFrame
-            table_name: 报表名称
-            
-        Returns:
-            字段名已转换的 DataFrame
-        """
-        if df is None or df.empty:
-            return df
-            
-        # 定义字段名映射（与 OpenDataProcessor._convert_akshare_columns 保持一致）
-        column_map = {
-            # 每股指标相关
-            '每股收益': 's_fa_eps_basic',
-            '每股净资产': 's_fa_bps',
-            '每股经营现金流量': 's_fa_ocfps',
-            '每股资本公积金': 's_fa_surpluscapitalps',
-            '每股未分配利润': 's_fa_undistributedps',
-            '净资产收益率': 'du_return_on_equity',
-            '净资产收益率-加权': 'equity_roe',
-            '净资产收益率-摊薄': 'net_roe',
-            '销售毛利率': 'gross_profit_margin',
-            '净利润-同比增长': 'inc_net_profit_rate',
-            '营业总收入-同比增长': 'inc_revenue_rate',
-            # 资产负债表相关
-            '资产总计': 'total_assets',
-            '负债合计': 'total_liabilities',
-            '所有者权益合计': 'total_equity',
-            '流动资产合计': 'total_current_assets',
-            '非流动资产合计': 'total_noncurrent_assets',
-            '流动负债合计': 'total_current_liabilities',
-            '非流动负债合计': 'total_noncurrent_liabilities',
-            '货币资金': 'cash_and_equivalents',
-            '应收账款': 'accounts_receivable',
-            '存货': 'inventory',
-            # 利润表相关
-            '营业总收入': 'total_operate_income',
-            '营业收入': 'operate_income',
-            '营业总成本': 'total_operate_cost',
-            '营业成本': 'operate_cost',
-            '营业利润': 'operate_profit',
-            '利润总额': 'total_profit',
-            '净利润': 'net_profit',
-            '归属于母公司股东的净利润': 'net_profit_parent',
-            # 现金流量表相关
-            '经营活动产生的现金流量净额': 'net_operate_cash_flow',
-            '投资活动产生的现金流量净额': 'net_invest_cash_flow',
-            '筹资活动产生的现金流量净额': 'net_finance_cash_flow',
-            '现金及现金等价物净增加额': 'net_cash_increase',
-        }
-        
-        # 只转换存在的列
-        existing_cols = {k: v for k, v in column_map.items() if k in df.columns and v not in df.columns}
-        
-        if existing_cols:
-            self.logger.debug(f'[_ensure_column_mapping] 转换字段名: {list(existing_cols.keys())} -> {list(existing_cols.values())}')
-            df = df.rename(columns=existing_cols)
 
         return df
 

@@ -12,8 +12,8 @@ from core.data.base import DataProcessor, _merged_dict_to_parquet, _parquet_to_m
 class QMTDataProcessor(DataProcessor):
     """QMT数据处理器
     
-    以QMT为主数据源，当QMT数据不足时自动用OpenData补充。
-    对策略层完全透明，无需修改策略代码。
+    以QMT为主数据源。行情数据不足时可用OpenData补充（通过 use_opendata 参数控制）。
+    财务数据统一由QMT提供，不再使用OpenData作为补充源。
     """
     
     FINANCIAL_TABLES = [
@@ -33,7 +33,7 @@ class QMTDataProcessor(DataProcessor):
         self._financial_data_cache: Dict[str, Any] = {}
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
         
-        # 增加 OpenData 处理器用于数据补充
+        # 增加 OpenData 处理器用于行情数据补充（非财务数据）
         if use_opendata:
             try:
                 from core.data.opendata import OpenDataProcessor
@@ -42,7 +42,6 @@ class QMTDataProcessor(DataProcessor):
                 self._opendata = None
         else:
             self._opendata = None
-            self.logger.info("OpenData 补充已禁用，仅使用 QMT 数据")
 
         # 增加本地CSV成分股管理器（聚宽历史数据）
         try:
@@ -859,10 +858,9 @@ class QMTDataProcessor(DataProcessor):
                            table_list: Optional[List[str]] = None,
                            start_time: str = '', end_time: str = '',
                            report_type: str = 'announce_time') -> Dict[str, Any]:
-        """获取财务数据，QMT失败时尝试OpenData补充
+        """获取财务数据
 
         逐只股票逐表查询并缓存为 parquet，避免中断后重复下载。
-        全部下载完成后合并为总缓存(pkl)，提升后续加载速度。
 
         Args:
             stock_list: 股票代码列表
@@ -876,32 +874,7 @@ class QMTDataProcessor(DataProcessor):
         Returns:
             dict: { stock1: { table1: DataFrame, ... }, ... }
         """
-        # 1. 先尝试从 QMT 获取
         result = self._get_financial_data_from_qmt(stock_list, table_list, start_time, end_time, report_type)
-        
-        # 2. 检查是否有失败的股票，用 OpenData 补充
-        if self._opendata and result:
-            failed_stocks = [s for s in stock_list if s not in result or not result[s]]
-            if failed_stocks:
-                self.logger.info(f"QMT财务数据缺失，使用OpenData补充: {len(failed_stocks)}只股票")
-                try:
-                    opendata_result = self._opendata.get_financial_data(
-                        failed_stocks, table_list, start_time, end_time, report_type
-                    )
-                    result.update(opendata_result)
-                except Exception as e:
-                    self.logger.warning(f"OpenData财务数据补充失败: {e}")
-        
-        # 3. QMT 完全失败时，尝试用 OpenData 兜底
-        if not result and self._opendata:
-            self.logger.warning("QMT财务数据获取完全失败，尝试使用OpenData")
-            try:
-                result = self._opendata.get_financial_data(
-                    stock_list, table_list, start_time, end_time, report_type
-                )
-            except Exception as e:
-                self.logger.warning(f"OpenData财务数据兜底失败: {e}")
-        
         return result
 
     def _get_financial_data_from_qmt(self, stock_list: List[str],

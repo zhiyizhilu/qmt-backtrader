@@ -317,6 +317,7 @@ class CacheIndexManager:
             ('OpenDataProcessor_Raw', '_market_raw_index', None),
             ('QMTDataProcessor_Financial', '_financial_index', None),
             ('OpenDataProcessor_Financial', '_financial_index', None),
+        ('OpenDataProcessor_Dividend', '_financial_index', None),
         ]:
             ns_dir = disk_cache.get_namespace_dir(namespace)
             if not ns_dir.exists():
@@ -385,6 +386,7 @@ class DiskCache:
         'QMTDataProcessor_Raw': 'market_raw',
         'OpenDataProcessor': 'market',
         'OpenDataProcessor_Financial': 'financial',
+        'OpenDataProcessor_Dividend': 'dividend',
         'OpenDataProcessor_Industry': 'industry',
         'OpenDataProcessor_Sector': 'sector',
         'OpenDataProcessor_Raw': 'market_raw',
@@ -396,6 +398,7 @@ class DiskCache:
         'QMTDataProcessor_Raw': 'QMTData',
         'OpenDataProcessor': 'OpenData',
         'OpenDataProcessor_Financial': 'OpenData',
+        'OpenDataProcessor_Dividend': 'OpenData',
         'OpenDataProcessor_Industry': 'OpenData',
         'OpenDataProcessor_Sector': 'OpenData',
         'OpenDataProcessor_Raw': 'OpenData',

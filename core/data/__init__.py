@@ -13,7 +13,6 @@ from core.data.opendata import (
     OpenDataProcessor,
     _convert_symbol_to_qmt,
     _convert_symbol_to_opendata,
-    _convert_symbol_to_opendata_financial,
     get_qvix_data,
 )
 from core.data.factory import create_data_processor
@@ -34,5 +33,4 @@ __all__ = [
     '_restore_dataframe_index',
     '_convert_symbol_to_qmt',
     '_convert_symbol_to_opendata',
-    '_convert_symbol_to_opendata_financial',
 ]
