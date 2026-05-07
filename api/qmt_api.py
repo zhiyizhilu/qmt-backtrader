@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Any, Callable
 import logging
 from api.base_api import BaseAPI
 from core.executor import QMTExecutor
-from core.data_adapter import LiveDataAdapter
+from core.data_adapter import LiveDataAdapter, QMTLiveDataAdapter, get_trade_unit, validate_stock_code, validate_trade_volume
 from core.data import QMTDataProcessor
 from core.strategy_logic import StrategyLogic, BarData, OrderInfo, TradeInfo
 from core.virtual_book import VirtualBook
@@ -34,6 +34,17 @@ class QMTTrader:
             self.logger.error(f"买入参数无效: symbol={symbol}, price={price}, volume={volume}")
             return None
 
+        # 校验股票代码格式
+        if not validate_stock_code(symbol):
+            self.logger.error(f"股票代码格式无效: {symbol}, 正确格式如 000001.SZ")
+            return None
+
+        # 校验交易数量
+        is_valid, err_msg = validate_trade_volume(symbol, volume)
+        if not is_valid:
+            self.logger.error(f"买入{err_msg}: symbol={symbol}, volume={volume}")
+            return None
+
         try:
             order_id = self.xttrader.order_stock(
                 self.xtaccount.account_id,
@@ -58,6 +69,14 @@ class QMTTrader:
         if not symbol or price <= 0 or volume <= 0:
             self.logger.error(f"卖出参数无效: symbol={symbol}, price={price}, volume={volume}")
             return None
+
+        # 校验股票代码格式
+        if not validate_stock_code(symbol):
+            self.logger.error(f"股票代码格式无效: {symbol}, 正确格式如 000001.SZ")
+            return None
+
+        # 卖出数量无严格限制（允许零股卖出），但仍做基本校验
+        # 注意：科创板持仓不足200股时需一次性卖完，这里不做限制由券商校验
 
         try:
             order_id = self.xttrader.order_stock(
@@ -153,6 +172,15 @@ class QMTTrader:
         except Exception as e:
             self.logger.error(f"获取账户信息失败: {e}")
             return None
+
+    @staticmethod
+    def get_position_volume(position_obj) -> int:
+        """从持仓对象中获取持仓数量（兼容不同版本QMT）"""
+        # 优先尝试常见的属性名，避免硬编码依赖
+        for attr_name in ('m_nVolume', 'volume', 'total_volume', 'total_quantity'):
+            if hasattr(position_obj, attr_name):
+                return getattr(position_obj, attr_name, 0)
+        return 0
 
 
 class QMTAPI(BaseAPI):
@@ -463,87 +491,189 @@ class QMTAPI(BaseAPI):
         self.strategy.on_bar(bar)
 
     def run_loop(self, interval: float = 60.0, on_bar_callback: Optional[Callable] = None):
-        """持续运行策略 - 使用订阅回调 (Push) 机制获取行情并触发策略
+        """持续运行策略 - 券商版适配：只订阅持仓股，选股按需获取
+
+        改动要点：
+        1. 不再 subscribe_quote 订阅全部股票池
+        2. 只 subscribe_quote 订阅当前持仓股（10~15只，远小于100只限制）
+        3. 使用 QMTLiveDataAdapter 替代 LiveDataAdapter
+        4. 选股时通过 get_full_tick / get_market_data_ex 按需获取
 
         Args:
-            interval: 轮询间隔（秒），在此模式下仅用于控制保活线程的睡眠间隔
+            interval: 轮询间隔（秒），控制保活线程的睡眠间隔和动态订阅检查频率
             on_bar_callback: 每次行情到达后的回调函数
         """
         if not self.strategy:
             self.logger.error("未添加策略")
             return
 
-        adapter = self._load_history_data()
+        # 使用新的 QMTLiveDataAdapter
+        adapter = self._create_live_adapter()
         self.strategy.set_data_adapter(adapter)
 
         self._running = True
-        self.logger.info("策略实时数据订阅启动...")
+        self._running_adapter = adapter  # 保存引用，供动态订阅使用
 
         try:
             from xtquant import xtdata
-            symbols = self.strategy.get_symbols()
 
-            def on_data(datas):
-                """处理行情推送回调"""
-                if not self._running:
-                    return
-                
-                now = datetime.datetime.now()
-                # 过滤非交易时间：早于9点，11点半到13点之间，以及15点之后
-                hour, minute = now.hour, now.minute
-                if hour < 9 or (hour == 11 and minute >= 30) or hour == 12 or hour >= 15:
-                    return
-                if now.weekday() >= 5:
-                    return
+            # 只订阅当前持仓股
+            holding_symbols = self._get_holding_symbols()
+            if not holding_symbols:
+                holding_symbols = ['000300.SH']
+                self.logger.info("无持仓，订阅000300.SH作为心跳触发")
+            self._subscribe_holdings(holding_symbols, xtdata, on_bar_callback)
 
-                for symbol, data in datas.items():
-                    # 兼容不同数据结构的解析
-                    close_price = None
-                    if isinstance(data, list) and len(data) > 0:
-                        close_price = data[-1].get('lastPrice', data[-1].get('close', 0))
-                    elif isinstance(data, dict):
-                        close_price = data.get('lastPrice', data.get('close', 0))
-                    else:
-                        try:
-                            close_price = getattr(data, 'lastPrice', getattr(data, 'close', 0))
-                        except AttributeError:
-                            pass
-                            
-                    if close_price and close_price > 0:
-                        if self.strategy._data_adapter:
-                            self.strategy._data_adapter.update({
-                                symbol: {'close': [close_price]}
-                            })
-                            self.strategy._data_adapter.set_current_date(now.date())
-                            
-                        # 构造BarData并触发策略
-                        bar = BarData(
-                            symbol=symbol,
-                            close=close_price,
-                            datetime=now
-                        )
-                        self.strategy.on_bar(bar)
+            self.logger.info(f"策略启动: 订阅持仓股 {len(holding_symbols)} 只, "
+                             f"选股数据通过 get_full_tick 按需获取")
 
-                if on_bar_callback:
-                    on_bar_callback(self.strategy)
-
-            for symbol in symbols:
-                # 订阅实时行情，设置 callback 以 Push 模式接收数据
-                xtdata.subscribe_quote(symbol, period='tick', count=-1, callback=on_data)
-
-            self.logger.info(f"已成功订阅 {len(symbols)} 个标的的实时行情")
-
-            # 保活线程，维持 _running 状态
+            # 保活线程：定时检查持仓变化，动态调整订阅
             def _loop():
                 while self._running:
                     time.sleep(interval)
+                    self._update_subscriptions(xtdata, on_bar_callback)
                 self.logger.info("策略运行已停止")
 
             self._loop_thread = threading.Thread(target=_loop, daemon=True)
             self._loop_thread.start()
 
         except Exception as e:
-            self.logger.error(f"实时行情订阅异常: {e}")
+            self.logger.error(f"策略启动异常: {e}")
+
+    def _create_live_adapter(self) -> 'QMTLiveDataAdapter':
+        """创建 QMTLiveDataAdapter，加载持仓股历史数据"""
+        adapter = QMTLiveDataAdapter(self.data_processor)
+
+        # 加载持仓股的历史K线
+        holding_symbols = self._get_holding_symbols()
+        end_date = datetime.datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.datetime.now() - datetime.timedelta(days=120)).strftime('%Y-%m-%d')
+
+        for symbol in holding_symbols:
+            try:
+                data = self.data_processor.get_data(symbol, start_date, end_date)
+                if data is not None and not data.empty and 'close' in data.columns:
+                    adapter._kline_cache[symbol] = data['close'].tolist()
+            except Exception:
+                pass
+
+        # 同时也加载策略 get_symbols() 返回的标的（兼容非选股策略）
+        if not holding_symbols:
+            symbols = self.strategy.get_symbols()
+            for symbol in symbols:
+                try:
+                    data = self.data_processor.get_data(symbol, start_date, end_date)
+                    if data is not None and not data.empty and 'close' in data.columns:
+                        adapter._kline_cache[symbol] = data['close'].tolist()
+                except Exception:
+                    pass
+
+        adapter.set_current_date(datetime.datetime.now().date())
+        return adapter
+
+    def _get_holding_symbols(self) -> List[str]:
+        """获取当前持仓股票列表"""
+        if not self.trader:
+            return []
+        positions = self.trader.get_position()
+        if positions is None:
+            return []
+        if isinstance(positions, (list, tuple)):
+            return [p.stock_code for p in positions if QMTTrader.get_position_volume(p) > 0]
+        return []
+
+    def _subscribe_holdings(self, symbols: List[str], xtdata, callback):
+        """订阅持仓股的实时行情"""
+        # 先反订阅旧的
+        if hasattr(self, '_holding_sub_ids'):
+            for sub_id in self._holding_sub_ids:
+                try:
+                    xtdata.unsubscribe_quote(sub_id)
+                except Exception:
+                    pass
+
+        self._holding_sub_ids = []
+        self._holding_symbols = set(symbols)
+
+        # 定义 on_data 回调
+        api_self = self
+
+        def on_data(datas):
+            """处理行情推送回调 - 只更新持仓股价格"""
+            if not api_self._running:
+                return
+
+            now = datetime.datetime.now()
+            hour, minute = now.hour, now.minute
+            if hour < 9 or (hour == 11 and minute >= 30) or hour == 12 or hour >= 15:
+                return
+            if now.weekday() >= 5:
+                return
+
+            adapter = getattr(api_self, '_running_adapter', None)
+            if not adapter:
+                return
+
+            for symbol, data in datas.items():
+                close_price = None
+                if isinstance(data, list) and len(data) > 0:
+                    close_price = data[-1].get('lastPrice', data[-1].get('close', 0))
+                elif isinstance(data, dict):
+                    close_price = data.get('lastPrice', data.get('close', 0))
+                else:
+                    try:
+                        close_price = getattr(data, 'lastPrice', getattr(data, 'close', 0))
+                    except AttributeError:
+                        pass
+
+                if close_price and close_price > 0:
+                    # 更新适配器中的订阅价格缓存
+                    adapter.set_subscribed_price(symbol, close_price)
+
+            # 触发策略 on_bar
+            bar = BarData(datetime=now)
+            api_self.strategy.on_bar(bar)
+
+            if callback:
+                callback(api_self.strategy)
+
+        # 订阅持仓股
+        for symbol in symbols:
+            sub_id = xtdata.subscribe_quote(
+                symbol, period='tick', count=0, callback=on_data
+            )
+            if sub_id > 0:
+                self._holding_sub_ids.append(sub_id)
+            else:
+                self.logger.warning(f"订阅 {symbol} 失败")
+
+        self.logger.info(f"已订阅 {len(self._holding_sub_ids)} 只持仓股")
+
+        # 保存 on_data 引用，供后续更新订阅时复用
+        self._on_data_callback = on_data
+
+    def _update_subscriptions(self, xtdata, callback):
+        """检查持仓变化，动态调整订阅"""
+        current_holdings = set(self._get_holding_symbols())
+        previous_holdings = getattr(self, '_holding_symbols', set())
+
+        if not current_holdings:
+            current_holdings = {'000300.SH'}
+
+        if current_holdings != previous_holdings:
+            new_stocks = current_holdings - previous_holdings
+            removed_stocks = previous_holdings - current_holdings
+
+            if new_stocks:
+                self.logger.info(f"新增持仓，订阅: {new_stocks}")
+            if removed_stocks:
+                self.logger.info(f"清仓标的，取消订阅: {removed_stocks}")
+
+            self._subscribe_holdings(list(current_holdings), xtdata, callback)
+
+            if hasattr(self, '_running_adapter'):
+                for symbol in removed_stocks:
+                    self._running_adapter.remove_subscribed_price(symbol)
 
     def stop_loop(self):
         """停止策略循环"""

@@ -8,15 +8,18 @@
 - **多策略实例隔离**：同账户多策略独立运行，虚拟簿记实现持仓/资金级隔离，互不干扰
 - **高性能回测**：基于 Backtrader 引擎
 - **QMT 集成**：支持通过 QMT 进行模拟和实盘交易
-- **双数据源架构**：QMT 为主数据源 + OpenData（腾讯财经）自动补充，数据范围远超单一数据源
+- **双数据源架构**：OpenData（腾讯财经/AkShare）为主数据源 + QMT 实时数据补充回测覆盖范围
 - **历史成分股支持**：内置指数和申万行业历史成分股数据，回测时使用对应时点的真实成分股
 - **智能缓存**：内存 + 磁盘双层缓存 + 缓存索引管理，支持 parquet 格式，中断后自动恢复
-- **策略模板**：内置双均线策略、高股息策略、小市值策略、ETF 轮动策略、基本面策略等
-- **参数优化**：支持网格搜索
-- **可视化**：提供基于 PyQt5 的回测结果展示和基于 Dash 的实时监控
+- **策略模板**：内置高股息策略、小市值策略等
+- **参数优化**：支持网格搜索 + 策略优化工作流（自动提出优化建议、独立回测、筛选有效改进）
+- **可视化**：提供基于 PyQt5 的回测结果展示、基于 Plotly 的 HTML 可视化报告、基于 Dash 的实时监控
 - **选股策略**：支持基于基本面的股票选择策略，行业分散配置
 - **防未来数据**：财务数据按公告日期索引，回测时只使用已披露数据
 - **自动对账**：每日开盘前自动校验虚拟簿记与账户实际状态的一致性，偏差自动校准
+- **回测结果记录**：自动记录每次回测的完整结果到本地 JSON，支持加载、列举、对比历史回测数据
+- **AI 模式**：支持 AI 自动运行模式，跳过所有图形界面渲染，适用于自动化策略优化
+- **数据预下载**：提供独立的行情/财务数据预下载脚本，支持批量下载和缓存预热
 
 ## 项目结构
 
@@ -25,6 +28,11 @@ qmt_backtrader/
 ├── README.md                    # 项目说明文档
 ├── main.py                      # 主入口文件
 ├── .gitignore                   # Git 忽略配置
+├── download_market_data.py      # 行情数据预下载脚本（批量下载 + 缓存预热）
+├── download_financial_data.py   # 财务数据预下载脚本（批量下载 + 缓存预热）
+├── read_parquet.py              # Parquet 缓存文件查看工具
+├── clean_old_logs.bat           # 清理过期日志文件脚本
+├── 码上生财.jpg                  # 作者微信二维码
 ├── .cache/                      # 数据缓存目录（自动创建）
 │   └── JQData/                  # 聚宽下载的历史数据
 │       ├── index_constituent/   # 指数历史成分股 CSV
@@ -53,8 +61,8 @@ qmt_backtrader/
 │   │   ├── factory.py           # 数据处理器工厂
 │   │   ├── index_constituent.py # 指数历史成分股管理器
 │   │   ├── industry_constituent.py # 申万行业历史成分股管理器
-│   │   ├── opendata.py          # OpenData 数据处理器（腾讯财经/AkShare）
-│   │   └── qmt.py               # QMT 数据处理器（主数据源 + OpenData 补充）
+│   │   ├── opendata.py          # OpenData 数据处理器（腾讯财经/AkShare，含行情、财务、QVIX 等）
+│   │   └── qmt.py               # QMT 数据处理器（补充数据源 + 实时交易接口）
 │   ├── data_adapter.py          # 数据适配器（回测/实盘统一接口）
 │   ├── executor.py              # 执行器（回测/QMT 统一接口）
 │   ├── financial_data.py        # 财务数据缓存（按需加载）
@@ -65,10 +73,6 @@ qmt_backtrader/
 │   ├── strategy.py              # 回测策略适配层（Backtrader 桥接）
 │   ├── strategy_logic.py        # 策略逻辑基类（与执行环境解耦）
 │   └── virtual_book.py          # 虚拟持仓簿（策略级持仓/资金隔离）
-├── config/                      # 配置目录（策略实例配置等）
-├── example/                     # 示例文档
-│   ├── 小市值策略 — 降低回撤、提升收益.md
-│   └── 高股息行业均仓策略，夏普1.2，稳稳的幸福.md
 ├── jqdata/                      # 聚宽数据下载工具
 │   ├── 数据下载说明.md            # JQData 数据下载说明
 │   ├── 获取指数成分股.ipynb       # 指数历史成分股下载
@@ -79,17 +83,35 @@ qmt_backtrader/
 │   └── realtime_monitor.py      # 实时监控（基于 Dash）
 ├── strategies/                  # 策略目录
 │   ├── __init__.py              # 策略注册与自动发现
-│   ├── config.py                # 策略配置（ETF 代码等）
-│   ├── etf_rotation_strategy.py # ETF 轮动策略
-│   ├── example_strategy.py      # 双均线示例策略
-│   ├── fundamental_strategy.py  # 基本面策略（ROE + 成长性）
-│   ├── high_dividend_strategy.py # 高股息策略
-│   └── small_cap_strategy.py    # 小市值策略
+│   ├── high_dividend_strategy/  # 高股息策略
+│   │   ├── __init__.py
+│   │   ├── high_dividend_strategy.py  # 策略主文件
+│   │   ├── readme.md            # 策略文档
+│   │   └── optimization/        # 优化案例
+│   │       ├── run_optimization.py     # 自动化回测脚本
+│   │       ├── generate_report.py      # HTML 报告生成
+│   │       ├── plot_comparison.py      # 对比图生成
+│   │       ├── 优化报告.md             # 优化报告文档
+│   │       └── optimization_results/   # 优化回测结果
+│   └── small_cap_strategy/      # 小市值策略
+│       ├── __init__.py
+│       ├── small_cap_strategy.py # 策略主文件
+│       ├── readme.md            # 策略文档
+│       └── optimization/        # 优化案例
+│           ├── run_optimization.py     # 自动化回测脚本
+│           ├── plot_comparison.py      # 对比图生成
+│           ├── 优化报告.md             # 优化报告文档
+│           └── optimization_results/   # 优化回测结果
+├── backtest_results/            # 全局回测结果目录
+│   └── index.json               # 回测结果索引
 └── utils/                       # 工具函数
     ├── __init__.py
-    ├── logger.py                # 日志管理
+    ├── backtest_recorder.py     # 回测结果记录与管理（JSON + HTML 报告）
+    ├── logger.py                # 日志管理（支持策略实例隔离）
     ├── parameter_optimizer.py   # 参数优化工具（网格搜索）
+    ├── plotly_templates.py      # Plotly 图表模板（净值曲线、回撤、指标对比）
     ├── report.py                # 报告生成（PyQt5 可视化）
+    ├── report_generator.py      # HTML 报告生成（Plotly 可视化）
     └── visualization.py         # 可视化工具（Matplotlib/Plotly）
 ```
 
@@ -114,17 +136,22 @@ qmt_backtrader/
 
 **高股息策略回测：**
 ```bash
-python main.py --mode backtest --strategy high_dividend --period 1d --pool 沪深300 --start 2026-01-01 --end 2026-04-28 --debug
+python main.py --mode backtest --strategy high_dividend --period 1d --pool 中证1000 --start 2020-04-28 --end 2026-04-28 --debug
 ```
 
 **小市值策略回测：**
 ```bash
-python main.py --mode backtest --strategy small_cap --period 1d --pool 中证1000 --start 2026-01-01 --end 2026-04-28 --debug
+python main.py --mode backtest --strategy small_cap --period 1d --pool 中证1000 --start 2020-04-28 --end 2026-04-28 --debug
+```
+
+**AI 模式回测（跳过图形界面，适用于自动化优化）：**
+```bash
+python main.py --mode backtest --strategy small_cap --period 1d --pool 中证1000 --start 2020-04-28 --end 2026-04-28 --ai-mode --no-record
 ```
 
 **参数说明**：
 - `--mode`：运行模式，可选值：`backtest`（回测）、`sim`（模拟交易）、`real`（实盘交易）、`instances`（多策略实例）
-- `--strategy`：策略类型，可选值：`double_ma`、`high_dividend`、`small_cap`、`etf_rotation`、`fundamental_roe`、`fundamental_growth` 等
+- `--strategy`：策略类型，可选值：`high_dividend`、`small_cap` 等
 - `--period`：数据周期，可选值：`1d`（日线）、`1m`、`5m`、`15m`、`30m`、`60m`、`tick`
 - `--pool`：股票池板块名称，如 `沪深300`、`沪深A股`、`上证50`、`中证500`、`中证1000`
 - `--start`：回测起始日期，格式：`YYYY-MM-DD`
@@ -135,17 +162,20 @@ python main.py --mode backtest --strategy small_cap --period 1d --pool 中证100
 - `--cache-dir`：自定义缓存数据存储目录（默认项目根目录下 `.cache`）
 - `--mem-limit`：内存缓存最大对象数量限制（默认 500）
 - `--debug`：启用 DEBUG 日志模式，输出详细调试信息
+- `--ai-mode`：启用 AI 自动运行模式，跳过所有图形界面渲染，适用于自动化策略优化
+- `--no-record`：禁用回测结果自动记录到本地文件
+- `--slippage`：滑点百分比，如 `0.001` 表示 0.1%，不传则使用策略默认值
 
 ### 2. 运行模拟交易
 
 ```bash
-python main.py --mode sim --strategy double_ma --qmt-path D:\qmt\userdata_mini
+python main.py --mode sim --strategy high_dividend --qmt-path D:\qmt\userdata_mini
 ```
 
 ### 3. 运行实盘交易
 
 ```bash
-python main.py --mode real --strategy double_ma --qmt-path D:\qmt\userdata_mini --account 12345678
+python main.py --mode real --strategy high_dividend --qmt-path D:\qmt\userdata_mini --account 12345678
 ```
 
 ### 4. 运行多策略实例
@@ -196,6 +226,30 @@ python main.py --mode instances --instances config/instances.json
 
 > **注意**：单策略模式（`sim`/`real`）也默认启用虚拟簿记，无需额外配置即可享受策略级隔离。
 
+### 5. 数据预下载
+
+在运行回测前，可以预先下载行情和财务数据到本地缓存，避免回测时逐只下载导致等待过长：
+
+**下载行情数据：**
+```bash
+python download_market_data.py --pool 中证1000 --start 2020-01-01 --end 2026-04-28
+```
+
+**下载财务数据：**
+```bash
+python download_financial_data.py --pool 中证1000 --start 2020-01-01
+```
+
+**查看缓存文件内容：**
+```bash
+python read_parquet.py
+```
+
+**清理过期日志：**
+```bash
+clean_old_logs.bat
+```
+
 ## 架构设计
 
 ### 策略架构
@@ -222,12 +276,13 @@ StrategyLogic（策略逻辑基类）
 
 ```
 DataProcessor（数据处理器基类）
-├── QMTDataProcessor（主数据源：QMT + OpenData 自动补充）
-├── OpenDataProcessor（补充数据源：腾讯财经/AkShare，数据范围远超 QMT）
+├── OpenDataProcessor（主数据源：腾讯财经/AkShare，历史数据丰富，包含行情、财务、QVIX 等）
+├── QMTDataProcessor（补充数据源：QMT 数据补足 + 实时交易接口）
 └── CSVDataProcessor（CSV 文件数据源）
 ```
 
-- **QMT 为主，OpenData 补充**：QMT 数据不足时自动用 OpenData 填充，对策略层完全透明
+- **OpenData 为主**：历史行情数据丰富，覆盖完整回测区间
+- **QMT 补充**：QMT 数据补足缺口，同时提供实时交易接口
 - **历史成分股**：内置聚宽下载的指数和行业历史成分股 CSV，回测时使用对应时点的真实成分股
 
 ### 执行器架构
@@ -318,6 +373,8 @@ QMTAPI（一个账户一个实例）
 ├── QMTDataProcessor/                # QMT 行情数据缓存
 ├── QMTDataProcessor_Financial/      # QMT 财务数据缓存
 ├── OpenData/                        # OpenData 行情数据缓存
+│   ├── vix/                         # QVIX 隐含波动率缓存
+│   │   └── QVIX_510500.SH.parquet
 │   └── financial/                   # OpenData 财务数据缓存
 │       ├── 000001.SZ_Balance.parquet
 │       ├── 000001.SZ_CashFlow.parquet
@@ -332,16 +389,76 @@ QMTAPI（一个账户一个实例）
 - `QMT_MEM_CACHE_LIMIT`：内存缓存容量限制（默认 500）
 - `QMT_LOG_LEVEL`：日志级别（默认 `INFO`，设为 `DEBUG` 输出详细调试信息）
 
+## 回测结果记录
+
+框架支持自动记录每次回测的完整结果，便于追溯和对比：
+
+### 核心功能
+
+- **自动记录**：每次回测自动保存完整结果到本地 JSON 文件（指标、交易日志、净值曲线、基准曲线）
+- **全局索引**：维护 `index.json` 索引，支持按策略名检索历史回测
+- **结果对比**：支持多组回测结果对比分析，按夏普比率排序
+- **HTML 报告**：生成基于 Plotly 的交互式 HTML 可视化报告（净值曲线、回撤曲线、指标对比、交易统计）
+
+### 存储位置
+
+回测结果优先保存到策略目录下的 `backtest_results/`，便于与策略代码统一管理：
+
+```
+strategies/<策略目录>/
+├── <策略名>.py
+└── backtest_results/
+    └── 20260428_143000_small_cap.json
+```
+
+如果策略目录不可写，则回退到全局 `backtest_results/` 目录。
+
+### 使用方式
+
+```python
+from utils.backtest_recorder import BacktestRecorder
+
+recorder = BacktestRecorder()
+
+# 记录回测结果
+run_id = recorder.record(result, strategy_name='small_cap', config=config)
+
+# 列举历史回测
+records = recorder.list_records(strategy_name='small_cap')
+
+# 对比多组回测
+comparison = recorder.compare(['run_id_1', 'run_id_2'])
+
+# 生成 HTML 可视化报告
+recorder.generate_report(['run_id_1', 'run_id_2'])
+```
+
 ## 策略开发
 
 ### 创建自定义策略
 
-1. 在 `strategies` 目录下创建新的策略文件
+1. 在 `strategies` 目录下创建新的策略子目录（推荐）或策略文件
 2. 继承 `core.strategy_logic.StrategyLogic` 类（单标的策略）或 `core.stock_selection.StockSelectionStrategy` 类（多标的选股策略）
 3. 使用 `@register_strategy` 装饰器注册策略
 4. 实现相应的策略逻辑方法
 
 > **注意**：策略文件放入 `strategies/` 目录后会自动被发现和注册，无需手动导入。
+
+### 策略目录结构（推荐）
+
+```
+strategies/my_strategy/
+├── __init__.py                  # 导出策略类
+├── my_strategy.py               # 策略主文件
+├── readme.md                    # 策略文档
+├── backtest_results/            # 回测结果记录
+└── optimization/                # 优化案例
+    ├── run_optimization.py      # 自动化回测脚本
+    ├── generate_report.py       # HTML 报告生成
+    ├── plot_comparison.py       # 对比图生成
+    ├── 优化报告.md               # 优化报告文档
+    └── optimization_results/    # 优化回测结果
+```
 
 ### 示例策略
 
@@ -420,48 +537,69 @@ class MySelectionStrategy(StockSelectionStrategy):
 
 ## 内置策略
 
-### 1. 双均线策略 (double_ma)
-- 基于短期和长期移动平均线的交叉信号
-- 适用于单标的趋势跟踪
-- 继承 `StrategyLogic`，通过 `on_bar()` 事件驱动
-
-### 2. 高股息策略 (high_dividend)
+### 1. 高股息策略 (high_dividend)
 - 基于股息率选股，行业分散配置
 - 规避高股息陷阱，要求 ROE>0、归母净利润增速>0、经营现金流>0
-- 月度调仓，等权重持仓
+- 支持近3年平均股息率模式，提升稳定性
+- 双周调仓（`biweekly`），等权重持仓
 - **防未来数据**：财务数据按公告日期索引，回测时只使用已披露数据
+- 优化记录：波动率过滤、止损机制、ROE阈值、现金流阈值、双周调仓等
 
-### 3. 小市值策略 (small_cap)
-- 基本面过滤 + 行业分散 + 动量确认的小市值选股策略
+### 2. 小市值策略 (small_cap)
+- 基本面过滤 + 行业分散 + 动量确认 + 波动率过滤 + 止损机制的小市值选股策略
 - 四重基本面过滤：ROE>0、营收增速>0、经营现金流>0、资产负债率<阈值
 - 每个申万一级行业选市值最小的1只，避免行业集中暴露
 - 动量确认：近N日涨幅>0，避免在下跌趋势中接飞刀
+- 波动率过滤：剔除日波动率过高的投机标的（事前风控）
+- 止损机制：持仓亏损>=8%时在调仓时止损卖出（事后风控）
 - 月度调仓，等权重持仓
+- 优化记录：波动率过滤（夏普+14.5%）、止损机制（夏普+12.8%）、组合优化（夏普+22.5%）
 
-### 4. ETF 轮动策略 (etf_rotation)
-- 基于 ETF 的动量进行轮动
-- 覆盖创业板、纳指、黄金、国债等资产类别
-- 继承 `StrategyLogic`，通过 `on_bar()` 事件驱动
+## 策略优化工作流
 
-### 5. ROE 基本面策略 (fundamental_roe)
-- 基于 ROE（净资产收益率）筛选优质股票
-- 要求 ROE > 阈值且 EPS > 阈值
-- 按 ROE 降序排列，取前 N 只等权重持仓
-- 月度调仓
+框架内置了系统化的策略优化工作流，支持从提出优化建议到验证改进效果的全流程：
 
-### 6. 成长性策略 (fundamental_growth)
-- 基于营收和利润增长率筛选成长股
-- 月度调仓
+### 优化流程
+
+1. **理解策略**：读取策略代码和文档，运行基线回测，确定核心评估指标
+2. **提出优化建议**：提出10项具体优化建议，每项包含方向、实现路径、预期目标
+3. **独立实施并回测**：每项优化独立实施（新参数默认禁用），运行回测，记录结果
+4. **评估与筛选**：夏普比率相对基线提升 >= 5% 的优化予以保留
+5. **组合有效优化**：测试所有有效优化的组合效果，检测参数冲突
+6. **清理与文档**：删除无效优化代码，更新策略文档，生成 HTML 优化报告
+
+### 已验证的优化经验
+
+| 优化方案 | 适用策略类型 | 典型影响 | 说明 |
+|---------|------------|---------|------|
+| 波动率过滤 | 选股策略 | 夏普+10~15% | 过滤日波动率超过阈值的标的，首选优化方向 |
+| 止损机制 | 选股策略 | 夏普+10~15% | 调仓时剔除亏损超过阈值的股票 |
+| 波动率+止损组合 | 选股策略 | 夏普+20~25% | 两项优化互补叠加 |
+
+### 优化输出目录
+
+```
+strategies/<策略目录>/optimization/
+├── run_optimization.py          # 自动化回测运行脚本
+├── generate_report.py           # HTML 报告生成脚本
+├── plot_comparison.py           # 对比图生成脚本
+├── 优化报告.md                   # 优化报告文档
+├── optimization_report.html     # HTML 优化报告
+└── optimization_results/        # 优化回测结果
+    ├── baseline.json            # 基线结果
+    ├── opt01_xxx.json           # 优化1结果
+    └── ...
+```
 
 ## 数据源架构
 
 | 数据源 | 实时性 | 数据范围 | 使用门槛 | 角色 |
 |--------|--------|----------|----------|------|
-| QMT | 实时 | A股全市场（行情约1年） | 需开户+客户端 | 主数据源 |
-| OpenData | 延迟 | A股全市场（历史数据丰富） | 免费，需 akshare | 补充数据源 |
+| OpenData | 延迟 | A股全市场（历史数据丰富，包含行情、财务、QVIX 等） | 免费，需 akshare | 主数据源 |
+| QMT | 实时 | A股全市场（行情约1年） | 需开户+客户端 | 补充数据源 + 交易接口 |
 | CSV | - | 自定义 | 无 | 自定义数据源 |
 
-**数据获取策略**：QMT 为主数据源，当 QMT 数据不足时自动用 OpenData 补充，对策略层完全透明。
+**数据获取策略**：OpenData 提供丰富的历史行情数据，覆盖完整回测区间；QMT 数据用于补充缺口，同时提供实时交易接口。
 
 **历史成分股**：基于聚宽下载的 CSV 文件，支持沪深300、中证500、中证1000、上证50及31个申万一级行业的历史成分股查询，回测时使用对应时点的真实成分股，超出范围时自动从 QMT 获取最新数据并更新文件。
 
@@ -494,8 +632,11 @@ class MySelectionStrategy(StockSelectionStrategy):
 - [x] 多策略实例隔离（VirtualBook + OrderRouter + Reconciler）
 - [x] 同账户多策略虚拟簿记与自动对账
 - [x] 日志按策略实例隔离
+- [x] 回测结果自动记录与 HTML 可视化报告
+- [x] 策略优化工作流（自动提出优化建议、独立回测、筛选有效改进）
+- [x] AI 自动运行模式
+- [x] 数据预下载脚本（行情 + 财务）
 - [ ] 支持更多交易接口（如 tushare、yahoo 等）
-- [ ] 实现策略自动优化
 - [ ] 增加深度学习模型集成
 - [ ] 开发 Web 界面
 - [ ] 实现分布式回测和交易

@@ -1,7 +1,87 @@
 import datetime
+import math
+import time
+import logging
 from abc import ABC, abstractmethod
 from collections import deque
 from typing import Dict, List, Optional, Any
+
+
+def get_limit_ratio(symbol: str) -> float:
+    code = symbol.split('.')[0] if '.' in symbol else symbol
+    if code.startswith(('300', '301')):
+        return 0.20
+    if code.startswith('688'):
+        return 0.20
+    if code.startswith(('4', '8')):
+        return 0.30
+    return 0.10
+
+
+def get_trade_unit(symbol: str) -> int:
+    """获取股票的最小交易单位（股）
+    
+    A 股交易单位规则（2025年后）：
+    - 科创板（688开头）：200股起
+    - 其他（主板、创业板、北交所）：100股起
+    """
+    code = symbol.split('.')[0] if '.' in symbol else symbol
+    if code.startswith('688'):
+        return 200
+    return 100
+
+
+def validate_trade_volume(symbol: str, volume: int) -> tuple[bool, str]:
+    """校验交易数量是否符合规则
+    
+    A 股交易数量规则：
+    - 科创板（688开头）：>= 200股，超过后可1股1股递增（无需整数倍）
+    - 其他：>= 100股，且为100股整数倍
+    
+    Returns:
+        (is_valid, error_message)
+    """
+    code = symbol.split('.')[0] if '.' in symbol else symbol
+    
+    if volume <= 0:
+        return False, "交易数量必须大于0"
+    
+    if code.startswith('688'):
+        # 科创板：≥200股
+        if volume < 200:
+            return False, "科创板股票最少买200股"
+        return True, ""
+    else:
+        # 其他：≥100股且为100股整数倍
+        if volume < 100:
+            return False, "最少买100股"
+        if volume % 100 != 0:
+            return False, f"数量必须为100股整数倍，当前: {volume}"
+        return True, ""
+
+
+def validate_stock_code(symbol: str) -> bool:
+    """校验股票代码格式是否合法
+    
+    合法格式示例：
+    - 000001.SZ
+    - 600000.SH
+    - 300001.SZ
+    - 688001.SH
+    """
+    if not symbol or '.' not in symbol:
+        return False
+    try:
+        code, exchange = symbol.split('.', 1)
+        if exchange not in ('SZ', 'SH', 'BJ'):
+            return False
+        if not code.isdigit():
+            return False
+        if len(code) not in (6, 8):
+            return False
+        return True
+    except Exception:
+        return False
 
 
 class MarketDataAdapter(ABC):
@@ -25,6 +105,15 @@ class MarketDataAdapter(ABC):
     def get_symbols(self) -> List[str]:
         """获取已注册的标的列表"""
         return []
+
+    def is_suspended(self, symbol: str) -> bool:
+        return False
+
+    def is_limit_up(self, symbol: str) -> bool:
+        return False
+
+    def is_limit_down(self, symbol: str) -> bool:
+        return False
 
 
 class BacktraderDataAdapter(MarketDataAdapter):
@@ -138,6 +227,52 @@ class BacktraderDataAdapter(MarketDataAdapter):
     def get_symbols(self) -> List[str]:
         return list(self._symbol_data_map.keys())
 
+    def is_suspended(self, symbol: str) -> bool:
+        data = self._symbol_data_map.get(symbol)
+        if data is None:
+            return True
+        try:
+            vol = data.volume[0]
+            if isinstance(vol, float) and math.isnan(vol):
+                return True
+            return float(vol) == 0
+        except (AttributeError, IndexError):
+            return True
+
+    def is_limit_up(self, symbol: str) -> bool:
+        data = self._symbol_data_map.get(symbol)
+        if data is None:
+            return False
+        try:
+            close = data.close[0]
+            if math.isnan(close):
+                return False
+            prev_close = data.close[-1]
+            if math.isnan(prev_close) or prev_close <= 0:
+                return False
+        except (AttributeError, IndexError):
+            return False
+        limit_ratio = get_limit_ratio(symbol)
+        limit_price = round(prev_close * (1 + limit_ratio), 2)
+        return close >= limit_price - 0.005
+
+    def is_limit_down(self, symbol: str) -> bool:
+        data = self._symbol_data_map.get(symbol)
+        if data is None:
+            return False
+        try:
+            close = data.close[0]
+            if math.isnan(close):
+                return False
+            prev_close = data.close[-1]
+            if math.isnan(prev_close) or prev_close <= 0:
+                return False
+        except (AttributeError, IndexError):
+            return False
+        limit_ratio = get_limit_ratio(symbol)
+        limit_price = round(prev_close * (1 - limit_ratio), 2)
+        return close <= limit_price + 0.005
+
 
 class LiveDataAdapter(MarketDataAdapter):
     """实时数据适配器 - 实盘/模拟盘模式下使用"""
@@ -182,3 +317,172 @@ class LiveDataAdapter(MarketDataAdapter):
 
     def get_symbols(self) -> List[str]:
         return list(self._close_prices.keys())
+
+
+class QMTLiveDataAdapter(MarketDataAdapter):
+    """QMT实盘数据适配器 - 通过 get_full_tick / get_market_data_ex 按需获取
+
+    与 LiveDataAdapter 的区别：
+    - LiveDataAdapter: 依赖 subscribe_quote 推送缓存，受100只订阅限制
+    - QMTLiveDataAdapter: 按需调用 get_full_tick / get_market_data_ex，不受订阅限制
+
+    数据获取策略：
+    - get_current_price: 调用 get_full_tick 获取最新快照价
+    - get_close_prices: 调用 get_market_data_ex 获取历史K线
+    - 持仓股价格: 优先从 subscribe_quote 推送缓存读取（实时性更好）
+    """
+
+    def __init__(self, data_processor=None):
+        self._data_processor = data_processor
+        self._current_date: Optional[datetime.date] = None
+        self._subscribed_prices: Dict[str, float] = {}  # 持仓股订阅价格缓存
+        self._kline_cache: Dict[str, List[float]] = {}  # K线缓存（调仓日有效）
+        self._tick_cache: Dict[str, float] = {}         # get_full_tick 缓存
+        self._tick_cache_time: float = 0                 # 缓存时间戳
+        self._tick_cache_ttl: float = 3.0                # 缓存有效期（秒）
+        self._logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
+
+    def set_subscribed_price(self, symbol: str, price: float):
+        """更新持仓股的订阅推送价格"""
+        self._subscribed_prices[symbol] = price
+
+    def remove_subscribed_price(self, symbol: str):
+        """移除不再持仓的订阅价格"""
+        self._subscribed_prices.pop(symbol, None)
+
+    def get_current_price(self, symbol: str) -> Optional[float]:
+        """获取当前价格
+
+        优先级：
+        1. 持仓股 → 从 subscribe_quote 推送缓存读取（实时性最好）
+        2. 非持仓股 → 调用 get_full_tick 获取（有3秒缓存）
+        """
+        if symbol in self._subscribed_prices:
+            return self._subscribed_prices[symbol]
+        return self._get_tick_price(symbol)
+
+    def _get_tick_price(self, symbol: str) -> Optional[float]:
+        """通过 get_full_tick 获取最新价（带缓存）
+
+        如果 symbol 已在缓存中，检查 TTL 后刷新整个缓存；
+        如果 symbol 不在缓存中，单独获取该标的。
+        """
+        if symbol in self._tick_cache:
+            now = time.time()
+            if now - self._tick_cache_time > self._tick_cache_ttl:
+                self._refresh_tick_cache()
+            return self._tick_cache.get(symbol)
+
+        return self._fetch_single_tick(symbol)
+
+    def _fetch_single_tick(self, symbol: str) -> Optional[float]:
+        """单独获取一只股票的最新价"""
+        try:
+            from xtquant import xtdata
+            tick_data = xtdata.get_full_tick([symbol])
+            if tick_data and symbol in tick_data:
+                price = self._parse_tick_price(tick_data[symbol])
+                if price and price > 0:
+                    self._tick_cache[symbol] = price
+                    return price
+        except Exception as e:
+            self._logger.warning(f"获取{symbol} tick价格失败: {e}")
+        return None
+
+    def _refresh_tick_cache(self):
+        """刷新全推快照缓存"""
+        try:
+            from xtquant import xtdata
+            symbols_to_refresh = list(self._tick_cache.keys())
+            if not symbols_to_refresh:
+                self._tick_cache_time = time.time()
+                return
+            tick_data = xtdata.get_full_tick(symbols_to_refresh)
+            if tick_data:
+                for code, data in tick_data.items():
+                    price = self._parse_tick_price(data)
+                    if price and price > 0:
+                        self._tick_cache[code] = price
+            self._tick_cache_time = time.time()
+        except Exception as e:
+            self._logger.warning(f"刷新tick缓存失败: {e}")
+
+    @staticmethod
+    def _parse_tick_price(data) -> float:
+        """解析tick数据中的最新价"""
+        if isinstance(data, dict):
+            return data.get('lastPrice', 0)
+        return getattr(data, 'lastPrice', 0)
+
+    def get_close_prices(self, symbol: str, period: int = None) -> List[float]:
+        """获取历史收盘价序列
+
+        通过 download_history_data + get_market_data_ex 按需获取，
+        不受订阅数量限制。
+        """
+        if symbol not in self._kline_cache:
+            prices = self._download_kline(symbol)
+            self._kline_cache[symbol] = prices
+        else:
+            prices = self._kline_cache[symbol]
+
+        if period is not None:
+            return prices[-period:] if len(prices) >= period else prices
+        return prices
+
+    def _download_kline(self, symbol: str) -> List[float]:
+        """下载并获取K线收盘价"""
+        if not self._data_processor:
+            return []
+        try:
+            end_date = datetime.datetime.now().strftime('%Y-%m-%d')
+            start_date = (datetime.datetime.now() - datetime.timedelta(days=120)).strftime('%Y-%m-%d')
+            data = self._data_processor.get_data(symbol, start_date, end_date)
+            if data is not None and not data.empty and 'close' in data.columns:
+                return data['close'].tolist()
+        except Exception as e:
+            self._logger.warning(f"下载K线数据失败 {symbol}: {e}")
+        return []
+
+    def get_current_date(self) -> Optional[datetime.date]:
+        return self._current_date
+
+    def set_current_date(self, date: datetime.date):
+        """设置当前日期"""
+        self._current_date = date
+
+    def get_symbols(self) -> List[str]:
+        return list(set(list(self._subscribed_prices.keys()) + list(self._tick_cache.keys())))
+
+    def invalidate_kline_cache(self):
+        """清空K线缓存（调仓日重新下载）"""
+        self._kline_cache.clear()
+
+    def preload_tick_data(self, stock_list: List[str], batch_size: int = 100):
+        """预加载股票池的快照数据（调仓日选股前调用）
+
+        基于实测数据：
+        - 100只/批: ~0.04秒
+        - 1000只: ~0.4秒
+        - 分批获取避免单批次过大导致阻塞
+        """
+        try:
+            from xtquant import xtdata
+
+            total = len(stock_list)
+            for i in range(0, total, batch_size):
+                batch = stock_list[i:i + batch_size]
+                tick_data = xtdata.get_full_tick(batch)
+                if tick_data:
+                    for code, data in tick_data.items():
+                        price = self._parse_tick_price(data)
+                        if price and price > 0:
+                            self._tick_cache[code] = price
+                # 批次间短暂停顿，避免触发限制
+                if i + batch_size < total:
+                    time.sleep(0.05)
+
+            self._tick_cache_time = time.time()
+            self._logger.info(f"预加载完成: {len(self._tick_cache)} 只股票快照数据")
+        except Exception as e:
+            self._logger.warning(f"预加载tick数据失败: {e}")

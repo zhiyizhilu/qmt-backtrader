@@ -14,7 +14,8 @@ def register_strategy(name: str, default_kwargs: Optional[Dict[str, Any]] = None
         name: 策略注册名称，用于命令行选择策略
         default_kwargs: 策略默认参数，如 {'fast_period': 5, 'slow_period': 20}
         backtest_config: 回测推荐配置，如 {'cash': 200000, 'commission': 0.0001,
-                         'start_date': '2025-07-10', 'end_date': '2026-04-17'}
+                         'slippage': 0.001, 'start_date': '2025-07-10',
+                         'end_date': '2026-04-17'}
     """
     def decorator(cls):
         import inspect

@@ -174,6 +174,7 @@ class StrategyLogic:
         self.executor = executor
         self._data_adapter: Optional[MarketDataAdapter] = None
         self._financial_data_adapter = None
+        self._data_processor = None
         self._orders: Dict[str, OrderInfo] = {}
         self._risk_controller: Optional['RiskController'] = None
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
@@ -189,6 +190,14 @@ class StrategyLogic:
             adapter: FinancialDataAdapter 实例
         """
         self._financial_data_adapter = adapter
+
+    def set_data_processor(self, processor) -> None:
+        """设置数据处理器（用于获取不复权行情等数据）
+
+        Args:
+            processor: DataProcessor 实例（如 QMTDataProcessor）
+        """
+        self._data_processor = processor
 
     @property
     def financial_adapter(self):
@@ -273,19 +282,15 @@ class StrategyLogic:
     # ================================================================
 
     def buy(self, symbol: str, price: float, volume: int):
-        """买入操作 - 通过执行器路由到对应环境
-
-        Args:
-            symbol: 标的代码
-            price: 买入价格
-            volume: 买入数量
-
-        Returns:
-            订单ID或订单对象
-        """
         self.log(f'买入委托: {symbol}, 价格: {price:.2f}, 数量: {volume}')
         if not self._check_risk_before_buy(symbol, price, volume):
             self.log(f'风控拒绝买入: {symbol}')
+            return None
+        if self.is_suspended(symbol):
+            self.log(f'停牌拒绝买入: {symbol}')
+            return None
+        if self.is_limit_up(symbol):
+            self.log(f'涨停拒绝买入: {symbol}')
             return None
         if self.executor:
             return self.executor.execute_buy(symbol, price, volume)
@@ -293,19 +298,15 @@ class StrategyLogic:
         return None
 
     def sell(self, symbol: str, price: float, volume: int):
-        """卖出操作 - 通过执行器路由到对应环境
-
-        Args:
-            symbol: 标的代码
-            price: 卖出价格
-            volume: 卖出数量
-
-        Returns:
-            订单ID或订单对象
-        """
         self.log(f'卖出委托: {symbol}, 价格: {price:.2f}, 数量: {volume}')
         if not self._check_risk_before_sell(symbol, price, volume):
             self.log(f'风控拒绝卖出: {symbol}')
+            return None
+        if self.is_suspended(symbol):
+            self.log(f'停牌拒绝卖出: {symbol}')
+            return None
+        if self.is_limit_down(symbol):
+            self.log(f'跌停拒绝卖出: {symbol}')
             return None
         if self.executor:
             return self.executor.execute_sell(symbol, price, volume)
@@ -364,6 +365,33 @@ class StrategyLogic:
             return self._data_adapter.get_current_price(symbol)
         return None
 
+    def get_unadjusted_price(self, symbol: str) -> Optional[float]:
+        """获取指定标的的不复权（实际）价格
+
+        用于股息率等需要真实市场价格的计算。
+        回测模式下通过 data_processor 获取不复权行情数据，
+        实盘模式下与 get_current_price 一致（实盘价格本身就是实际价格）。
+
+        Returns:
+            不复权价格，无法获取时返回 None
+        """
+        if self._data_processor is not None and hasattr(self._data_processor, 'get_raw_data'):
+            current_date = self.get_current_date()
+            if current_date is None:
+                return self.get_current_price(symbol)
+
+            date_str = current_date.strftime('%Y-%m-%d')
+            try:
+                raw_df = self._data_processor.get_raw_data(symbol, date_str, date_str, '1d')
+                if raw_df is not None and not raw_df.empty and 'close' in raw_df.columns:
+                    price = float(raw_df['close'].iloc[-1])
+                    if price > 0:
+                        return price
+            except Exception as e:
+                self.logger.debug(f"获取不复权价格失败 {symbol}: {e}")
+
+        return self.get_current_price(symbol)
+
     def get_close_prices(self, symbol: str, period: int = None) -> List[float]:
         """获取指定标的的收盘价序列"""
         if self._data_adapter:
@@ -390,6 +418,21 @@ class StrategyLogic:
         if self._data_adapter:
             return self._data_adapter.get_symbols()
         return []
+
+    def is_suspended(self, symbol: str) -> bool:
+        if self._data_adapter and hasattr(self._data_adapter, 'is_suspended'):
+            return self._data_adapter.is_suspended(symbol)
+        return False
+
+    def is_limit_up(self, symbol: str) -> bool:
+        if self._data_adapter and hasattr(self._data_adapter, 'is_limit_up'):
+            return self._data_adapter.is_limit_up(symbol)
+        return False
+
+    def is_limit_down(self, symbol: str) -> bool:
+        if self._data_adapter and hasattr(self._data_adapter, 'is_limit_down'):
+            return self._data_adapter.is_limit_down(symbol)
+        return False
 
     def get_lookback_days(self) -> int:
         """获取需要的历史数据天数"""
@@ -450,6 +493,30 @@ class StrategyLogic:
                 stock_code, table_name, fields, query_date
             )
         return {f: None for f in fields}
+
+    def get_financial_fields_batch(self, stock_list: List[str], table_name: str,
+                                   fields: List[str], date=None) -> Dict[str, Dict[str, Any]]:
+        """批量获取多只股票的最新已披露财务字段值
+
+        Args:
+            stock_list: 股票代码列表
+            table_name: 报表名称
+            fields: 字段名列表
+            date: 查询日期，默认使用当前回测日期
+
+        Returns:
+            { stock_code: { field1: value1, field2: value2, ... }, ... }
+        """
+        if self._financial_data_adapter:
+            query_date = date
+            if query_date is None:
+                current = self.get_current_date()
+                if current is not None:
+                    query_date = current if isinstance(current, dt_module.date) else None
+            return self._financial_data_adapter.get_financial_fields_batch(
+                stock_list, table_name, fields, query_date
+            )
+        return {stock: {f: None for f in fields} for stock in stock_list}
 
     def get_financial_history(self, stock_code: str, table_name: str,
                               field: str, count: int = 4, date=None) -> List[Any]:
@@ -581,6 +648,10 @@ class StrategyLogic:
     def get_dividend_yield(self, stock_code: str, use_avg: bool = True) -> Optional[float]:
         """计算股息率
 
+        使用不复权（实际）价格作为分母，避免后复权价格导致股息率偏低。
+        长期高分红股票的后复权价格远高于实际价格，若用后复权价格计算
+        会系统性地低估其股息率，扭曲选股排名。
+
         Args:
             stock_code: 股票代码
             use_avg: 是否使用近N年平均派息，否则用最近一次
@@ -598,7 +669,7 @@ class StrategyLogic:
             if dvps is None:
                 return None
 
-        price = self.get_current_price(stock_code)
+        price = self.get_unadjusted_price(stock_code)
         if price is None or price <= 0:
             return None
 

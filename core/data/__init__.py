@@ -14,6 +14,7 @@ from core.data.opendata import (
     _convert_symbol_to_qmt,
     _convert_symbol_to_opendata,
     _convert_symbol_to_opendata_financial,
+    get_qvix_data,
 )
 from core.data.factory import create_data_processor
 from core.data.index_constituent import IndexConstituentManager
@@ -27,6 +28,7 @@ __all__ = [
     'IndexConstituentManager',
     'IndustryConstituentManager',
     'create_data_processor',
+    'get_qvix_data',
     '_merged_dict_to_parquet',
     '_parquet_to_merged_dict',
     '_restore_dataframe_index',

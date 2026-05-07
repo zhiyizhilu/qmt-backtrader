@@ -1,10 +1,53 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
 import logging
+import math
 
 if TYPE_CHECKING:
     from core.virtual_book import VirtualBook
     from core.order_router import OrderRouter
+
+
+def _check_suspended(data_feed) -> bool:
+    try:
+        vol = data_feed.volume[0]
+        if isinstance(vol, float) and math.isnan(vol):
+            return True
+        return float(vol) == 0
+    except (AttributeError, IndexError):
+        return True
+
+
+def _check_limit_up(data_feed, symbol: str) -> bool:
+    from core.data_adapter import get_limit_ratio
+    try:
+        close = data_feed.close[0]
+        if math.isnan(close):
+            return False
+        prev_close = data_feed.close[-1]
+        if math.isnan(prev_close) or prev_close <= 0:
+            return False
+    except (AttributeError, IndexError):
+        return False
+    limit_ratio = get_limit_ratio(symbol)
+    limit_price = round(prev_close * (1 + limit_ratio), 2)
+    return close >= limit_price - 0.005
+
+
+def _check_limit_down(data_feed, symbol: str) -> bool:
+    from core.data_adapter import get_limit_ratio
+    try:
+        close = data_feed.close[0]
+        if math.isnan(close):
+            return False
+        prev_close = data_feed.close[-1]
+        if math.isnan(prev_close) or prev_close <= 0:
+            return False
+    except (AttributeError, IndexError):
+        return False
+    limit_ratio = get_limit_ratio(symbol)
+    limit_price = round(prev_close * (1 - limit_ratio), 2)
+    return close <= limit_price + 0.005
 
 
 class StrategyExecutor(ABC):
@@ -59,15 +102,23 @@ class BacktestExecutor(StrategyExecutor):
         self._symbol_data_map[symbol] = data_feed
 
     def execute_buy(self, symbol: str, price: float, volume: int) -> Any:
-        """执行买入操作"""
-        import math
         data = self._symbol_data_map.get(symbol)
         if data:
-            # 如果当前价格为 NaN（前置填充行），拒绝下单
             current_close = data.close[0]
             if math.isnan(current_close):
                 logging.getLogger(__name__).warning(
                     f'[BacktestExecutor] 买入拒绝-数据为NaN: {symbol}'
+                )
+                return None
+            if _check_suspended(data):
+                logging.getLogger(__name__).warning(
+                    f'[BacktestExecutor] 买入拒绝-停牌(成交量为0): {symbol}'
+                )
+                return None
+            if _check_limit_up(data, symbol):
+                logging.getLogger(__name__).warning(
+                    f'[BacktestExecutor] 买入拒绝-涨停: {symbol}, '
+                    f'收盘价={current_close:.2f}'
                 )
                 return None
             result = self.strategy.buy(data=data, size=volume)
@@ -82,15 +133,23 @@ class BacktestExecutor(StrategyExecutor):
         return self.strategy.buy(size=volume)
 
     def execute_sell(self, symbol: str, price: float, volume: int) -> Any:
-        """执行卖出操作"""
-        import math
         data = self._symbol_data_map.get(symbol)
         if data:
-            # 如果当前价格为 NaN（前置填充行），拒绝下单
             current_close = data.close[0]
             if math.isnan(current_close):
                 logging.getLogger(__name__).warning(
                     f'[BacktestExecutor] 卖出拒绝-数据为NaN: {symbol}'
+                )
+                return None
+            if _check_suspended(data):
+                logging.getLogger(__name__).warning(
+                    f'[BacktestExecutor] 卖出拒绝-停牌(成交量为0): {symbol}'
+                )
+                return None
+            if _check_limit_down(data, symbol):
+                logging.getLogger(__name__).warning(
+                    f'[BacktestExecutor] 卖出拒绝-跌停: {symbol}, '
+                    f'收盘价={current_close:.2f}'
                 )
                 return None
             result = self.strategy.sell(data=data, size=volume)

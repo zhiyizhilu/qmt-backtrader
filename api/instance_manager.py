@@ -214,7 +214,7 @@ class StrategyInstanceManager:
             if positions:
                 for pos in positions:
                     symbol = getattr(pos, 'stock_code', str(pos))
-                    volume = getattr(pos, 'volume', 0)
+                    volume = api.trader.get_position_volume(pos)
                     if volume > 0:
                         result[symbol] = volume
         except Exception as e:

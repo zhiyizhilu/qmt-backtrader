@@ -5,7 +5,7 @@ description: "系统性地通过回测优化量化交易策略。当用户需要
 
 # 策略优化器
 
-在 qmt_backtrader 框架中系统性优化量化交易策略。本技能提供结构化的工作流程：提出优化建议、独立实施、逐一回测、仅保留有效改进。
+在 qmt_backtrader 框架中系统性优化量化交易策略。本技能提供结构化的工作流程：提出优化建议、独立实施、逐一回测、硬逻辑与过度拟合审查、仅保留有效且稳健的改进。
 
 ## 调用时机
 
@@ -249,7 +249,210 @@ def run_backtest_with_params(strategy_name=STRATEGY_NAME, extra_params=None, lab
 | 0% <= 提升 < 5% | 放弃（收益不足） |
 | 负向提升 | 放弃并记录失败原因 |
 
-### 阶段五：组合有效优化
+### 阶段五：硬逻辑与过度拟合审查
+
+对阶段四中夏普提升 >= 5% 的有效优化，逐一进行硬逻辑强度和过度拟合风险审查。**任何一项审查不通过的优化，必须降级为"有条件有效"或直接放弃。**
+
+#### 5.1 硬逻辑强度检查
+
+评估优化的逻辑是否具有坚实的因果基础，而非仅仅是统计巧合。
+
+| 检查维度 | 评估标准 | 不通过判定 |
+|---------|---------|-----------|
+| **逻辑因果链** | 优化是否有清晰的"条件→动作→结果"因果链？能否用一句话解释为什么这个优化应该有效？ | 无法给出合理解释，或解释依赖"历史数据就是这样" |
+| **经济合理性** | 优化效果能否被金融理论解释（风险溢价、市场微观结构、行为金融等）？ | 改进仅在统计上显著，但无经济学逻辑支撑 |
+| **逻辑独立性** | 优化是否提供了新的信息维度，而非已有逻辑的变相重复？ | 与已有参数高度相关（如同时有"5日动量"和"10日动量"） |
+| **极端场景稳健性** | 逻辑在极端市场（暴涨暴跌、流动性枯竭）下是否仍然成立？ | 仅在常态市场有效，极端场景下逻辑失效或反向 |
+| **可解释的交易行为** | 优化导致的交易行为变化是否可解释、可预期？ | 优化后产生了无法解释的频繁交易或异常持仓 |
+
+**硬逻辑强度评级**：
+
+| 评级 | 条件 | 处理方式 |
+|------|------|---------|
+| A（强） | 全部5项通过 | 正常进入组合优化阶段 |
+| B（中） | 通过4项，仅极端场景或可解释性稍弱 | 进入组合优化，但在报告中标注风险 |
+| C（弱） | 通过3项及以下 | 降级为"有条件有效"，需补充样本外验证才能进入组合 |
+
+#### 5.2 过度拟合检测
+
+通过实证方法检验优化是否对历史数据过度拟合。
+
+**检测方法一：样本外验证（必做）**
+
+将回测区间分为前后两段，在前半段（样本内）验证优化效果，在后半段（样本外）检验是否仍然有效：
+
+```python
+def run_out_of_sample_test(strategy_name, extra_params, label,
+                            full_start, full_end, split_ratio=0.5):
+    from datetime import datetime, timedelta
+    start_dt = datetime.strptime(full_start, '%Y-%m-%d')
+    end_dt = datetime.strptime(full_end, '%Y-%m-%d')
+    total_days = (end_dt - start_dt).days
+    split_dt = start_dt + timedelta(days=int(total_days * split_ratio))
+    split_date = split_dt.strftime('%Y-%m-%d')
+
+    in_sample = run_backtest_with_params(
+        strategy_name=strategy_name, extra_params=extra_params,
+        label=f'{label}_is', start_date=full_start, end_date=split_date)
+
+    out_sample = run_backtest_with_params(
+        strategy_name=strategy_name, extra_params=extra_params,
+        label=f'{label}_oos', start_date=split_date, end_date=full_end)
+
+    baseline_is = run_backtest_with_params(
+        strategy_name=strategy_name, extra_params=None,
+        label='baseline_is', start_date=full_start, end_date=split_date)
+
+    baseline_oos = run_backtest_with_params(
+        strategy_name=strategy_name, extra_params=None,
+        label='baseline_oos', start_date=split_date, end_date=full_end)
+
+    is_improvement = (in_sample.get('sharpe_ratio', 0) - baseline_is.get('sharpe_ratio', 0)) / abs(baseline_is.get('sharpe_ratio', 1)) * 100
+    oos_improvement = (out_sample.get('sharpe_ratio', 0) - baseline_oos.get('sharpe_ratio', 0)) / abs(baseline_oos.get('sharpe_ratio', 1)) * 100
+
+    return {
+        'in_sample_sharpe': in_sample.get('sharpe_ratio', 0),
+        'out_sample_sharpe': out_sample.get('sharpe_ratio', 0),
+        'baseline_is_sharpe': baseline_is.get('sharpe_ratio', 0),
+        'baseline_oos_sharpe': baseline_oos.get('sharpe_ratio', 0),
+        'is_improvement_pct': is_improvement,
+        'oos_improvement_pct': oos_improvement,
+        'decay_ratio': oos_improvement / is_improvement if is_improvement != 0 else 0,
+    }
+```
+
+**样本外判定标准**：
+
+| 衰减比（OOS/IS） | 判定 | 处理方式 |
+|-----------------|------|---------|
+| >= 0.5 | 样本外仍保持至少50%的改进 | 通过，优化稳健 |
+| 0.2 ~ 0.5 | 样本外效果大幅衰减 | 有条件通过，需降低参数权重或收紧阈值 |
+| < 0.2 或为负 | 样本外几乎无效或反向 | **不通过**，高度疑似过度拟合，必须放弃 |
+
+**检测方法二：参数敏感性分析（必做）**
+
+对优化的核心参数进行 ±10%、±20% 的扰动测试，检验优化效果是否对参数值高度敏感：
+
+```python
+def run_parameter_sensitivity_test(strategy_name, param_name, param_value,
+                                    label, perturbations=[-0.2, -0.1, 0.1, 0.2]):
+    results = {}
+    base_result = run_backtest_with_params(
+        strategy_name=strategy_name,
+        extra_params={param_name: param_value},
+        label=f'{label}_base')
+
+    for delta in perturbations:
+        perturbed_value = param_value * (1 + delta)
+        if isinstance(param_value, int):
+            perturbed_value = int(round(perturbed_value))
+            if perturbed_value == 0:
+                perturbed_value = 1
+        result = run_backtest_with_params(
+            strategy_name=strategy_name,
+            extra_params={param_name: perturbed_value},
+            label=f'{label}_perturb_{delta:+.0%}')
+        results[f'perturb_{delta:+.0%}'] = {
+            'param_value': perturbed_value,
+            'sharpe_ratio': result.get('sharpe_ratio', 0),
+        }
+
+    base_sharpe = base_result.get('sharpe_ratio', 0)
+    sharpe_values = [r['sharpe_ratio'] for r in results.values()]
+    sharpe_std = (sum((s - base_sharpe) ** 2 for s in sharpe_values) / len(sharpe_values)) ** 0.5
+    sharpe_range = max(sharpe_values) - min(sharpe_values)
+
+    return {
+        'base_sharpe': base_sharpe,
+        'base_param': param_value,
+        'perturbation_results': results,
+        'sharpe_std': sharpe_std,
+        'sharpe_range': sharpe_range,
+        'sensitivity_ratio': sharpe_range / abs(base_sharpe) if base_sharpe != 0 else float('inf'),
+    }
+```
+
+**参数敏感性判定标准**：
+
+| 敏感度比率（range/|base|） | 判定 | 处理方式 |
+|--------------------------|------|---------|
+| < 0.3 | 参数鲁棒，优化可信 | 通过 |
+| 0.3 ~ 0.6 | 参数较敏感 | 有条件通过，建议选择参数区间的中间值而非最优值 |
+| > 0.6 | 参数高度敏感，优化可能仅对特定值有效 | **不通过**，高度疑似过度拟合 |
+
+**检测方法三：时间分段稳定性（必做）**
+
+将回测区间按年分段，检验优化在各年度是否一致有效：
+
+```python
+def run_temporal_stability_test(strategy_name, extra_params, label,
+                                 full_start, full_end):
+    from datetime import datetime
+    start_year = datetime.strptime(full_start, '%Y-%m-%d').year
+    end_year = datetime.strptime(full_end, '%Y-%m-%d').year
+
+    yearly_results = []
+    for year in range(start_year, end_year + 1):
+        year_start = f'{year}-01-01'
+        year_end = f'{year}-12-31'
+        if year_start < full_start:
+            year_start = full_start
+        if year_end > full_end:
+            year_end = full_end
+
+        opt_result = run_backtest_with_params(
+            strategy_name=strategy_name, extra_params=extra_params,
+            label=f'{label}_{year}', start_date=year_start, end_date=year_end)
+
+        base_result = run_backtest_with_params(
+            strategy_name=strategy_name, extra_params=None,
+            label=f'baseline_{year}', start_date=year_start, end_date=year_end)
+
+        opt_sharpe = opt_result.get('sharpe_ratio', 0)
+        base_sharpe = base_result.get('sharpe_ratio', 0)
+        improvement = opt_sharpe - base_sharpe
+
+        yearly_results.append({
+            'year': year,
+            'opt_sharpe': opt_sharpe,
+            'base_sharpe': base_sharpe,
+            'improvement': improvement,
+            'is_positive': improvement > 0,
+        })
+
+    positive_years = sum(1 for r in yearly_results if r['is_positive'])
+    total_years = len(yearly_results)
+    consistency_ratio = positive_years / total_years if total_years > 0 else 0
+
+    return {
+        'yearly_results': yearly_results,
+        'positive_years': positive_years,
+        'total_years': total_years,
+        'consistency_ratio': consistency_ratio,
+    }
+```
+
+**时间稳定性判定标准**：
+
+| 一致性比率（正改进年数/总年数） | 判定 | 处理方式 |
+|-------------------------------|------|---------|
+| >= 0.7 | 优化效果时间稳定 | 通过 |
+| 0.5 ~ 0.7 | 部分年份无效 | 有条件通过，需分析无效年份的市场特征 |
+| < 0.5 | 多数年份无效，改进集中在少数年份 | **不通过**，优化可能仅对特定行情有效 |
+
+#### 5.3 综合审查结论
+
+对每项有效优化，汇总三项检测结果，给出最终审查结论：
+
+| 硬逻辑评级 | 样本外衰减比 | 参数敏感度 | 时间稳定性 | 最终结论 |
+|-----------|------------|-----------|-----------|---------|
+| A | >= 0.5 | < 0.3 | >= 0.7 | ✅ 强力通过，优先组合 |
+| A/B | >= 0.2 | < 0.6 | >= 0.5 | ⚠️ 有条件通过，组合时降低权重 |
+| 任意 | < 0.2 或 敏感度>0.6 或 稳定性<0.5 | - | - | ❌ 不通过，放弃该优化 |
+
+**重要**：即使优化在阶段四中夏普提升 >= 5%，如果在本阶段审查不通过，也必须放弃。硬逻辑和过度拟合审查是比夏普比率更根本的质量门槛。
+
+### 阶段六：组合有效优化
 
 1. 测试所有有效优化的组合效果
 2. **检测参数冲突**：某些优化在单项测试中有效，但组合后可能冲突（详见下方"参数冲突检测"）
@@ -269,7 +472,7 @@ def run_backtest_with_params(strategy_name=STRATEGY_NAME, extra_params=None, lab
 
 **冲突检测方法**：分析两个优化的触发条件和执行动作是否存在互斥场景。如果优化A要求"延迟行动"而优化B要求"立即行动"，则存在冲突。
 
-### 阶段六：清理与文档
+### 阶段七：清理与文档
 
 1. **清理策略代码**：删除所有无效优化的参数和方法
 2. **更新策略目录下的 `readme.md`**：仅反映保留的优化内容
@@ -280,14 +483,15 @@ def run_backtest_with_params(strategy_name=STRATEGY_NAME, extra_params=None, lab
 
 在策略目录下的 `optimization/` 目录中创建 `generate_report.py` 脚本，生成包含 Chart.js 交互式图表的 HTML 报告。
 
-报告应包含以下6个章节：
+报告应包含以下7个章节：
 
 1. **优化总览**：4张核心指标卡片（夏普变化、收益变化、回撤变化、年化变化）
 2. **策略说明**：原始逻辑与优化后新增逻辑的说明
 3. **单项优化回测**：详细数据表 + 夏普/收益/提升幅度3张柱状图
-4. **组合优化回测**：组合方案对比表 + 夏普/收益2张柱状图
-5. **核心发现**：深度洞察（交易成本、协同效应、参数冲突、无效优化分析）
-6. **优化前后对比**：雷达图综合对比 + 最终采纳/未采纳参数清单
+4. **硬逻辑与过度拟合审查**：硬逻辑评级表 + 样本外验证/参数敏感性/时间稳定性3项检测结果 + 综合审查结论表
+5. **组合优化回测**：组合方案对比表 + 夏普/收益2张柱状图
+6. **核心发现**：深度洞察（交易成本、协同效应、参数冲突、无效优化分析、过度拟合风险警示）
+7. **优化前后对比**：雷达图综合对比 + 最终采纳/未采纳参数清单
 
 ```python
 import json
@@ -427,16 +631,31 @@ tr.effective {{ background: rgba(52, 211, 153, 0.05); }}
 </div>
 <div class="chart-box full"><canvas id="chartSingleImprovement"></canvas></div>
 
-<!-- 四、组合优化回测结果 -->
-<h2>四、组合优化回测结果</h2>
+<!-- 四、硬逻辑与过度拟合审查 -->
+<h2>四、硬逻辑与过度拟合审查</h2>
+<table>
+<thead><tr><th>优化方向</th><th>硬逻辑评级</th><th>样本外衰减比</th><th>参数敏感度</th><th>时间稳定性</th><th>审查结论</th></tr></thead>
+<tbody><!-- 按实际审查结果填写 --></tbody>
+</table>
+<div class="chart-grid">
+    <div class="chart-box"><canvas id="chartOOSDecay"></canvas></div>
+    <div class="chart-box"><canvas id="chartParamSensitivity"></canvas></div>
+</div>
+<div class="chart-box full"><canvas id="chartTemporalStability"></canvas></div>
+<div class="insight-box">
+<h3>过度拟合风险警示</h3><ul><!-- 标注高风险优化及原因 --></ul>
+</div>
+
+<!-- 五、组合优化回测结果 -->
+<h2>五、组合优化回测结果</h2>
 <!-- 类似结构 -->
 
-<!-- 五、核心发现 -->
-<h2>五、核心发现</h2>
+<!-- 六、核心发现 -->
+<h2>六、核心发现</h2>
 <div class="insight-box"><!-- 深度洞察 --></div>
 
-<!-- 六、优化前后对比 -->
-<h2>六、优化前后对比</h2>
+<!-- 七、优化前后对比 -->
+<h2>七、优化前后对比</h2>
 <!-- 雷达图 + 参数清单 -->
 
 </div>
@@ -502,6 +721,8 @@ if __name__ == '__main__':
 6. **全程记录**：记录每项优化成功或失败的原因，包括具体失败原因
 7. **冲突检测**：组合优化前必须分析参数间是否存在逻辑冲突，避免1+1<1
 8. **验证回测**：清理代码后必须重新回测，确认结果与优化预期一致
+9. **硬逻辑优先**：优化的逻辑因果链和经济合理性比统计显著性更重要，无法解释"为什么有效"的优化不可采纳
+10. **过度拟合防范**：每项有效优化必须通过样本外验证、参数敏感性分析和时间稳定性测试，三项中任何一项不通过即放弃
 
 ## 策略文件结构
 
@@ -609,7 +830,12 @@ strategies/<策略目录>/
         ├── opt01_xxx.json           # 优化1结果
         ├── opt02_xxx.json           # 优化2结果
         ├── ...
-        └── optNN_combined.json      # 组合优化结果
+        ├── optNN_combined.json      # 组合优化结果
+        ├── opt01_xxx_oos.json       # 优化1样本外验证结果
+        ├── opt01_xxx_is.json        # 优化1样本内验证结果
+        ├── opt01_xxx_perturb_*.json # 优化1参数敏感性测试结果
+        ├── opt01_xxx_YYYY.json      # 优化1年度稳定性测试结果
+        └── review_summary.json      # 硬逻辑与过度拟合审查汇总
 ```
 
 ### 策略目录与注册名映射
@@ -640,9 +866,10 @@ strategy_dir = get_strategy_dir('small_cap')
 1. **优化概览**：策略名称、回测区间、股票池、核心指标、基线与优化后对比
 2. **结果汇总表**：所有优化的夏普比率、变化百分比、总收益、最大回撤、结论
 3. **详细分析**：每项优化的方向、实现方式、预期目标、实际结果、成功/失败原因
-4. **组合优化结果**：基线与组合优化的对比表
-5. **最终参数**：更新后的策略参数值
-6. **经验总结**：优化过程中的关键收获
+4. **硬逻辑与过度拟合审查**：每项有效优化的硬逻辑评级、样本外衰减比、参数敏感度、时间稳定性、综合审查结论
+5. **组合优化结果**：基线与组合优化的对比表
+6. **最终参数**：更新后的策略参数值
+7. **经验总结**：优化过程中的关键收获
 
 ## 已验证的有效优化
 

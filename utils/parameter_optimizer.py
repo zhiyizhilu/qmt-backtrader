@@ -18,6 +18,7 @@ class ParameterOptimizer:
         period: str = '1d',
         initial_cash: float = 200000,
         commission: float = 0.0001,
+        slippage: float = 0.0,
         **kwargs,
     ):
         """网格搜索优化参数
@@ -31,6 +32,7 @@ class ParameterOptimizer:
             period: 数据周期
             initial_cash: 初始资金
             commission: 佣金费率
+            slippage: 滑点百分比，如0.001表示0.1%，0表示无滑点
         """
         from utils.report import set_ai_mode
         set_ai_mode(True)
@@ -65,6 +67,8 @@ class ParameterOptimizer:
                 cerebro = bt.Cerebro()
                 cerebro.broker.setcash(initial_cash)
                 cerebro.broker.setcommission(commission=commission)
+                if slippage > 0:
+                    cerebro.broker.set_slippage_perc(slippage)
                 cerebro.broker.set_checksubmit(False)
 
                 for symbol, data in data_cache.items():

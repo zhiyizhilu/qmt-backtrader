@@ -84,6 +84,10 @@ class VirtualBook:
         """查询策略级可用现金"""
         return self._cash
 
+    def get_cash_balance(self) -> float:
+        """获取策略级可用现金（别名方法，用于对账器）"""
+        return self._cash
+
     def get_total_value(self, price_func: Callable[[str], Optional[float]]) -> float:
         """查询策略总市值
 
@@ -105,6 +109,30 @@ class VirtualBook:
     def get_positions(self) -> Dict[str, int]:
         """获取所有持仓的副本"""
         return dict(self._positions)
+
+    def get_all_positions_with_volume(self) -> Dict[str, int]:
+        """获取所有持仓（包含数量为0的）的字典副本，用于对账器遍历"""
+        return dict(self._positions)
+
+    def set_position(self, symbol: str, volume: int):
+        """设置策略级持仓数量
+
+        Args:
+            symbol: 标的代码
+            volume: 持仓数量，<=0 时会从持仓字典中移除
+        """
+        if volume <= 0:
+            self._positions.pop(symbol, None)
+        else:
+            self._positions[symbol] = volume
+
+    def set_cash(self, cash: float):
+        """设置策略级现金余额，用于对账器校准
+
+        Args:
+            cash: 现金余额
+        """
+        self._cash = cash
 
     def has_pending_orders(self, symbol: str = None) -> bool:
         """是否有待确认订单
@@ -179,9 +207,10 @@ class VirtualBook:
 
         if abs(account_cash - self._cash) > 1.0:
             if not self.has_pending_orders():
+                old_cash = self._cash
                 self._cash = account_cash
                 self.logger.info(
-                    f'[{self.strategy_id}] 现金校准: 簿记={self._cash:.2f}, 实际={account_cash:.2f}'
+                    f'[{self.strategy_id}] 现金校准: 簿记={old_cash:.2f}, 实际={account_cash:.2f}'
                 )
 
         self._last_sync_time = time.time()

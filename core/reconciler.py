@@ -85,9 +85,9 @@ class Reconciler:
         aggregated_positions = {}
         aggregated_cash = 0.0
         for book in self._books:
-            for symbol, volume in book._positions.items():
+            for symbol, volume in book.get_all_positions_with_volume().items():
                 aggregated_positions[symbol] = aggregated_positions.get(symbol, 0) + volume
-            aggregated_cash += book._cash
+            aggregated_cash += book.get_cash_balance()
 
         actual_positions = self._query_actual_positions()
         actual_cash = self._query_actual_cash()
@@ -129,9 +129,7 @@ class Reconciler:
 
             if len(holders) == 1:
                 book = holders[0]
-                book._positions[drift.symbol] = drift.actual_volume
-                if drift.actual_volume <= 0:
-                    book._positions.pop(drift.symbol, None)
+                book.set_position(drift.symbol, drift.actual_volume)
                 self.logger.info(
                     f'自动校准: {drift.symbol} 偏差{drift.diff}股 '
                     f'→ 归属策略 {book.strategy_id}'
@@ -139,22 +137,20 @@ class Reconciler:
 
             elif len(holders) > 1 and drift.diff > 0:
                 total_book = sum(
-                    b._positions.get(drift.symbol, 0) for b in holders
+                    b.get_position_size(drift.symbol) for b in holders
                 )
                 remaining = drift.diff
                 for book in holders:
                     if total_book > 0:
-                        ratio = book._positions.get(drift.symbol, 0) / total_book
+                        ratio = book.get_position_size(drift.symbol) / total_book
                         share = int(drift.diff * ratio / 100) * 100
                         if share > 0:
-                            book._positions[drift.symbol] = (
-                                book._positions.get(drift.symbol, 0) + share
-                            )
+                            current_vol = book.get_position_size(drift.symbol)
+                            book.set_position(drift.symbol, current_vol + share)
                             remaining -= share
                 if remaining > 0 and holders:
-                    holders[0]._positions[drift.symbol] = (
-                        holders[0]._positions.get(drift.symbol, 0) + remaining
-                    )
+                    current_vol = holders[0].get_position_size(drift.symbol)
+                    holders[0].set_position(drift.symbol, current_vol + remaining)
                 self.logger.warning(
                     f'多策略共享标的 {drift.symbol} 存在偏差: '
                     f'簿记合计={drift.book_volume}, 实际={drift.actual_volume}, '
@@ -183,7 +179,7 @@ class Reconciler:
         """构建标的 → 持有人映射"""
         holders_map: Dict[str, List[VirtualBook]] = {}
         for book in self._books:
-            for symbol in book._positions:
+            for symbol in book.get_all_positions_with_volume():
                 holders_map.setdefault(symbol, []).append(book)
         return holders_map
 

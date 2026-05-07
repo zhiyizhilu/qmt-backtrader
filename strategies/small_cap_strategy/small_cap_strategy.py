@@ -114,10 +114,22 @@ class SmallCapStrategy(StockSelectionStrategy):
         all_missing_count = 0
         filter_stats = {'roe_fail': 0, 'rev_fail': 0, 'ocf_fail': 0, 'debt_fail': 0}
 
+        # 批量获取Pershareindex表的财务数据
+        pershare_fields = ['du_return_on_equity', 'inc_revenue_rate', 's_fa_ocfps']
+        pershare_data = self.get_financial_fields_batch(pool, 'Pershareindex', pershare_fields)
+        
+        # 如果需要负债率检查，也批量获取Balance表的数据
+        need_debt_check = self.params.max_debt_ratio is not None and self.params.max_debt_ratio < 1.0
+        balance_data = {}
+        if need_debt_check:
+            balance_fields = ['total_assets', 'total_liabilities']
+            balance_data = self.get_financial_fields_batch(pool, 'Balance', balance_fields)
+
         for stock in pool:
-            roe = self.get_financial_field(stock, 'Pershareindex', 'du_return_on_equity')
-            rev_growth = self.get_financial_field(stock, 'Pershareindex', 'inc_revenue_rate')
-            ocf = self.get_financial_field(stock, 'Pershareindex', 's_fa_ocfps')
+            stock_pershare = pershare_data.get(stock, {})
+            roe = stock_pershare.get('du_return_on_equity')
+            rev_growth = stock_pershare.get('inc_revenue_rate')
+            ocf = stock_pershare.get('s_fa_ocfps')
 
             if roe is None and rev_growth is None and ocf is None:
                 all_missing_count += 1
@@ -135,9 +147,10 @@ class SmallCapStrategy(StockSelectionStrategy):
                 filter_stats['ocf_fail'] += 1
                 continue
 
-            if self.params.max_debt_ratio is not None and self.params.max_debt_ratio < 1.0:
-                total_assets = self.get_financial_field(stock, 'Balance', 'total_assets')
-                total_liabilities = self.get_financial_field(stock, 'Balance', 'total_liabilities')
+            if need_debt_check:
+                stock_balance = balance_data.get(stock, {})
+                total_assets = stock_balance.get('total_assets')
+                total_liabilities = stock_balance.get('total_liabilities')
                 if total_assets and total_assets > 0 and total_liabilities is not None:
                     debt_ratio = total_liabilities / total_assets
                     if debt_ratio > self.params.max_debt_ratio:
@@ -162,14 +175,24 @@ class SmallCapStrategy(StockSelectionStrategy):
         no_price = 0
         no_cap_data = 0
 
+        # 批量获取Balance表的财务数据
+        balance_fields = ['total_equity']
+        balance_data = self.get_financial_fields_batch(stocks, 'Balance', balance_fields)
+        
+        # 批量获取Pershareindex表的财务数据
+        pershare_fields = ['s_fa_bps']
+        pershare_data = self.get_financial_fields_batch(stocks, 'Pershareindex', pershare_fields)
+
         for stock in stocks:
             price = self.get_current_price(stock)
             if price is None or price <= 0:
                 no_price += 1
                 continue
 
-            total_equity = self.get_financial_field(stock, 'Balance', 'total_equity')
-            bps = self.get_financial_field(stock, 'Pershareindex', 's_fa_bps')
+            stock_balance = balance_data.get(stock, {})
+            stock_pershare = pershare_data.get(stock, {})
+            total_equity = stock_balance.get('total_equity')
+            bps = stock_pershare.get('s_fa_bps')
 
             if total_equity and total_equity > 0 and bps and bps > 0:
                 total_shares = total_equity / bps

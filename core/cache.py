@@ -61,14 +61,24 @@ class CacheIndexManager:
         self.lock = threading.RLock()
         self.logger = logging.getLogger(self.__class__.__name__)
         self._market_index: Dict[str, Dict[str, Dict]] = {}
+        self._market_raw_index: Dict[str, Dict[str, Dict]] = {}
         self._financial_index: Dict[str, Dict[str, Dict]] = {}
         self._dividend_checked: Dict[str, str] = {}
-        self._dirty = False
+        self._dirty_flags = {
+            'market': False,
+            'market_raw': False,
+            'financial': False,
+            'dividend': False,
+        }
         self.load_index()
 
     @property
     def market_index_path(self) -> Path:
         return self.cache_dir / 'index' / 'market_index.json'
+
+    @property
+    def market_raw_index_path(self) -> Path:
+        return self.cache_dir / 'index' / 'market_raw_index.json'
 
     @property
     def financial_index_path(self) -> Path:
@@ -81,6 +91,7 @@ class CacheIndexManager:
     def load_index(self) -> None:
         for path, attr in [
             (self.market_index_path, '_market_index'),
+            (self.market_raw_index_path, '_market_raw_index'),
             (self.financial_index_path, '_financial_index'),
             (self.dividend_checked_path, '_dividend_checked'),
         ]:
@@ -93,23 +104,38 @@ class CacheIndexManager:
                     setattr(self, attr, {} if attr != '_dividend_checked' else {})
 
     def save_index(self) -> None:
-        if not self._dirty:
+        if not any(self._dirty_flags.values()):
             return
         with self.lock:
-            for path, data in [
-                (self.market_index_path, self._market_index),
-                (self.financial_index_path, self._financial_index),
-                (self.dividend_checked_path, self._dividend_checked),
-            ]:
-                try:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    tmp_path = path.with_suffix('.json.tmp')
-                    with open(tmp_path, 'w', encoding='utf-8') as f:
-                        json.dump(data, f, ensure_ascii=False, indent=2)
-                    tmp_path.replace(path)
-                except Exception as e:
-                    self.logger.warning(f"保存索引文件失败: {path}, 错误: {e}")
-            self._dirty = False
+            files_to_save = []
+            if self._dirty_flags['market']:
+                files_to_save.append((self.market_index_path, self._market_index))
+            if self._dirty_flags['market_raw']:
+                files_to_save.append((self.market_raw_index_path, self._market_raw_index))
+            if self._dirty_flags['financial']:
+                files_to_save.append((self.financial_index_path, self._financial_index))
+            if self._dirty_flags['dividend']:
+                files_to_save.append((self.dividend_checked_path, self._dividend_checked))
+
+            for path, data in files_to_save:
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        tmp_path = path.with_suffix('.json.tmp')
+                        with open(tmp_path, 'w', encoding='utf-8') as f:
+                            json.dump(data, f, ensure_ascii=False, indent=2)
+                        tmp_path.replace(path)
+                        break
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            import time as _time
+                            _time.sleep(0.1 * (attempt + 1))
+                        else:
+                            self.logger.warning(f"保存索引文件失败: {path}, 错误: {e}")
+
+            for key in self._dirty_flags:
+                self._dirty_flags[key] = False
 
     def update_market_index(self, symbol: str, period: str, year: int) -> None:
         with self.lock:
@@ -122,7 +148,7 @@ class CacheIndexManager:
                 years.append(year)
                 years.sort()
             self._market_index[symbol][period]['last_update'] = pd.Timestamp.now().strftime('%Y-%m-%dT%H:%M:%S')
-            self._dirty = True
+            self._dirty_flags['market'] = True
 
     def get_available_market_years(self, symbol: str, period: str) -> List[int]:
         with self.lock:
@@ -141,11 +167,60 @@ class CacheIndexManager:
             for y in years:
                 self._market_index[symbol][period]['checked_years'][str(y)] = now
             self._market_index[symbol][period]['last_update'] = now
-            self._dirty = True
+            self._dirty_flags['market'] = True
 
     def get_checked_market_years(self, symbol: str, period: str, max_age_days: int = 30) -> List[int]:
         with self.lock:
             entry = self._market_index.get(symbol, {}).get(period, {})
+            checked = entry.get('checked_years', {})
+            if not checked:
+                return []
+            now = pd.Timestamp.now()
+            valid_years = []
+            for year_str, check_time in checked.items():
+                try:
+                    check_dt = pd.Timestamp(check_time)
+                    if (now - check_dt).days < max_age_days:
+                        valid_years.append(int(year_str))
+                except Exception:
+                    continue
+            return valid_years
+
+    def update_market_raw_index(self, symbol: str, period: str, year: int) -> None:
+        with self.lock:
+            if symbol not in self._market_raw_index:
+                self._market_raw_index[symbol] = {}
+            if period not in self._market_raw_index[symbol]:
+                self._market_raw_index[symbol][period] = {'years': [], 'last_update': ''}
+            years = self._market_raw_index[symbol][period]['years']
+            if year not in years:
+                years.append(year)
+                years.sort()
+            self._market_raw_index[symbol][period]['last_update'] = pd.Timestamp.now().strftime('%Y-%m-%dT%H:%M:%S')
+            self._dirty_flags['market_raw'] = True
+
+    def get_available_market_raw_years(self, symbol: str, period: str) -> List[int]:
+        with self.lock:
+            entry = self._market_raw_index.get(symbol, {}).get(period, {})
+            return list(entry.get('years', []))
+
+    def update_checked_market_raw_years(self, symbol: str, period: str, years: List[int]) -> None:
+        with self.lock:
+            if symbol not in self._market_raw_index:
+                self._market_raw_index[symbol] = {}
+            if period not in self._market_raw_index[symbol]:
+                self._market_raw_index[symbol][period] = {'years': [], 'checked_years': {}, 'last_update': ''}
+            if 'checked_years' not in self._market_raw_index[symbol][period]:
+                self._market_raw_index[symbol][period]['checked_years'] = {}
+            now = pd.Timestamp.now().strftime('%Y-%m-%dT%H:%M:%S')
+            for y in years:
+                self._market_raw_index[symbol][period]['checked_years'][str(y)] = now
+            self._market_raw_index[symbol][period]['last_update'] = now
+            self._dirty_flags['market_raw'] = True
+
+    def get_checked_market_raw_years(self, symbol: str, period: str, max_age_days: int = 30) -> List[int]:
+        with self.lock:
+            entry = self._market_raw_index.get(symbol, {}).get(period, {})
             checked = entry.get('checked_years', {})
             if not checked:
                 return []
@@ -171,7 +246,7 @@ class CacheIndexManager:
                 years.append(year)
                 years.sort()
             self._financial_index[symbol][table]['last_update'] = pd.Timestamp.now().strftime('%Y-%m-%dT%H:%M:%S')
-            self._dirty = True
+            self._dirty_flags['financial'] = True
 
     def get_available_financial_years(self, symbol: str, table: str) -> List[int]:
         with self.lock:
@@ -190,7 +265,7 @@ class CacheIndexManager:
             for y in years:
                 self._financial_index[symbol][table]['checked_years'][str(y)] = now
             self._financial_index[symbol][table]['last_update'] = now
-            self._dirty = True
+            self._dirty_flags['financial'] = True
 
     def get_checked_financial_years(self, symbol: str, table: str, max_age_days: int = 7) -> List[int]:
         with self.lock:
@@ -214,7 +289,7 @@ class CacheIndexManager:
             now = pd.Timestamp.now().strftime('%Y-%m-%dT%H:%M:%S')
             for stock in stocks:
                 self._dividend_checked[stock] = now
-            self._dirty = True
+            self._dirty_flags['dividend'] = True
 
     def get_checked_dividend_stocks(self, max_age_days: int = 30) -> set:
         with self.lock:
@@ -238,6 +313,8 @@ class CacheIndexManager:
         for namespace, index_attr, key_parts_count in [
             ('QMTDataProcessor', '_market_index', None),
             ('OpenDataProcessor', '_market_index', None),
+            ('QMTDataProcessor_Raw', '_market_raw_index', None),
+            ('OpenDataProcessor_Raw', '_market_raw_index', None),
             ('QMTDataProcessor_Financial', '_financial_index', None),
             ('OpenDataProcessor_Financial', '_financial_index', None),
         ]:
@@ -245,24 +322,36 @@ class CacheIndexManager:
             if not ns_dir.exists():
                 continue
 
-            is_market = 'market' in str(ns_dir)
+            is_market = 'market' in str(ns_dir) and 'market_raw' not in str(ns_dir)
+            is_market_raw = 'market_raw' in str(ns_dir)
             is_financial = 'financial' in str(ns_dir)
 
             for f in ns_dir.rglob('*.parquet'):
                 if not f.is_file():
                     continue
                 try:
-                    self._index_file(f, is_market, is_financial, namespace)
+                    self._index_file(f, is_market, is_financial, namespace, is_market_raw)
                 except Exception as e:
                     self.logger.debug(f"索引文件跳过: {f}, 错误: {e}")
 
-        self._dirty = True
+        self._dirty_flags['market'] = True
+        self._dirty_flags['market_raw'] = True
+        self._dirty_flags['financial'] = True
         self.save_index()
         self.logger.info("缓存索引重建完成")
 
-    def _index_file(self, filepath: Path, is_market: bool, is_financial: bool, namespace: str) -> None:
+    def _index_file(self, filepath: Path, is_market: bool, is_financial: bool, namespace: str, is_market_raw: bool = False) -> None:
         """根据文件路径模式更新索引"""
         name = filepath.stem
+
+        if is_market_raw:
+            year_match = re.match(r'^(\d{4})_(\w+)$', name)
+            if year_match:
+                year = int(year_match.group(1))
+                period = year_match.group(2)
+                symbol = filepath.parent.name
+                self.update_market_raw_index(symbol, period, year)
+                return
 
         if is_market:
             year_match = re.match(r'^(\d{4})_(\w+)$', name)
@@ -293,23 +382,23 @@ class DiskCache:
     NAMESPACE_MAP = {
         'QMTDataProcessor': 'market',
         'QMTDataProcessor_Financial': 'financial',
-        'QMTDataProcessor_Industry': 'industry',
-        'QMTDataProcessor_Sector': 'sector',
+        'QMTDataProcessor_Raw': 'market_raw',
         'OpenDataProcessor': 'market',
         'OpenDataProcessor_Financial': 'financial',
         'OpenDataProcessor_Industry': 'industry',
         'OpenDataProcessor_Sector': 'sector',
+        'OpenDataProcessor_Raw': 'market_raw',
     }
 
     BASE_DIR_MAP = {
         'QMTDataProcessor': 'QMTData',
         'QMTDataProcessor_Financial': 'QMTData',
-        'QMTDataProcessor_Industry': 'QMTData',
-        'QMTDataProcessor_Sector': 'QMTData',
+        'QMTDataProcessor_Raw': 'QMTData',
         'OpenDataProcessor': 'OpenData',
         'OpenDataProcessor_Financial': 'OpenData',
         'OpenDataProcessor_Industry': 'OpenData',
         'OpenDataProcessor_Sector': 'OpenData',
+        'OpenDataProcessor_Raw': 'OpenData',
     }
 
     def __init__(self, cache_dir: str):
@@ -993,7 +1082,7 @@ class SmartCacheManager:
             return self._execute_market_cache_v2(namespace, func, args, kwargs)
 
         start_time = time.time()
-        format_type = 'parquet' if cache_type == 'market' and incremental else 'pkl'
+        format_type = 'parquet' if HAS_PYARROW else 'pkl'
         base_key = self._get_cache_key(func.__name__, *args, **kwargs)
         full_key = f"{namespace}_{base_key}"
 
@@ -1116,6 +1205,9 @@ class SmartCacheManager:
         if not symbol or not req_start or not req_end:
             return func(*args, **kwargs)
 
+        is_raw = namespace.endswith('_Raw')
+        idx = self.index_manager
+
         mem_key = f"{namespace}_market_{symbol}_{period}_{req_start}_{req_end}"
         mem_data = self.mem_cache.get(mem_key)
         if mem_data is not None:
@@ -1127,14 +1219,16 @@ class SmartCacheManager:
         if not req_years:
             return func(*args, **kwargs)
 
-        available_years = self.index_manager.get_available_market_years(symbol, period)
+        available_years = (idx.get_available_market_raw_years(symbol, period) if is_raw
+                          else idx.get_available_market_years(symbol, period))
         if not available_years:
             available_years = self.disk_cache.list_yearly_files(namespace, symbol, period)
 
         cached_years = set(available_years) & set(req_years)
         missing_years = set(req_years) - cached_years
 
-        checked_years = set(self.index_manager.get_checked_market_years(symbol, period))
+        checked_years = set((idx.get_checked_market_raw_years(symbol, period) if is_raw
+                             else idx.get_checked_market_years(symbol, period)))
         truly_missing = missing_years - checked_years
 
         cached_frames = []
@@ -1205,16 +1299,20 @@ class SmartCacheManager:
                 if new_data is not None and isinstance(new_data, pd.DataFrame) and not new_data.empty:
                     written = self.disk_cache.put_yearly_from_df(namespace, symbol, period, new_data)
                     for y in written:
-                        self.index_manager.update_market_index(symbol, period, y)
-                    self.index_manager.save_index()
+                        if is_raw:
+                            idx.update_market_raw_index(symbol, period, y)
+                        else:
+                            idx.update_market_index(symbol, period, y)
                     cached_frames.append(new_data)
                     fetched_years_with_data = set(new_data.index.year.unique()) if isinstance(new_data.index, pd.DatetimeIndex) else set()
                     no_data_years = truly_missing - fetched_years_with_data
                 else:
                     no_data_years = truly_missing
                 if no_data_years:
-                    self.index_manager.update_checked_market_years(symbol, period, sorted(no_data_years))
-                    self.index_manager.save_index()
+                    if is_raw:
+                        idx.update_checked_market_raw_years(symbol, period, sorted(no_data_years))
+                    else:
+                        idx.update_checked_market_years(symbol, period, sorted(no_data_years))
             except Exception as e:
                 self.logger.warning(f"[{namespace}] {symbol} 增量获取失败: {e}")
 
@@ -1226,8 +1324,10 @@ class SmartCacheManager:
                 if result is not None and isinstance(result, pd.DataFrame) and not result.empty:
                     written = self.disk_cache.put_yearly_from_df(namespace, symbol, period, result)
                     for y in written:
-                        self.index_manager.update_market_index(symbol, period, y)
-                    self.index_manager.save_index()
+                        if is_raw:
+                            idx.update_market_raw_index(symbol, period, y)
+                        else:
+                            idx.update_market_index(symbol, period, y)
                     self.mem_cache.put(mem_key, result)
                 self.stats['total_load_time_ms'] += (time.time() - start_time) * 1000
                 return result
@@ -1291,7 +1391,7 @@ def smart_cache(cache_type: str = 'market', incremental: bool = False):
     """智能数据缓存装饰器
 
     Args:
-        cache_type: 'market' (行情数据, 优先使用Parquet) 或 'financial' (财务数据, 使用Pickle)
+        cache_type: 'market' (行情数据) 或 'financial' (财务数据), 均优先使用Parquet
         incremental: 是否开启智能增量合并（仅针对带有 start_date, end_date 参数且返回 DataFrame 的函数有效）
 
     使用示例:

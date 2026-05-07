@@ -1,9 +1,10 @@
 import ast
 import logging
 import time
+from bisect import bisect_right
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -21,6 +22,10 @@ class IndexConstituentManager:
 
     每行代表成分股发生变更的日期，两个日期之间的成分股不变。
     查询时取 <= 查询日期 的最近一行。
+
+    性能优化:
+        调用 preload() 后，CSV数据预构建为排序日期列表 + bisect查找，
+        后续查询全部走内存，无需重复DataFrame操作。
     """
 
     DEFAULT_DATA_DIR = Path(__file__).parent.parent.parent / '.cache' / 'JQData' / 'index_constituent'
@@ -39,6 +44,7 @@ class IndexConstituentManager:
         self.xtdata = xtdata
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
         self._cache: Dict[str, pd.DataFrame] = {}
+        self._preloaded: Dict[str, Tuple[List[pd.Timestamp], List[List[str]]]] = {}
 
     def _load_csv(self, index_code: str) -> Optional[pd.DataFrame]:
         if index_code in self._cache:
@@ -79,6 +85,59 @@ class IndexConstituentManager:
                 return [c.strip() for c in cleaned.split(',') if c.strip()]
         return []
 
+    def preload(self, index_code: str) -> bool:
+        """预加载指数成分股数据到内存，构建日期排序列表
+
+        预加载后，get_constituent_stocks_fast() 可通过 bisect 查找，
+        无需重复 DataFrame 操作。
+
+        Args:
+            index_code: 指数代码，如 '000300.SH'
+
+        Returns:
+            是否预加载成功
+        """
+        if index_code in self._preloaded:
+            return True
+
+        df = self._load_csv(index_code)
+        if df is None or df.empty:
+            return False
+
+        dates = df['date'].tolist()
+        codes_list = [list(row['codes']) if isinstance(row['codes'], list) else []
+                      for _, row in df.iterrows()]
+
+        self._preloaded[index_code] = (dates, codes_list)
+        self.logger.info(f"预加载 {index_code} 成分股: {len(dates)} 个变更日期, "
+                         f"日期范围 {dates[0].strftime('%Y-%m-%d')} ~ {dates[-1].strftime('%Y-%m-%d')}")
+        return True
+
+    def get_constituent_stocks_fast(self, index_code: str, date: str) -> List[str]:
+        """快速获取指定日期的指数成分股（使用预加载的内存数据）
+
+        通过 bisect 二分查找定位日期，O(logN) 复杂度。
+        如果未预加载，自动回退到 get_constituent_stocks()。
+
+        Args:
+            index_code: 指数代码
+            date: 日期，格式 'YYYY-MM-DD'
+
+        Returns:
+            股票代码列表
+        """
+        if index_code not in self._preloaded:
+            return self.get_constituent_stocks(index_code, date)
+
+        dates, codes_list = self._preloaded[index_code]
+        target_date = pd.Timestamp(date)
+
+        idx = bisect_right(dates, target_date)
+        if idx == 0:
+            return []
+
+        return codes_list[idx - 1]
+
     def get_constituent_stocks(self, index_code: str, date: str) -> List[str]:
         """获取指定日期的指数成分股
 
@@ -107,6 +166,7 @@ class IndexConstituentManager:
                     updated = self._try_update_from_qmt(index_code, date, df)
                     if updated:
                         self._cache.pop(index_code, None)
+                        self._preloaded.pop(index_code, None)
                         df = self._load_csv(index_code)
                         if df is not None:
                             mask = df['date'] <= target_date
@@ -118,6 +178,7 @@ class IndexConstituentManager:
         updated = self._try_update_from_qmt(index_code, date, df)
         if updated:
             self._cache.pop(index_code, None)
+            self._preloaded.pop(index_code, None)
             df = self._load_csv(index_code)
             if df is not None and not df.empty:
                 mask = df['date'] <= target_date
@@ -128,11 +189,6 @@ class IndexConstituentManager:
 
     def _try_update_from_qmt(self, index_code: str, date: str,
                               existing_df: Optional[pd.DataFrame] = None) -> bool:
-        """尝试从QMT获取最新成分股并更新CSV文件
-
-        Returns:
-            是否更新了CSV文件
-        """
         if not self.xtdata:
             self.logger.debug(f"QMT不可用，无法更新 {index_code} 成分股")
             return False
@@ -217,11 +273,9 @@ class IndexConstituentManager:
         start_ts = pd.Timestamp(start_date)
         end_ts = pd.Timestamp(end_date)
 
-        # 取时间范围内的变更记录
         mask = (df['date'] >= start_ts) & (df['date'] <= end_ts)
         period_df = df[mask]
 
-        # 还需要取起始日期之前的最近一条记录
         mask_before = df['date'] < start_ts
         if mask_before.any():
             before_row = df[mask_before].iloc[-1]
@@ -229,7 +283,6 @@ class IndexConstituentManager:
         else:
             all_stocks = set()
 
-        # 加上时间范围内所有变更记录的成分股
         change_count = 0
         for _, row in period_df.iterrows():
             codes = row['codes']

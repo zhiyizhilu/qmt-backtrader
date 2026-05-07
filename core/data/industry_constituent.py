@@ -1,8 +1,9 @@
 import ast
 import logging
+from bisect import bisect_right
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -21,9 +22,11 @@ class IndustryConstituentManager:
     文件命名: SW1{行业名}.csv，如 SW1银行.csv, SW1电子.csv
     QMT板块名: SW1银行, SW1电子 等
 
-    提供两类核心查询:
-    1. get_industry_stocks(industry, date) → 指定行业的成分股列表
-    2. get_industry_mapping(stock_list, date) → 股票→行业的映射字典
+    性能优化:
+        调用 preload() 后，所有行业CSV数据预构建为:
+        - 排序变更日期列表 + bisect查找
+        - 每个变更日期对应的 {stock: industry} 完整映射
+        后续查询全部走内存字典，无需重复遍历31个行业CSV。
     """
 
     DEFAULT_DATA_DIR = Path(__file__).parent.parent.parent / '.cache' / 'JQData' / 'industry_constituent'
@@ -42,6 +45,8 @@ class IndustryConstituentManager:
         self.xtdata = xtdata
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
         self._cache: Dict[str, pd.DataFrame] = {}
+        self._preloaded_dates: Optional[List[pd.Timestamp]] = None
+        self._preloaded_mappings: Optional[List[Dict[str, str]]] = None
 
     def _csv_key(self, industry: str) -> str:
         if industry.startswith('SW'):
@@ -93,6 +98,108 @@ class IndustryConstituentManager:
                 return [c.strip() for c in cleaned.split(',') if c.strip()]
         return []
 
+    def preload(self) -> bool:
+        """预加载所有行业CSV数据到内存，构建日期索引的行业映射
+
+        核心逻辑:
+        1. 加载31个行业CSV，收集所有变更日期的并集
+        2. 按日期排序，为每个变更日期计算完整的 {stock: industry} 映射
+        3. 后续查询通过 bisect 定位日期，O(logN) + O(1) 字典查找
+
+        Returns:
+            是否预加载成功
+        """
+        if self._preloaded_dates is not None:
+            return True
+
+        industry_data: Dict[str, List[Tuple[pd.Timestamp, List[str]]]] = {}
+        all_change_dates: set = set()
+
+        for industry in self.SW1_INDUSTRIES:
+            df = self._load_csv(industry)
+            if df is None or df.empty:
+                continue
+
+            changes = []
+            for _, row in df.iterrows():
+                dt = row['date']
+                codes = row['codes'] if isinstance(row['codes'], list) else []
+                changes.append((dt, codes))
+                all_change_dates.add(dt)
+
+            industry_data[industry] = changes
+
+        if not all_change_dates:
+            self.logger.warning("预加载行业数据: 无可用数据")
+            return False
+
+        sorted_dates = sorted(all_change_dates)
+
+        date_to_mapping: Dict[pd.Timestamp, Dict[str, str]] = {}
+        for industry, changes in industry_data.items():
+            change_idx = 0
+            current_stocks: List[str] = []
+
+            for target_date in sorted_dates:
+                while change_idx < len(changes) and changes[change_idx][0] <= target_date:
+                    current_stocks = changes[change_idx][1]
+                    change_idx += 1
+
+                if current_stocks:
+                    if target_date not in date_to_mapping:
+                        date_to_mapping[target_date] = {}
+                    for stock in current_stocks:
+                        date_to_mapping[target_date][stock] = industry
+
+        sorted_dates_with_mapping = sorted(date_to_mapping.keys())
+        self._preloaded_dates = sorted_dates_with_mapping
+        self._preloaded_mappings = [date_to_mapping[d] for d in sorted_dates_with_mapping]
+
+        self.logger.info(f"预加载行业数据: {len(industry_data)} 个行业, "
+                         f"{len(sorted_dates_with_mapping)} 个变更日期, "
+                         f"日期范围 {sorted_dates_with_mapping[0].strftime('%Y-%m-%d')} ~ "
+                         f"{sorted_dates_with_mapping[-1].strftime('%Y-%m-%d')}")
+        return True
+
+    def get_industry_mapping_fast(self, date: str) -> Dict[str, str]:
+        """快速获取指定日期的股票→行业映射（使用预加载的内存数据）
+
+        通过 bisect 二分查找定位日期，O(logN) 复杂度。
+        如果未预加载，自动回退到 get_industry_mapping()。
+
+        Args:
+            date: 日期，格式 'YYYY-MM-DD'
+
+        Returns:
+            { stock_code: industry_name, ... }
+        """
+        if self._preloaded_dates is None:
+            stock_list = []
+            for industry in self.SW1_INDUSTRIES:
+                stocks = self.get_industry_stocks(industry, date)
+                stock_list.extend(stocks)
+            return self.get_industry_mapping(stock_list, date)
+
+        target_date = pd.Timestamp(date)
+        idx = bisect_right(self._preloaded_dates, target_date)
+        if idx == 0:
+            return {}
+
+        return self._preloaded_mappings[idx - 1]
+
+    def get_industry_fast(self, stock_code: str, date: str) -> Optional[str]:
+        """快速获取指定日期的单只股票行业分类
+
+        Args:
+            stock_code: 股票代码
+            date: 日期，格式 'YYYY-MM-DD'
+
+        Returns:
+            行业名称，无数据返回None
+        """
+        mapping = self.get_industry_mapping_fast(date)
+        return mapping.get(stock_code)
+
     def get_industry_stocks(self, industry: str, date: str) -> List[str]:
         """获取指定日期的某行业成分股
 
@@ -122,6 +229,8 @@ class IndustryConstituentManager:
                     if updated:
                         csv_key = self._csv_key(industry)
                         self._cache.pop(csv_key, None)
+                        self._preloaded_dates = None
+                        self._preloaded_mappings = None
                         df = self._load_csv(industry)
                         if df is not None:
                             mask = df['date'] <= target_date
@@ -134,6 +243,8 @@ class IndustryConstituentManager:
         if updated:
             csv_key = self._csv_key(industry)
             self._cache.pop(csv_key, None)
+            self._preloaded_dates = None
+            self._preloaded_mappings = None
             df = self._load_csv(industry)
             if df is not None and not df.empty:
                 mask = df['date'] <= target_date
@@ -183,6 +294,15 @@ class IndustryConstituentManager:
         if date is None:
             date = datetime.now().strftime('%Y-%m-%d')
 
+        if self._preloaded_dates is not None:
+            mapping = self.get_industry_mapping_fast(date)
+            result: Dict[str, List[str]] = {}
+            for stock, industry in mapping.items():
+                if industry not in result:
+                    result[industry] = []
+                result[industry].append(stock)
+            return result
+
         result: Dict[str, List[str]] = {}
         for industry in self.SW1_INDUSTRIES:
             stocks = self.get_industry_stocks(industry, date)
@@ -193,11 +313,6 @@ class IndustryConstituentManager:
 
     def _try_update_from_qmt(self, industry: str, date: str,
                               existing_df: Optional[pd.DataFrame] = None) -> bool:
-        """尝试从QMT获取最新行业成分股并更新CSV文件
-
-        Returns:
-            是否更新了CSV文件
-        """
         if not self.xtdata:
             self.logger.debug(f"QMT不可用，无法更新 {industry} 行业成分股")
             return False

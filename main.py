@@ -65,7 +65,7 @@ def _init_virtual_book_from_account(api: QMTAPI, book: VirtualBook):
         if positions:
             for pos in positions:
                 symbol = getattr(pos, 'stock_code', str(pos))
-                volume = getattr(pos, 'volume', 0)
+                volume = api.trader.get_position_volume(pos)
                 if volume > 0:
                     actual_positions[symbol] = volume
         account = api.trader.get_account()
@@ -78,7 +78,7 @@ def _init_virtual_book_from_account(api: QMTAPI, book: VirtualBook):
 
 def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
                  start_date=None, end_date=None, proxy='', ai_mode=False,
-                 no_record=False):
+                 no_record=False, slippage=None):
     """运行回测"""
     _setup_debug_logging()
     log_file = Logger.setup_global_file_handler(strategy_name)
@@ -98,6 +98,8 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
         config['start_date'] = start_date
     if end_date:
         config['end_date'] = end_date
+    if slippage is not None:
+        config['slippage'] = slippage
 
     pool = backtest_config.get('pool', pool)
 
@@ -242,6 +244,8 @@ def main():
     # 回测记录
     parser.add_argument('--no-record', action='store_true', default=False,
                         help='禁用回测结果自动记录到本地文件')
+    parser.add_argument('--slippage', type=float, default=None,
+                        help='滑点百分比，如0.001表示0.1%，不传则使用策略默认值')
 
     args = parser.parse_args()
 
@@ -254,7 +258,7 @@ def main():
         cache_manager.configure(cache_dir=args.cache_dir, mem_limit=args.mem_limit)
 
     if args.mode == 'backtest':
-        run_backtest(args.strategy, args.period, args.pool, args.start, args.end, args.proxy, args.ai_mode, args.no_record)
+        run_backtest(args.strategy, args.period, args.pool, args.start, args.end, args.proxy, args.ai_mode, args.no_record, args.slippage)
     elif args.mode == 'sim':
         run_sim_trade(args.strategy, args.qmt_path, args.account)
     elif args.mode == 'real':

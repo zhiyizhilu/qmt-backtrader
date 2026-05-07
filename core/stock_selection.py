@@ -170,6 +170,13 @@ class StockSelectionStrategy(StrategyLogic):
 
     def _execute_rebalance(self, current_date: dt_module.date):
         """执行调仓操作"""
+        # 调仓前预加载股票池的快照数据（QMTLiveDataAdapter 按需获取模式）
+        if self._data_adapter and hasattr(self._data_adapter, 'preload_tick_data'):
+            pool = self.get_stock_pool()
+            self._data_adapter.invalidate_kline_cache()
+            self._data_adapter.preload_tick_data(pool)
+            self.log(f'调仓日预加载: {len(pool)} 只股票快照数据')
+
         target_stocks = self.select_stocks()
 
         if not target_stocks:
@@ -239,16 +246,26 @@ class StockSelectionStrategy(StrategyLogic):
             pos_size = self._current_holdings.get(symbol, 0)
             if pos_size > 0:
                 price = self.get_current_price(symbol)
-                if price and price > 0:
-                    self.sell(symbol, price, pos_size)
-                    sell_value = price * pos_size
-                    self.log(
-                        f'调仓卖出(清仓): {symbol}, '
-                        f'数量: {pos_size}, 价格: {price:.2f}, 市值: {sell_value:.0f}'
-                    )
-                    has_sells = True
-                    pending_sell_symbols.add(symbol)
-            del self._current_holdings[symbol]
+                if not price or price <= 0:
+                    self.log(f'调仓跳过卖出(无数据): {symbol}, 将在后续调仓处理')
+                    continue
+                if self.is_suspended(symbol):
+                    self.log(f'调仓跳过卖出(停牌): {symbol}, 将在后续调仓处理')
+                    continue
+                if self.is_limit_down(symbol):
+                    self.log(f'调仓跳过卖出(跌停): {symbol}, 将在后续调仓处理')
+                    continue
+                self.sell(symbol, price, pos_size)
+                sell_value = price * pos_size
+                self.log(
+                    f'调仓卖出(清仓): {symbol}, '
+                    f'数量: {pos_size}, 价格: {price:.2f}, 市值: {sell_value:.0f}'
+                )
+                has_sells = True
+                pending_sell_symbols.add(symbol)
+                del self._current_holdings[symbol]
+            else:
+                del self._current_holdings[symbol]
 
         for symbol in hold_symbols:
             pos_size = self._current_holdings.get(symbol, 0)
@@ -260,15 +277,18 @@ class StockSelectionStrategy(StrategyLogic):
                         excess_value = current_value - per_stock_target
                         sell_volume = int(excess_value / price / 100) * 100
                         if sell_volume >= 100:
-                            self.sell(symbol, price, sell_volume)
-                            self._current_holdings[symbol] = pos_size - sell_volume
-                            self.log(
-                                f'调仓卖出(减仓): {symbol}, '
-                                f'卖出: {sell_volume}, 剩余: {pos_size - sell_volume}, '
-                                f'价格: {price:.2f}'
-                            )
-                            has_sells = True
-                            pending_sell_symbols.add(symbol)
+                            if self.is_limit_down(symbol):
+                                self.log(f'调仓跳过减仓(跌停): {symbol}')
+                            else:
+                                self.sell(symbol, price, sell_volume)
+                                self._current_holdings[symbol] = pos_size - sell_volume
+                                self.log(
+                                    f'调仓卖出(减仓): {symbol}, '
+                                    f'卖出: {sell_volume}, 剩余: {pos_size - sell_volume}, '
+                                    f'价格: {price:.2f}'
+                                )
+                                has_sells = True
+                                pending_sell_symbols.add(symbol)
                         else:
                             self.log(
                                 f'调仓跳过(超出不足1手): {symbol}, 超出: {excess_value:.0f}'
@@ -300,15 +320,26 @@ class StockSelectionStrategy(StrategyLogic):
 
         tradeable_symbols = []
         skipped_symbols = []
+        skip_reasons = {}
         for symbol in target_stocks:
             price = self.get_current_price(symbol)
-            if price is not None and price > 0:
-                tradeable_symbols.append(symbol)
-            else:
+            if price is None or price <= 0:
                 skipped_symbols.append(symbol)
+                skip_reasons[symbol] = '无数据'
+                continue
+            if self.is_suspended(symbol):
+                skipped_symbols.append(symbol)
+                skip_reasons[symbol] = '停牌'
+                continue
+            if self.is_limit_up(symbol):
+                skipped_symbols.append(symbol)
+                skip_reasons[symbol] = '涨停'
+                continue
+            tradeable_symbols.append(symbol)
 
         if skipped_symbols:
-            self.log(f'调仓跳过无数据股票: {skipped_symbols}')
+            reason_str = ', '.join(f'{s}({skip_reasons.get(s, "")})' for s in skipped_symbols)
+            self.log(f'调仓跳过不可交易股票: {reason_str}')
 
         if not tradeable_symbols:
             self._rebalance_phase = self.PHASE_IDLE
@@ -362,13 +393,23 @@ class StockSelectionStrategy(StrategyLogic):
         self._current_holdings = synced
 
     def _sell_all(self):
-        """卖出所有持仓"""
+        unsold = {}
         for symbol, pos_size in list(self._current_holdings.items()):
             if pos_size > 0:
                 price = self.get_current_price(symbol)
-                if price and price > 0:
-                    self.sell(symbol, price, pos_size)
-        self._current_holdings.clear()
+                if not price or price <= 0:
+                    unsold[symbol] = pos_size
+                    continue
+                if self.is_suspended(symbol):
+                    self.log(f'清仓跳过(停牌): {symbol}')
+                    unsold[symbol] = pos_size
+                    continue
+                if self.is_limit_down(symbol):
+                    self.log(f'清仓跳过(跌停): {symbol}')
+                    unsold[symbol] = pos_size
+                    continue
+                self.sell(symbol, price, pos_size)
+        self._current_holdings = unsold
 
     def get_current_holdings(self) -> Dict[str, int]:
         """获取当前持仓"""
@@ -385,8 +426,14 @@ class StockSelectionStrategy(StrategyLogic):
     def get_stock_pool(self) -> List[str]:
         """获取股票池
 
-        优先使用参数中指定的股票池，否则从财务数据缓存获取
+        优先根据当前回测日期动态获取当日指数成分股（避免幸存者偏差），
+        其次使用参数中指定的股票池，最后从财务数据缓存获取
         """
+        if self._financial_data_adapter:
+            date_pool = self._financial_data_adapter.get_stock_pool_for_date()
+            if date_pool:
+                return date_pool
+
         pool = getattr(self.params, 'stock_pool', None)
         if pool:
             return pool

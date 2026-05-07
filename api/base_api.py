@@ -21,6 +21,10 @@ class BaseAPI(ABC):
     def set_commission(self, commission: float):
         """设置佣金"""
         pass
+
+    def set_slippage(self, slippage: float):
+        """设置滑点（百分比，如0.001表示0.1%）"""
+        pass
     
     def add_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d"):
         """添加数据"""

@@ -79,12 +79,15 @@ class HighDividendStrategy(StockSelectionStrategy):
         debug_logged = 0
         missing_count = 0
 
+        # 批量获取财务数据，避免N+1查询
+        fields = ['du_return_on_equity', 'inc_net_profit_rate', 's_fa_ocfps']
+        batch_data = self.get_financial_fields_batch(pool, 'Pershareindex', fields)
+
         for stock in pool:
-            roe = self.get_financial_field(stock, 'Pershareindex', 'du_return_on_equity')
-            profit_growth = self.get_financial_field(
-                stock, 'Pershareindex', 'inc_net_profit_rate'
-            )
-            ocf = self.get_financial_field(stock, 'Pershareindex', 's_fa_ocfps')
+            stock_data = batch_data.get(stock, {})
+            roe = stock_data.get('du_return_on_equity')
+            profit_growth = stock_data.get('inc_net_profit_rate')
+            ocf = stock_data.get('s_fa_ocfps')
 
             self.log(f'  {stock} ROE={roe}% 归母净利润增速={profit_growth}% 经营现金流={ocf}')
 

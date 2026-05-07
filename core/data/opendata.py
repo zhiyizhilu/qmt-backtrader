@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 import hashlib
@@ -72,6 +73,7 @@ class OpenDataProcessor(DataProcessor):
             logging.getLogger(__name__).warning("akshare not installed, pip install akshare")
         self._fallback_to_simulated = fallback_to_simulated
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
+        self._raw_fetcher = OpenDataProcessor_Raw(self)
 
     @smart_cache(cache_type='market', incremental=True)
     def get_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> pd.DataFrame:
@@ -197,25 +199,12 @@ class OpenDataProcessor(DataProcessor):
         if not self._ak:
             return ['000001.SZ', '000002.SZ', '600000.SH', '600036.SH']
 
-        # 构造缓存key
-        cache_key = f"stock_list_{sector}"
-        namespace = 'OpenDataProcessor_Sector'
-
-        # 尝试从缓存读取
-        cached = cache_manager.disk_cache.get(namespace, cache_key, 'pickle')
-        if cached is not None:
-            self.logger.info(f"从缓存加载成分股列表: {sector}, 共 {len(cached)} 只")
-            return cached
-
         try:
             result = self._fetch_stock_list(sector)
 
             if not result:
                 result = ['000001.SZ', '000002.SZ', '600000.SH', '600036.SH']
 
-            # 保存到缓存
-            cache_manager.disk_cache.put(namespace, cache_key, result, 'pickle')
-            self.logger.info(f"成分股列表已缓存: {sector}, 共 {len(result)} 只")
             return result
         except Exception as e:
             self.logger.warning(f"AKShare获取板块成分股失败: {e}")
@@ -973,34 +962,17 @@ class OpenDataProcessor(DataProcessor):
         if not self._ak:
             return {}
 
-        # 构造缓存key
-        pool_hash = hashlib.md5(','.join(sorted(stock_pool)).encode()).hexdigest()[:8] if stock_pool else 'all'
-        cache_key = f"industry_mapping_level{level}_{pool_hash}"
-        namespace = 'OpenDataProcessor_Industry'
-
-        # 尝试从缓存读取
-        cached = cache_manager.disk_cache.get(namespace, cache_key, 'pickle')
-        if cached is not None:
-            self.logger.info(f"从缓存加载行业映射数据: level={level}, 共 {len(cached)} 只股票")
-            return cached
-
-        # 尝试申万行业分类（主方法，稳定性高）
         try:
             industry_map = self._get_industry_mapping_sw_all(level, stock_pool)
             if industry_map:
-                cache_manager.disk_cache.put(namespace, cache_key, industry_map, 'pickle')
-                self.logger.info(f"行业映射数据已缓存(申万): level={level}, 共 {len(industry_map)} 只股票")
                 return industry_map
         except Exception as e:
             self.logger.debug(f"申万行业分类获取失败: {e}")
 
-        # 备选：东方财富行业板块
         try:
             self.logger.info("尝试东方财富行业板块获取...")
             industry_map = self._get_industry_mapping_by_em_sector(stock_pool)
             if industry_map:
-                cache_manager.disk_cache.put(namespace, cache_key, industry_map, 'pickle')
-                self.logger.info(f"行业映射数据已缓存(东财): level={level}, 共 {len(industry_map)} 只股票")
                 return industry_map
         except Exception as e:
             self.logger.debug(f"东方财富行业板块获取失败: {e}")
@@ -1153,18 +1125,6 @@ class OpenDataProcessor(DataProcessor):
 
         target_date = pd.Timestamp(date)
 
-        # 构造缓存key
-        sorted_stocks = sorted(stock_list)
-        stocks_hash = hashlib.md5(','.join(sorted_stocks).encode()).hexdigest()[:8]
-        cache_key = f"hist_industry_{classification}_{date}_{stocks_hash}"
-        namespace = 'OpenDataProcessor_Industry'
-
-        # 尝试从缓存读取
-        cached = cache_manager.disk_cache.get(namespace, cache_key, 'pickle')
-        if cached is not None:
-            self.logger.info(f"从缓存加载历史行业数据: date={date}, 共 {len(cached)} 只股票")
-            return cached
-
         industry_map = {}
         total = len(stock_list)
 
@@ -1222,9 +1182,7 @@ class OpenDataProcessor(DataProcessor):
                 continue
 
         if industry_map:
-            # 保存到缓存
-            cache_manager.disk_cache.put(namespace, cache_key, industry_map, 'pickle')
-            self.logger.info(f"历史行业数据已缓存: date={date}, 共 {len(industry_map)} 只股票")
+            self.logger.info(f"历史行业数据获取完成: date={date}, 共 {len(industry_map)} 只股票")
         else:
             self.logger.warning(f"未获取到任何历史行业数据: date={date}")
 
@@ -1309,3 +1267,182 @@ class OpenDataProcessor(DataProcessor):
             'volume': rng.integers(10000, 100000, len(date_range)),
         }, index=date_range)
         return self.preprocess_data(df)
+
+    def get_raw_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> pd.DataFrame:
+        """获取不复权行情数据，用于股息率等需要实际价格的计算
+
+        与 get_data() 使用后复权数据不同，此方法获取不复权数据，
+        独立缓存于 market_raw 命名空间，与后复权缓存互不干扰。
+        """
+        return self._raw_fetcher.get_data(symbol, start_date, end_date, period, **kwargs)
+
+
+class OpenDataProcessor_Raw:
+    """不复权行情数据获取器（OpenData 数据源）
+
+    类名 OpenDataProcessor_Raw 会被 smart_cache 装饰器用作命名空间，
+    映射到 .cache/OpenData/market_raw/ 目录，与后复权缓存完全隔离。
+    """
+
+    def __init__(self, processor: OpenDataProcessor):
+        self._processor = processor
+
+    @smart_cache(cache_type='market', incremental=True)
+    def get_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> pd.DataFrame:
+        """获取不复权行情数据"""
+        if not self._processor._ak:
+            if self._processor._fallback_to_simulated:
+                return self._processor._generate_simulated_data(start_date, end_date, symbol)
+            raise RuntimeError("akshare 未安装，请 pip install akshare")
+
+        df = self._get_raw_data_from_tx(symbol, start_date, end_date)
+        if df is not None and not df.empty:
+            return self._processor._process_akshare_data(df, symbol, start_date, end_date)
+
+        if self._processor._fallback_to_simulated:
+            return self._processor._generate_simulated_data(start_date, end_date, symbol)
+        raise ValueError(f"{symbol} 在 {start_date} 到 {end_date} 期间没有不复权数据")
+
+    def _get_raw_data_from_tx(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
+        """从腾讯财经获取不复权数据"""
+        try:
+            if '.' in symbol:
+                code, suffix = symbol.split('.')
+                tx_symbol = f"{suffix.lower()}{code}"
+            else:
+                tx_symbol = symbol
+
+            df = self._processor._ak.stock_zh_a_hist_tx(symbol=tx_symbol, start_date=start_date, end_date=end_date, adjust='')
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            self._processor.logger.debug(f"腾讯财经不复权接口失败: {e}")
+        return None
+
+
+_QVIX_FUNCS = {
+    '510500.SH': 'index_option_500etf_qvix',
+    '510050.SH': 'index_option_50etf_qvix',
+    '510300.SH': 'index_option_300etf_qvix',
+    '510880.SH': 'index_option_50etf_qvix',
+    '000852.XSHG': 'index_option_1000index_qvix',
+}
+
+_QVIX_CACHE_MAX_AGE = 4 * 3600
+
+
+def _get_qvix_cache_dir() -> str:
+    base = os.environ.get('QMT_CACHE_DIR', os.path.join(os.getcwd(), '.cache'))
+    cache_dir = os.path.join(base, 'OpenData', 'vix')
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
+def _get_qvix_cache_path(symbol: str) -> str:
+    return os.path.join(_get_qvix_cache_dir(), f'QVIX_{symbol}.parquet')
+
+
+def _is_qvix_cache_valid(cache_path: str) -> bool:
+    if not os.path.exists(cache_path):
+        return False
+    mtime = os.path.getmtime(cache_path)
+    return (time.time() - mtime) < _QVIX_CACHE_MAX_AGE
+
+
+def _load_qvix_from_cache(symbol: str) -> Optional[pd.DataFrame]:
+    cache_path = _get_qvix_cache_path(symbol)
+    if not _is_qvix_cache_valid(cache_path):
+        return None
+    try:
+        df = pd.read_parquet(cache_path)
+        if df.empty:
+            return None
+        df['date'] = pd.to_datetime(df['date'])
+        logging.getLogger(__name__).info(f"QVIX缓存命中: {cache_path}, 数据{len(df)}行")
+        return df
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"QVIX缓存读取失败: {cache_path}, {e}")
+        return None
+
+
+def _save_qvix_to_cache(symbol: str, df: pd.DataFrame):
+    cache_path = _get_qvix_cache_path(symbol)
+    try:
+        save_df = df.copy()
+        save_df['date'] = save_df['date'].astype(str)
+        save_df.to_parquet(cache_path, index=False)
+        logging.getLogger(__name__).info(f"QVIX数据已缓存: {cache_path}, {len(df)}行")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"QVIX缓存写入失败: {cache_path}, {e}")
+
+
+def get_qvix_data(symbol: str = '510500.SH') -> Optional[pd.DataFrame]:
+    """获取 QVIX 隐含波动率数据
+
+    数据来源：期权论坛 (http://1.optbbs.com/s/vix.shtml)，通过 akshare 接口获取。
+    QVIX 是基于期权价格计算的隐含波动率指数，收盘后产生。
+
+    缓存策略：
+    - 缓存路径: .cache/OpenData/vix/QVIX_{symbol}.parquet
+    - 缓存有效期: 4小时
+    - Parquet 格式: 列 [date, vix], date 为日期字符串, vix 为 float64
+
+    支持的标的：
+    - 510500.SH → 中证500ETF 期权 QVIX
+    - 510050.SH → 上证50ETF 期权 QVIX
+    - 510300.SH → 沪深300ETF 期权 QVIX
+    - 510880.SH → 上证50ETF 期权 QVIX
+    - 000852.XSHG → 中证1000指数期权 QVIX
+
+    Args:
+        symbol: 标的代码
+
+    Returns:
+        包含 date 和 vix 列的 DataFrame，获取失败返回 None
+    """
+    cached = _load_qvix_from_cache(symbol)
+    if cached is not None:
+        return cached
+
+    try:
+        import akshare as ak
+    except ImportError:
+        logging.getLogger(__name__).error("akshare 未安装，无法获取 QVIX 数据")
+        return None
+
+    func_name = _QVIX_FUNCS.get(symbol)
+    if func_name is None:
+        func_name = 'index_option_500etf_qvix'
+
+    try:
+        func = getattr(ak, func_name)
+        qvix_df = func()
+
+        qvix_df = qvix_df.copy()
+        qvix_df['date'] = pd.to_datetime(qvix_df['date'], errors='coerce')
+        qvix_df['close'] = pd.to_numeric(qvix_df['close'], errors='coerce')
+        qvix_df = qvix_df.dropna(subset=['date', 'close'])
+        qvix_df = qvix_df.sort_values('date').reset_index(drop=True)
+
+        if qvix_df.empty:
+            logging.getLogger(__name__).warning(f"akshare QVIX 数据为空: {func_name}")
+            return None
+
+        result = pd.DataFrame({
+            'date': qvix_df['date'],
+            'vix': qvix_df['close']
+        })
+
+        _save_qvix_to_cache(symbol, result)
+
+        logging.getLogger(__name__).info(
+            f"QVIX 数据获取成功: {func_name}, "
+            f"有效数据 {len(result)} 行, "
+            f"日期范围 {result['date'].min().strftime('%Y-%m-%d')} ~ "
+            f"{result['date'].max().strftime('%Y-%m-%d')}"
+        )
+        return result
+
+    except Exception as e:
+        logging.getLogger(__name__).error(f"QVIX 数据获取失败: {func_name}, 错误: {e}")
+        return None
