@@ -398,6 +398,20 @@ class StrategyLogic:
             return self._data_adapter.get_close_prices(symbol, period)
         return []
 
+    def get_ohlcv_data(self, symbol: str, period: int = None) -> List[Dict[str, float]]:
+        """获取指定标的的OHLCV数据序列
+
+        Args:
+            symbol: 标的代码
+            period: 获取的周期数，None表示全部
+
+        Returns:
+            [{'open': ..., 'high': ..., 'low': ..., 'close': ..., 'volume': ...}, ...]
+        """
+        if self._data_adapter and hasattr(self._data_adapter, 'get_ohlcv_data'):
+            return self._data_adapter.get_ohlcv_data(symbol, period)
+        return []
+
     def get_current_date(self) -> Optional[Any]:
         """获取当前日期"""
         if self._data_adapter:

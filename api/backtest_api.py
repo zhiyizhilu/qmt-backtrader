@@ -244,7 +244,7 @@ class BacktestAPI(BaseAPI):
         try:
             data = self._opendata_processor.get_data(symbol, start_date, end_date, period)
             if data is not None and not data.empty:
-                self.logger.debug(f'[add_data] {symbol}: 使用OpenData后复权数据')
+                pass
         except Exception as e:
             self.logger.warning(f'[add_data] {symbol}: OpenData获取失败({e})，降级使用QMT数据')
 
@@ -299,11 +299,6 @@ class BacktestAPI(BaseAPI):
 
             self.cerebro.adddata(bt_data, name=symbol)
             self._symbols.append(symbol)
-            self.logger.debug(
-                f'[add_data] {symbol}: 加载成功, {len(data)}行, '
-                f'日期范围={data.index[0]}~{data.index[-1]}, '
-                f'列={list(data.columns)}'
-            )
         else:
             self.logger.warning(f'[add_data] {symbol}: 数据为空! start={start_date}, end={end_date}, period={period}')
 
@@ -596,6 +591,7 @@ class BacktestAPI(BaseAPI):
         self._strategy_kwargs = kwargs
 
         import time as _time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         load_start = _time.time()
 
         loaded_count = 0
@@ -605,25 +601,97 @@ class BacktestAPI(BaseAPI):
 
         self.logger.info(f"开始加载股票池行情数据: {total} 只股票, 周期={self._period}")
 
-        for i, symbol in enumerate(pool, 1):
-            if symbol not in self._symbols:
+        symbols_to_load = [s for s in pool if s not in self._symbols]
+        skipped_count = total - len(symbols_to_load)
+
+        def _fetch_market_data(symbol):
+            try:
+                data = None
                 try:
-                    self.add_data(symbol, self._data_start_date, self._data_end_date, self._period,
-                                  skip_if_late_start=True)
+                    data = self._opendata_processor.get_data(symbol, self._data_start_date, self._data_end_date, self._period)
+                except Exception:
+                    pass
+                if data is None or (hasattr(data, 'empty') and data.empty):
+                    data = self.data_processor.get_data(symbol, self._data_start_date, self._data_end_date, self._period)
+                return (symbol, data, None)
+            except Exception as e:
+                return (symbol, None, e)
+
+        if symbols_to_load:
+            max_workers = min(8, len(symbols_to_load))
+            data_results = {}
+            fetch_errors = {}
+
+            if max_workers <= 1 or len(symbols_to_load) <= 10:
+                for i, symbol in enumerate(symbols_to_load, 1):
+                    sym, data, err = _fetch_market_data(symbol)
+                    if err:
+                        fetch_errors[sym] = err
+                    else:
+                        data_results[sym] = data
+                    if i % 100 == 0 or i == len(symbols_to_load):
+                        self.logger.info(f"[ {i} / {len(symbols_to_load)} ] 行情数据获取进度")
+            else:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(_fetch_market_data, s): s for s in symbols_to_load}
+                    done_count = 0
+                    for future in as_completed(futures):
+                        sym, data, err = future.result()
+                        if err:
+                            fetch_errors[sym] = err
+                        else:
+                            data_results[sym] = data
+                        done_count += 1
+                        if done_count % 100 == 0 or done_count == len(symbols_to_load):
+                            self.logger.info(f"[ {done_count} / {len(symbols_to_load)} ] 行情数据获取进度")
+
+            import numpy as np
+            for symbol in symbols_to_load:
+                if symbol in fetch_errors:
+                    failed_count += 1
+                    if failed_count <= 3:
+                        self.logger.debug(f"加载 {symbol} 行情数据失败: {fetch_errors[symbol]}")
+                    continue
+
+                data = data_results.get(symbol)
+                if data is None or (hasattr(data, 'empty') and data.empty):
+                    failed_count += 1
+                    continue
+
+                try:
+                    actual_start = data.index[0]
+                    if hasattr(actual_start, 'strftime'):
+                        actual_start_str = actual_start.strftime('%Y-%m-%d')
+                    else:
+                        actual_start_str = str(actual_start)[:10]
+
+                    if actual_start_str > self._data_start_date:
+                        try:
+                            fill_start_dt = pd.to_datetime(self._data_start_date)
+                            fill_end_dt = pd.to_datetime(actual_start_str) - pd.Timedelta(days=1)
+                            if fill_start_dt <= fill_end_dt:
+                                fill_dates = pd.bdate_range(start=fill_start_dt, end=fill_end_dt)
+                                if len(fill_dates) > 0:
+                                    fill_rows = pd.DataFrame(
+                                        np.nan, index=fill_dates, columns=data.columns
+                                    )
+                                    data = pd.concat([fill_rows, data])
+                        except Exception:
+                            pass
+
+                    bt_data = bt.feeds.PandasData(
+                        dataname=data,
+                        datetime='datetime' if 'datetime' in data.columns else None,
+                        open='open', high='high', low='low', close='close', volume='volume',
+                        openinterest='openinterest' if 'openinterest' in data.columns else -1
+                    )
+                    self.cerebro.adddata(bt_data, name=symbol)
+                    self._symbols.append(symbol)
                     loaded_count += 1
-                    if i % 20 == 0 or i == total:
-                        elapsed = _time.time() - load_start
-                        self.logger.info(
-                            f"[ {i} / {total} ] 行情加载进度: "
-                            f"{loaded_count} 已加载, {failed_count} 失败, "
-                            f"{skipped_count} 已存在, 耗时 {elapsed:.1f}秒"
-                        )
                 except Exception as e:
                     failed_count += 1
-                    if failed_count <= 5:
-                        self.logger.debug(f"加载 {symbol} 行情数据失败: {e}")
-            else:
-                skipped_count += 1
+                    if failed_count <= 3:
+                        self.logger.debug(f"注册 {symbol} 数据源失败: {e}")
 
         load_elapsed = _time.time() - load_start
         self.logger.info(
@@ -637,20 +705,102 @@ class BacktestAPI(BaseAPI):
             self.logger.info(
                 f"预加载财务数据到内存: {len(pool)} 只股票, 表={strategy_tables}"
             )
+
+            raw_download_future = None
+            if self._opendata_processor:
+                raw_executor = ThreadPoolExecutor(max_workers=1)
+
+                def _download_raw_data():
+                    raw_start = _time.time()
+                    raw_loaded = 0
+                    raw_skipped = 0
+                    raw_nodata = 0
+
+                    from core.cache import cache_manager as _cm
+                    idx = _cm.index_manager
+
+                    symbols_to_fetch = []
+                    for symbol in pool:
+                        if idx.is_market_raw_nodata(symbol, self._period):
+                            raw_nodata += 1
+                            continue
+                        symbols_to_fetch.append(symbol)
+
+                    if raw_nodata > 0:
+                        self.logger.info(
+                            f"不复权行情预下载: 跳过 {raw_nodata} 只无数据股票(黑名单), "
+                            f"剩余 {len(symbols_to_fetch)} 只待下载"
+                        )
+
+                    for i, symbol in enumerate(symbols_to_fetch, 1):
+                        try:
+                            df = self._opendata_processor.get_raw_data(
+                                symbol, self._data_start_date, self._data_end_date, self._period
+                            )
+                            if df is not None and not df.empty:
+                                raw_loaded += 1
+                            else:
+                                raw_skipped += 1
+                                idx.mark_market_raw_nodata(symbol, self._period)
+                        except Exception:
+                            raw_skipped += 1
+                            idx.mark_market_raw_nodata(symbol, self._period)
+                        if i % 100 == 0 or i == len(symbols_to_fetch):
+                            self.logger.info(f"[ {i} / {len(symbols_to_fetch)} ] 不复权行情预下载进度")
+
+                    try:
+                        idx.save_index()
+                    except Exception:
+                        pass
+
+                    raw_elapsed = _time.time() - raw_start
+                    self.logger.info(
+                        f"不复权行情数据预下载完成: {raw_loaded} 已缓存, "
+                        f"{raw_skipped} 跳过, {raw_nodata} 黑名单跳过, 耗时 {raw_elapsed:.1f}秒"
+                    )
+                    return raw_loaded, raw_skipped
+
+                raw_download_future = raw_executor.submit(_download_raw_data)
+                self.logger.info(f"预下载不复权行情数据: {len(pool)} 只股票 (与财务数据预加载并行)")
+
             self._financial_adapter.cache.preload_stocks(pool, strategy_tables)
             preload_elapsed = _time.time() - preload_start
             self.logger.info(
                 f"财务数据预加载完成: {len(pool)} 只股票, 耗时 {preload_elapsed:.1f}秒"
             )
 
-        if self._opendata_processor:
+            if raw_download_future is not None:
+                try:
+                    raw_download_future.result()
+                except Exception as e:
+                    self.logger.warning(f"不复权行情预下载异常: {e}")
+                finally:
+                    raw_executor.shutdown(wait=False)
+
+        elif self._opendata_processor:
             raw_start = _time.time()
             raw_loaded = 0
             raw_skipped = 0
-            self.logger.info(
-                f"预下载不复权行情数据: {len(pool)} 只股票"
-            )
-            for i, symbol in enumerate(pool, 1):
+            raw_nodata = 0
+            self.logger.info(f"预下载不复权行情数据: {len(pool)} 只股票")
+
+            from core.cache import cache_manager as _cm
+            idx = _cm.index_manager
+
+            symbols_to_fetch = []
+            for symbol in pool:
+                if idx.is_market_raw_nodata(symbol, self._period):
+                    raw_nodata += 1
+                    continue
+                symbols_to_fetch.append(symbol)
+
+            if raw_nodata > 0:
+                self.logger.info(
+                    f"不复权行情预下载: 跳过 {raw_nodata} 只无数据股票(黑名单), "
+                    f"剩余 {len(symbols_to_fetch)} 只待下载"
+                )
+
+            for i, symbol in enumerate(symbols_to_fetch, 1):
                 try:
                     df = self._opendata_processor.get_raw_data(
                         symbol, self._data_start_date, self._data_end_date, self._period
@@ -659,17 +809,22 @@ class BacktestAPI(BaseAPI):
                         raw_loaded += 1
                     else:
                         raw_skipped += 1
+                        idx.mark_market_raw_nodata(symbol, self._period)
                 except Exception:
                     raw_skipped += 1
-                if i % 50 == 0 or i == len(pool):
-                    self.logger.info(
-                        f"[ {i} / {len(pool)} ] 不复权行情预下载进度: "
-                        f"{raw_loaded} 已缓存, {raw_skipped} 跳过"
-                    )
+                    idx.mark_market_raw_nodata(symbol, self._period)
+                if i % 100 == 0 or i == len(symbols_to_fetch):
+                    self.logger.info(f"[ {i} / {len(symbols_to_fetch)} ] 不复权行情预下载进度")
+
+            try:
+                idx.save_index()
+            except Exception:
+                pass
+
             raw_elapsed = _time.time() - raw_start
             self.logger.info(
                 f"不复权行情数据预下载完成: {raw_loaded} 已缓存, "
-                f"{raw_skipped} 跳过, 耗时 {raw_elapsed:.1f}秒"
+                f"{raw_skipped} 跳过, {raw_nodata} 黑名单跳过, 耗时 {raw_elapsed:.1f}秒"
             )
 
         self._ensure_default_analyzers()

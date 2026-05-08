@@ -115,19 +115,30 @@ class IndustryConstituentManager:
         industry_data: Dict[str, List[Tuple[pd.Timestamp, List[str]]]] = {}
         all_change_dates: set = set()
 
-        for industry in self.SW1_INDUSTRIES:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _load_industry(industry):
             df = self._load_csv(industry)
             if df is None or df.empty:
-                continue
-
+                return (industry, None)
             changes = []
+            industry_dates = set()
             for _, row in df.iterrows():
                 dt = row['date']
                 codes = row['codes'] if isinstance(row['codes'], list) else []
                 changes.append((dt, codes))
-                all_change_dates.add(dt)
+                industry_dates.add(dt)
+            return (industry, changes, industry_dates)
 
-            industry_data[industry] = changes
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(_load_industry, ind): ind for ind in self.SW1_INDUSTRIES}
+            for future in as_completed(futures):
+                result = future.result()
+                if result[1] is None:
+                    continue
+                industry, changes, industry_dates = result
+                industry_data[industry] = changes
+                all_change_dates.update(industry_dates)
 
         if not all_change_dates:
             self.logger.warning("预加载行业数据: 无可用数据")

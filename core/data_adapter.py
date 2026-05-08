@@ -115,6 +115,18 @@ class MarketDataAdapter(ABC):
     def is_limit_down(self, symbol: str) -> bool:
         return False
 
+    def get_ohlcv_data(self, symbol: str, period: int = None) -> List[Dict[str, float]]:
+        """获取OHLCV数据序列
+
+        Args:
+            symbol: 标的代码
+            period: 获取的周期数，None表示全部
+
+        Returns:
+            [{'open': ..., 'high': ..., 'low': ..., 'close': ..., 'volume': ...}, ...]
+        """
+        return []
+
 
 class BacktraderDataAdapter(MarketDataAdapter):
     """Backtrader数据适配器 - 回测模式下使用
@@ -135,6 +147,7 @@ class BacktraderDataAdapter(MarketDataAdapter):
         self._daily_close_prices: Dict[str, deque] = {}
         self._last_daily_date: Dict[str, Optional[datetime.date]] = {}
         self._current_day_close: Dict[str, Optional[float]] = {}
+        self._ohlcv_data: Dict[str, deque] = {}
 
     def register_data(self, symbol: str, data_feed) -> None:
         """注册标的与数据源的映射"""
@@ -143,6 +156,7 @@ class BacktraderDataAdapter(MarketDataAdapter):
         self._daily_close_prices[symbol] = deque(maxlen=self.MAX_CLOSE_PRICES)
         self._last_daily_date[symbol] = None
         self._current_day_close[symbol] = None
+        self._ohlcv_data[symbol] = deque(maxlen=self.MAX_CLOSE_PRICES)
 
     @property
     def period(self) -> str:
@@ -162,7 +176,6 @@ class BacktraderDataAdapter(MarketDataAdapter):
         for symbol, data_feed in self._symbol_data_map.items():
             close = data_feed.close[0]
 
-            # 跳过 NaN 数据（前置填充行），不加入收盘价队列
             if math.isnan(close):
                 continue
 
@@ -170,6 +183,18 @@ class BacktraderDataAdapter(MarketDataAdapter):
 
             if self._is_daily():
                 self._daily_close_prices[symbol].append(close)
+                o = data_feed.open[0]
+                h = data_feed.high[0]
+                l = data_feed.low[0]
+                v = data_feed.volume[0]
+                if not (math.isnan(o) or math.isnan(h) or math.isnan(l)):
+                    self._ohlcv_data[symbol].append({
+                        'open': o,
+                        'high': h,
+                        'low': l,
+                        'close': close,
+                        'volume': 0.0 if (isinstance(v, float) and math.isnan(v)) else float(v),
+                    })
             else:
                 current_date = data_feed.datetime.date(0)
                 if self._last_daily_date[symbol] != current_date:
@@ -272,6 +297,12 @@ class BacktraderDataAdapter(MarketDataAdapter):
         limit_ratio = get_limit_ratio(symbol)
         limit_price = round(prev_close * (1 - limit_ratio), 2)
         return close <= limit_price + 0.005
+
+    def get_ohlcv_data(self, symbol: str, period: int = None) -> List[Dict[str, float]]:
+        data_list = list(self._ohlcv_data.get(symbol, []))
+        if period is not None:
+            return data_list[-period:] if len(data_list) >= period else data_list
+        return data_list
 
 
 class LiveDataAdapter(MarketDataAdapter):
@@ -486,3 +517,29 @@ class QMTLiveDataAdapter(MarketDataAdapter):
             self._logger.info(f"预加载完成: {len(self._tick_cache)} 只股票快照数据")
         except Exception as e:
             self._logger.warning(f"预加载tick数据失败: {e}")
+
+    def get_ohlcv_data(self, symbol: str, period: int = None) -> List[Dict[str, float]]:
+        if not self._data_processor:
+            return []
+        try:
+            end_date = datetime.datetime.now().strftime('%Y-%m-%d')
+            lookback = max(period or 60, 60) + 10
+            start_date = (datetime.datetime.now() - datetime.timedelta(days=lookback)).strftime('%Y-%m-%d')
+            data = self._data_processor.get_data(symbol, start_date, end_date)
+            if data is None or data.empty:
+                return []
+            result = []
+            for _, row in data.iterrows():
+                result.append({
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': float(row.get('volume', 0)),
+                })
+            if period is not None:
+                return result[-period:] if len(result) >= period else result
+            return result
+        except Exception as e:
+            self._logger.warning(f"获取OHLCV数据失败 {symbol}: {e}")
+            return []

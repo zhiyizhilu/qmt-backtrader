@@ -104,6 +104,14 @@ class FinancialDataCache:
             self.logger.debug(f"[加载跳过] {stock_code}.{table_name} 已尝试加载，状态: {loaded_status}")
             return
 
+        from core.cache import cache_manager
+        if cache_manager.index_manager.is_financial_nodata(stock_code, f"{table_name}_{self._report_type}"):
+            self._loaded_tables[(stock_code, table_name)] = False
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
+            self.logger.debug(f"[加载跳过] {stock_code}.{table_name} 已标记为无数据(黑名单)")
+            return
+
         effective_start_time = start_time if start_time else self._start_time
         effective_end_time = end_time if end_time else self._end_time
 
@@ -256,6 +264,12 @@ class FinancialDataCache:
                                 self._data[stock_code] = {}
                             self._data[stock_code][table_name] = df
                             self._loaded_tables[(stock_code, table_name)] = True
+                            try:
+                                from core.cache import cache_manager as _cm
+                                _cm.index_manager.mark_financial_nodata(stock_code, f"{table_name}_{self._report_type}")
+                                _cm.index_manager.save_index()
+                            except Exception:
+                                pass
                             return
                     else:
                         self.logger.debug(f"[加载结果] {stock_code}.{table_name} 不是DataFrame")
@@ -270,13 +284,16 @@ class FinancialDataCache:
             self._loaded_tables[(stock_code, table_name)] = True
             self.logger.debug(f"成功加载数据: {stock_code}.{table_name}")
         else:
-            # 加载失败，标记为失败（使用False而不是True）
-            # 这样后续调用会知道已经尝试过，但失败了
             self._loaded_tables[(stock_code, table_name)] = False
             self.logger.debug(f"数据加载失败，标记为失败: {stock_code}.{table_name}")
-            # 确保股票代码在_data中（即使为空）
             if stock_code not in self._data:
                 self._data[stock_code] = {}
+            try:
+                from core.cache import cache_manager
+                cache_manager.index_manager.mark_financial_nodata(stock_code, f"{table_name}_{self._report_type}")
+                cache_manager.index_manager.save_index()
+            except Exception:
+                pass
 
     def _ensure_datetime_index(self, df: pd.DataFrame,
                                 stock_code: str = '', table_name: str = '') -> pd.DataFrame:
@@ -563,8 +580,7 @@ class FinancialDataCache:
             self.preload_stock(stock_code, tables, extended_start_time, extended_end_time)
             return stock_code
 
-        # 磁盘I/O密集型任务，使用4线程并发
-        max_workers = min(4, len(stock_list))
+        max_workers = min(2, len(stock_list))
         if max_workers <= 1 or len(stock_list) <= 10:
             for stock_code in stock_list:
                 self.preload_stock(stock_code, tables, extended_start_time, extended_end_time)

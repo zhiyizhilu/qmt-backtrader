@@ -64,11 +64,15 @@ class CacheIndexManager:
         self._market_raw_index: Dict[str, Dict[str, Dict]] = {}
         self._financial_index: Dict[str, Dict[str, Dict]] = {}
         self._dividend_checked: Dict[str, str] = {}
+        self._financial_nodata: Dict[str, Dict[str, str]] = {}
+        self._market_raw_nodata: Dict[str, str] = {}
         self._dirty_flags = {
             'market': False,
             'market_raw': False,
             'financial': False,
             'dividend': False,
+            'financial_nodata': False,
+            'market_raw_nodata': False,
         }
         self.load_index()
 
@@ -88,12 +92,22 @@ class CacheIndexManager:
     def dividend_checked_path(self) -> Path:
         return self.cache_dir / 'index' / 'dividend_checked.json'
 
+    @property
+    def financial_nodata_path(self) -> Path:
+        return self.cache_dir / 'index' / 'financial_nodata.json'
+
+    @property
+    def market_raw_nodata_path(self) -> Path:
+        return self.cache_dir / 'index' / 'market_raw_nodata.json'
+
     def load_index(self) -> None:
         for path, attr in [
             (self.market_index_path, '_market_index'),
             (self.market_raw_index_path, '_market_raw_index'),
             (self.financial_index_path, '_financial_index'),
             (self.dividend_checked_path, '_dividend_checked'),
+            (self.financial_nodata_path, '_financial_nodata'),
+            (self.market_raw_nodata_path, '_market_raw_nodata'),
         ]:
             if path.exists():
                 try:
@@ -116,6 +130,10 @@ class CacheIndexManager:
                 files_to_save.append((self.financial_index_path, self._financial_index))
             if self._dirty_flags['dividend']:
                 files_to_save.append((self.dividend_checked_path, self._dividend_checked))
+            if self._dirty_flags['financial_nodata']:
+                files_to_save.append((self.financial_nodata_path, self._financial_nodata))
+            if self._dirty_flags['market_raw_nodata']:
+                files_to_save.append((self.market_raw_nodata_path, self._market_raw_nodata))
 
             for path, data in files_to_save:
                 max_retries = 3
@@ -290,6 +308,43 @@ class CacheIndexManager:
             for stock in stocks:
                 self._dividend_checked[stock] = now
             self._dirty_flags['dividend'] = True
+
+    def mark_financial_nodata(self, symbol: str, table: str) -> None:
+        with self.lock:
+            if symbol not in self._financial_nodata:
+                self._financial_nodata[symbol] = {}
+            self._financial_nodata[symbol][table] = pd.Timestamp.now().strftime('%Y-%m-%dT%H:%M:%S')
+            self._dirty_flags['financial_nodata'] = True
+
+    def is_financial_nodata(self, symbol: str, table: str, max_age_days: int = 7) -> bool:
+        with self.lock:
+            entry = self._financial_nodata.get(symbol, {})
+            check_time = entry.get(table)
+            if not check_time:
+                return False
+            try:
+                check_dt = pd.Timestamp(check_time)
+                return (pd.Timestamp.now() - check_dt).days < max_age_days
+            except Exception:
+                return False
+
+    def mark_market_raw_nodata(self, symbol: str, period: str = '1d') -> None:
+        with self.lock:
+            key = f"{symbol}_{period}"
+            self._market_raw_nodata[key] = pd.Timestamp.now().strftime('%Y-%m-%dT%H:%M:%S')
+            self._dirty_flags['market_raw_nodata'] = True
+
+    def is_market_raw_nodata(self, symbol: str, period: str = '1d', max_age_days: int = 7) -> bool:
+        with self.lock:
+            key = f"{symbol}_{period}"
+            check_time = self._market_raw_nodata.get(key)
+            if not check_time:
+                return False
+            try:
+                check_dt = pd.Timestamp(check_time)
+                return (pd.Timestamp.now() - check_dt).days < max_age_days
+            except Exception:
+                return False
 
     def get_checked_dividend_stocks(self, max_age_days: int = 30) -> set:
         with self.lock:
@@ -1281,8 +1336,11 @@ class SmartCacheManager:
                     cached_frames = []
                 truly_missing = coverage_missing
             else:
-                truly_missing = set(req_years)
-                self.logger.info(f"[{namespace}] {symbol} 缓存数据为空，重新获取: {sorted(truly_missing)}")
+                if missing_years and missing_years == checked_years:
+                    self.logger.info(f"[{namespace}] {symbol} 所有年份已检查且无数据，跳过: {sorted(missing_years)}")
+                else:
+                    truly_missing = set(req_years)
+                    self.logger.info(f"[{namespace}] {symbol} 缓存数据为空，重新获取: {sorted(truly_missing)}")
 
         return cached_frames, truly_missing
 

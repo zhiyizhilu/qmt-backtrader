@@ -76,7 +76,6 @@ class HighDividendStrategy(StockSelectionStrategy):
     def _filter_fundamentals(self, pool: List[str]) -> List[str]:
         """基本面三重过滤：ROE、归母净利润增速、经营现金流"""
         result = []
-        debug_logged = 0
         missing_count = 0
 
         # 批量获取财务数据，避免N+1查询
@@ -88,12 +87,6 @@ class HighDividendStrategy(StockSelectionStrategy):
             roe = stock_data.get('du_return_on_equity')
             profit_growth = stock_data.get('inc_net_profit_rate')
             ocf = stock_data.get('s_fa_ocfps')
-
-            self.log(f'  {stock} ROE={roe}% 归母净利润增速={profit_growth}% 经营现金流={ocf}')
-
-            if debug_logged < 3 and roe is None:
-                self.log(f'[DEBUG] {stock} ROE=None (Pershareindex.du_return_on_equity)')
-                debug_logged += 1
 
             if roe is None and profit_growth is None and ocf is None:
                 missing_count += 1
