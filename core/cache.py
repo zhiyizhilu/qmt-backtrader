@@ -1209,9 +1209,8 @@ class SmartCacheManager:
             return func(*args, **kwargs)
 
         is_raw = namespace.endswith('_Raw')
-        idx = self.index_manager
-
         mem_key = f"{namespace}_market_{symbol}_{period}_{req_start}_{req_end}"
+
         mem_data = self.mem_cache.get(mem_key)
         if mem_data is not None:
             self.stats['mem_hits'] += 1
@@ -1221,6 +1220,38 @@ class SmartCacheManager:
         req_years = self._parse_years_from_range(req_start, req_end)
         if not req_years:
             return func(*args, **kwargs)
+
+        cached_frames, truly_missing = self._check_cache_coverage(
+            namespace, symbol, period, req_years, req_start, req_end, is_raw
+        )
+
+        if truly_missing:
+            new_frames = self._fetch_missing_years(
+                namespace, func, args, kwargs, symbol, period,
+                truly_missing, req_years, req_start, req_end, is_raw
+            )
+            cached_frames.extend(new_frames)
+
+        if not cached_frames:
+            result = self._full_fetch_fallback(
+                namespace, func, args, kwargs, symbol, period, is_raw, mem_key
+            )
+            self.stats['total_load_time_ms'] += (time.time() - start_time) * 1000
+            return result
+
+        result = self._merge_and_return(cached_frames, req_start, req_end, mem_key)
+        self.stats['total_load_time_ms'] += (time.time() - start_time) * 1000
+        return result
+
+    def _check_cache_coverage(self, namespace: str, symbol: str, period: str,
+                               req_years: List[int], req_start: str,
+                               req_end: str, is_raw: bool) -> Tuple[list, set]:
+        """检查缓存覆盖情况，返回 (cached_frames, truly_missing)
+
+        从索引和磁盘判断哪些年份已有缓存，并验证已有缓存是否覆盖请求范围。
+        如果缓存完全覆盖请求范围，truly_missing 为空集。
+        """
+        idx = self.index_manager
 
         available_years = (idx.get_available_market_raw_years(symbol, period) if is_raw
                           else idx.get_available_market_years(symbol, period))
@@ -1242,102 +1273,127 @@ class SmartCacheManager:
                 self.stats['yearly_hits'] += 1
 
         if not truly_missing:
-            merged = self.disk_cache.get_yearly_range(namespace, symbol, sorted(cached_years), period)
-            if merged is not None and not merged.empty:
-                if isinstance(merged.index, pd.DatetimeIndex):
-                    disk_start = merged.index.min().strftime('%Y-%m-%d')
-                    disk_end = merged.index.max().strftime('%Y-%m-%d')
-                    if disk_end >= req_end:
-                        result = self._filter_by_date(merged, req_start, req_end)
-                        self.mem_cache.put(mem_key, result)
-                        self.stats['disk_hits'] += 1
-                        self.stats['total_load_time_ms'] += (time.time() - start_time) * 1000
-                        return result
-                    last_cached_year = merged.index.max().year
-                    truly_missing = set(y for y in req_years if y > last_cached_year)
-                    truly_missing -= checked_years
-                    if not truly_missing:
-                        truly_missing = {max(req_years)} - checked_years
-                        if not truly_missing:
-                            result = self._filter_by_date(merged, req_start, req_end)
-                            self.mem_cache.put(mem_key, result)
-                            self.stats['disk_hits'] += 1
-                            self.stats['total_load_time_ms'] += (time.time() - start_time) * 1000
-                            return result
-                    self.logger.info(
-                        f"[{namespace}] {symbol} 缓存未覆盖结束日期: "
-                        f"缓存截止={disk_end}, 请求截止={req_end}, 增量获取年份={sorted(truly_missing)}"
-                    )
-                else:
-                    truly_missing = set(req_years)
+            if cached_frames:
+                coverage_missing = self._verify_cache_date_coverage(
+                    namespace, symbol, cached_frames[0], req_years, req_end, checked_years
+                )
+                if coverage_missing == set(req_years):
                     cached_frames = []
-                    self.logger.info(f"[{namespace}] {symbol} 缓存索引非时间类型，重新获取: {sorted(truly_missing)}")
+                truly_missing = coverage_missing
             else:
                 truly_missing = set(req_years)
-                cached_frames = []
                 self.logger.info(f"[{namespace}] {symbol} 缓存数据为空，重新获取: {sorted(truly_missing)}")
 
+        return cached_frames, truly_missing
+
+    def _verify_cache_date_coverage(self, namespace: str, symbol: str,
+                                     cached_df: pd.DataFrame, req_years: List[int],
+                                     req_end: str, checked_years: set) -> set:
+        """验证缓存数据是否覆盖请求的日期范围，返回仍需获取的年份集合
+
+        返回空集表示缓存完全覆盖，无需增量获取。
+        返回 set(req_years) 表示缓存不可用，需全量重新获取。
+        """
+        if not isinstance(cached_df.index, pd.DatetimeIndex):
+            self.logger.info(f"[{namespace}] {symbol} 缓存索引非时间类型，重新获取: {sorted(req_years)}")
+            return set(req_years)
+
+        disk_end = cached_df.index.max().strftime('%Y-%m-%d')
+        if disk_end >= req_end:
+            return set()
+
+        last_cached_year = cached_df.index.max().year
+        truly_missing = set(y for y in req_years if y > last_cached_year)
+        truly_missing -= checked_years
+        if not truly_missing:
+            truly_missing = {max(req_years)} - checked_years
+
         if truly_missing:
-            self.stats['incremental_merges'] += 1
-            actual_cached = sorted(set(req_years) - truly_missing)
             self.logger.info(
-                f"[{namespace}] {symbol} 行情增量更新: "
-                f"已有年份={actual_cached}, 缺失年份={sorted(truly_missing)}"
+                f"[{namespace}] {symbol} 缓存未覆盖结束日期: "
+                f"缓存截止={disk_end}, 请求截止={req_end}, 增量获取年份={sorted(truly_missing)}"
             )
 
-            min_missing = min(truly_missing)
-            max_missing = max(truly_missing)
+        return truly_missing
 
-            inc_start = req_start if min_missing == min(req_years) else f"{min_missing}-01-01"
-            inc_end = req_end if max_missing == max(req_years) else f"{max_missing}-12-31"
+    def _fetch_missing_years(self, namespace: str, func: Callable, args: tuple,
+                              kwargs: dict, symbol: str, period: str,
+                              truly_missing: set, req_years: List[int],
+                              req_start: str, req_end: str,
+                              is_raw: bool) -> list:
+        """获取缺失年份数据，写入磁盘并更新索引，返回新数据帧列表"""
+        idx = self.index_manager
+        self.stats['incremental_merges'] += 1
+        actual_cached = sorted(set(req_years) - truly_missing)
+        self.logger.info(
+            f"[{namespace}] {symbol} 行情增量更新: "
+            f"已有年份={actual_cached}, 缺失年份={sorted(truly_missing)}"
+        )
 
-            inc_args, inc_kwargs = self._build_incremental_args(
-                func, args, kwargs,
-                start_date_override=inc_start,
-                end_date_override=inc_end
-            )
+        min_missing = min(truly_missing)
+        max_missing = max(truly_missing)
 
-            try:
-                new_data = func(*inc_args, **inc_kwargs)
-                if new_data is not None and isinstance(new_data, pd.DataFrame) and not new_data.empty:
-                    written = self.disk_cache.put_yearly_from_df(namespace, symbol, period, new_data)
-                    for y in written:
-                        if is_raw:
-                            idx.update_market_raw_index(symbol, period, y)
-                        else:
-                            idx.update_market_index(symbol, period, y)
-                    cached_frames.append(new_data)
-                    fetched_years_with_data = set(new_data.index.year.unique()) if isinstance(new_data.index, pd.DatetimeIndex) else set()
-                    no_data_years = truly_missing - fetched_years_with_data
-                else:
-                    no_data_years = truly_missing
-                if no_data_years:
+        inc_start = req_start if min_missing == min(req_years) else f"{min_missing}-01-01"
+        inc_end = req_end if max_missing == max(req_years) else f"{max_missing}-12-31"
+
+        inc_args, inc_kwargs = self._build_incremental_args(
+            func, args, kwargs,
+            start_date_override=inc_start,
+            end_date_override=inc_end
+        )
+
+        new_frames = []
+        try:
+            new_data = func(*inc_args, **inc_kwargs)
+            if new_data is not None and isinstance(new_data, pd.DataFrame) and not new_data.empty:
+                written = self.disk_cache.put_yearly_from_df(namespace, symbol, period, new_data)
+                for y in written:
                     if is_raw:
-                        idx.update_checked_market_raw_years(symbol, period, sorted(no_data_years))
+                        idx.update_market_raw_index(symbol, period, y)
                     else:
-                        idx.update_checked_market_years(symbol, period, sorted(no_data_years))
-            except Exception as e:
-                self.logger.warning(f"[{namespace}] {symbol} 增量获取失败: {e}")
+                        idx.update_market_index(symbol, period, y)
+                new_frames.append(new_data)
+                fetched_years_with_data = (set(new_data.index.year.unique())
+                                           if isinstance(new_data.index, pd.DatetimeIndex)
+                                           else set())
+                no_data_years = truly_missing - fetched_years_with_data
+            else:
+                no_data_years = truly_missing
+            if no_data_years:
+                if is_raw:
+                    idx.update_checked_market_raw_years(symbol, period, sorted(no_data_years))
+                else:
+                    idx.update_checked_market_years(symbol, period, sorted(no_data_years))
+        except Exception as e:
+            self.logger.warning(f"[{namespace}] {symbol} 增量获取失败: {e}")
 
-        if not cached_frames:
-            self.stats['misses'] += 1
-            self.logger.info(f"[{namespace}] {symbol} 缓存未命中，全量获取")
-            try:
-                result = func(*args, **kwargs)
-                if result is not None and isinstance(result, pd.DataFrame) and not result.empty:
-                    written = self.disk_cache.put_yearly_from_df(namespace, symbol, period, result)
-                    for y in written:
-                        if is_raw:
-                            idx.update_market_raw_index(symbol, period, y)
-                        else:
-                            idx.update_market_index(symbol, period, y)
-                    self.mem_cache.put(mem_key, result)
-                self.stats['total_load_time_ms'] += (time.time() - start_time) * 1000
-                return result
-            except Exception as e:
-                self.logger.error(f"[{namespace}] 获取数据失败: {e}")
-                raise
+        return new_frames
 
+    def _full_fetch_fallback(self, namespace: str, func: Callable, args: tuple,
+                              kwargs: dict, symbol: str, period: str,
+                              is_raw: bool, mem_key: str) -> Any:
+        """缓存完全未命中时的全量获取兜底"""
+        idx = self.index_manager
+        self.stats['misses'] += 1
+        self.logger.info(f"[{namespace}] {symbol} 缓存未命中，全量获取")
+        try:
+            result = func(*args, **kwargs)
+            if result is not None and isinstance(result, pd.DataFrame) and not result.empty:
+                written = self.disk_cache.put_yearly_from_df(namespace, symbol, period, result)
+                for y in written:
+                    if is_raw:
+                        idx.update_market_raw_index(symbol, period, y)
+                    else:
+                        idx.update_market_index(symbol, period, y)
+                self.mem_cache.put(mem_key, result)
+            return result
+        except Exception as e:
+            self.logger.error(f"[{namespace}] 获取数据失败: {e}")
+            raise
+
+    def _merge_and_return(self, cached_frames: list, req_start: str,
+                           req_end: str, mem_key: str) -> pd.DataFrame:
+        """合并数据帧、按日期过滤、写入内存缓存并返回"""
         if len(cached_frames) == 1:
             merged = cached_frames[0]
         else:
@@ -1348,7 +1404,6 @@ class SmartCacheManager:
         result = self._filter_by_date(merged, req_start, req_end)
         self.mem_cache.put(mem_key, result)
         self.stats['disk_hits'] += 1
-        self.stats['total_load_time_ms'] += (time.time() - start_time) * 1000
         return result
 
     def _build_disk_key_with_dates(self, base_key: str, df: pd.DataFrame) -> str:
