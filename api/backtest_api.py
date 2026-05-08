@@ -13,6 +13,7 @@ from core.stock_selection import StockSelectionStrategy
 from core.financial_data import FinancialDataCache, FinancialDataAdapter
 from core.strategy import BaseStrategy
 from core.analyzer import PerformanceAnalyzer
+from core.stock_lifecycle import get_lifecycle_manager
 from api.base_api import BaseAPI
 
 _ADAPTER_CLASS_CACHE: Dict[str, Type] = {}
@@ -154,6 +155,7 @@ class BacktestAPI(BaseAPI):
         self._no_record: bool = False
         self._strategy_name: str = ''
         self._backtest_config: Dict[str, Any] = {}
+        self._lifecycle_manager = None
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
 
     def configure(self, cash: float = 200000, commission: float = 0.0001,
@@ -344,33 +346,60 @@ class BacktestAPI(BaseAPI):
         # ── 阶段1：获取股票池（收集回测期间所有历史成分股） ──
         if stock_list is None and sector:
             if start_time and end_time:
-                self.logger.info(f"[阶段1/5] 获取板块 '{sector}' 回测期间全部历史成分股 "
+                self.logger.info(f"[阶段1/6] 获取板块 '{sector}' 回测期间全部历史成分股 "
                                  f"({start_time} ~ {end_time})...")
                 stock_list = self._financial_data_processor.get_all_historical_stocks_in_range(
                     sector, start_date=start_time, end_date=end_time
                 )
-                self.logger.info(f"[阶段1/5] 板块 '{sector}' 回测期间共涉及 {len(stock_list)} 只历史成分股")
+                self.logger.info(f"[阶段1/6] 板块 '{sector}' 回测期间共涉及 {len(stock_list)} 只历史成分股")
             else:
                 hist_date = start_time if start_time else end_time
                 if hist_date:
-                    self.logger.info(f"[阶段1/5] 获取板块 '{sector}' 历史成分股 (基准日期: {hist_date})...")
+                    self.logger.info(f"[阶段1/6] 获取板块 '{sector}' 历史成分股 (基准日期: {hist_date})...")
                     stock_list = self._financial_data_processor.get_historical_stock_list(sector, date=hist_date)
-                    self.logger.info(f"[阶段1/5] 板块 '{sector}' 获取到 {len(stock_list)} 只历史成分股")
+                    self.logger.info(f"[阶段1/6] 板块 '{sector}' 获取到 {len(stock_list)} 只历史成分股")
                 else:
-                    self.logger.info(f"[阶段1/5] 获取板块 '{sector}' 成分股...")
+                    self.logger.info(f"[阶段1/6] 获取板块 '{sector}' 成分股...")
                     stock_list = self._financial_data_processor.get_stock_list(sector)
-                    self.logger.info(f"[阶段1/5] 板块 '{sector}' 获取到 {len(stock_list)} 只股票")
+                    self.logger.info(f"[阶段1/6] 板块 '{sector}' 获取到 {len(stock_list)} 只股票")
         else:
-            self.logger.info(f"[阶段1/5] 使用指定股票列表: {len(stock_list or [])} 只")
+            self.logger.info(f"[阶段1/6] 使用指定股票列表: {len(stock_list or [])} 只")
 
         if not stock_list:
             raise ValueError("必须指定 stock_list 或 sector")
 
+        # ── 阶段1.5: 批量更新股票生命周期数据 ──
+        try:
+            if self._lifecycle_manager is None:
+                self._lifecycle_manager = get_lifecycle_manager(
+                    xtdata=self._financial_data_processor.xtdata if hasattr(self._financial_data_processor, 'xtdata') else None
+                )
+            self.logger.info(f"[阶段1.5/6] 更新股票生命周期数据: {len(stock_list)} 只股票...")
+            self._lifecycle_manager.batch_update(stock_list)
+            delisted_count = sum(1 for s in stock_list if self._lifecycle_manager.is_delisted(s))
+            late_list_count = sum(
+                1 for s in stock_list
+                if self._lifecycle_manager.is_listed_after(s, self._data_start_date or start_time or '')
+            )
+            self.logger.info(
+                f"[阶段1.5/6] 生命周期数据更新完成: "
+                f"{delisted_count} 只退市, {late_list_count} 只晚上市"
+            )
+
+            # 将退市信息同步到缓存索引的永久标记
+            from core.cache import cache_manager
+            for s in stock_list:
+                if self._lifecycle_manager.is_delisted(s) and not cache_manager.index_manager.is_delisted(s):
+                    delist_date = self._lifecycle_manager.get_delist_date(s) or ''
+                    cache_manager.index_manager.mark_delisted(s, delist_date)
+            cache_manager.index_manager.save_index()
+        except Exception as e:
+            self.logger.warning(f"[阶段1.5/6] 生命周期数据更新失败: {e}，将按原有逻辑运行")
+
         tables = table_list or ['Balance', 'Income', 'CashFlow', 'Capital',
                                 'HolderNum', 'Top10Holder', 'Top10FlowHolder', 'Pershareindex']
 
-        # ── 阶段2：检查磁盘缓存覆盖情况，只下载缺失的数据 ──
-        from core.cache import cache_manager
+        # ── 阶段2：检查磁盘缓存覆盖情况，只下载缺失的数据 ──        from core.cache import cache_manager
         namespace = f"{self._financial_data_processor.__class__.__name__}_Financial"
         time_suffix = f"_{start_time}_{end_time}" if start_time or end_time else ""
         ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
@@ -422,8 +451,9 @@ class BacktestAPI(BaseAPI):
 
         if uncached_stocks:
             self.logger.info(
-                f"[阶段2/5] 下载缺失的财务数据: "
+                f"[阶段2/6] 下载缺失的财务数据: "
                 f"{len(uncached_stocks)} 只股票缺少缓存 (已有 {len(cached_stocks)} 只缓存)"
+
             )
             self._financial_data_processor.download_financial_data(
                 uncached_stocks, table_list, start_time, end_time
@@ -433,7 +463,7 @@ class BacktestAPI(BaseAPI):
                 uncached_stocks, table_list, start_time, end_time, report_type
             )
         else:
-            self.logger.info(f"[阶段2/5] 全部 {len(stock_list)} 只股票已有磁盘缓存，跳过下载")
+            self.logger.info(f"[阶段2/6] 全部 {len(stock_list)} 只股票已有磁盘缓存，跳过下载")
 
         # ── 阶段3：创建按需加载的财务数据适配器 ──
         cache = FinancialDataCache(
@@ -457,28 +487,28 @@ class BacktestAPI(BaseAPI):
                 self._financial_adapter.set_index_constituent_mgr(
                     self._financial_data_processor._index_constituent_mgr, sector
                 )
-                self.logger.info(f"[阶段3/5] 已设置指数成分股动态查询: sector='{sector}'")
+                self.logger.info(f"[阶段3/6] 已设置指数成分股动态查询: sector='{sector}'")
 
             if hasattr(self._financial_data_processor, '_industry_constituent_mgr') \
                     and self._financial_data_processor._industry_constituent_mgr:
                 self._financial_adapter.set_industry_constituent_mgr(
                     self._financial_data_processor._industry_constituent_mgr
                 )
-                self.logger.info(f"[阶段3/5] 已设置行业分类动态查询")
+                self.logger.info(f"[阶段3/6] 已设置行业分类动态查询")
 
         self.logger.info(
-            f"[阶段3/5] 财务数据适配器创建完成(按需加载模式): {len(stock_list)} 只股票待查询"
+            f"[阶段3/6] 财务数据适配器创建完成(按需加载模式): {len(stock_list)} 只股票待查询"
         )
 
         # ── 阶段4：获取行业映射（优先使用历史行业数据） ──
-        self.logger.info(f"[阶段4/5] 获取申万行业分类映射...")
+        self.logger.info(f"[阶段4/6] 获取申万行业分类映射...")
         try:
             # 使用回测开始日期作为历史行业数据的基准日期
             hist_date = start_time if start_time else end_time
             if not hist_date:
                 hist_date = pd.Timestamp.now().strftime('%Y-%m-%d')
 
-            self.logger.info(f"[阶段4/5] 使用历史行业数据 (基准日期: {hist_date})...")
+            self.logger.info(f"[阶段4/6] 使用历史行业数据 (基准日期: {hist_date})...")
             industry_mapping = self._financial_data_processor.get_historical_industry_mapping(
                 stock_list=stock_list,
                 date=hist_date,
@@ -487,23 +517,23 @@ class BacktestAPI(BaseAPI):
 
             if industry_mapping:
                 self._financial_adapter.set_industry_mapping(industry_mapping)
-                self.logger.info(f"[阶段4/5] 行业分类映射已加载: {len(industry_mapping)} 只股票, {len(set(industry_mapping.values()))} 个行业")
+                self.logger.info(f"[阶段4/6] 行业分类映射已加载: {len(industry_mapping)} 只股票, {len(set(industry_mapping.values()))} 个行业")
             else:
-                self.logger.warning(f"[阶段4/5] 行业分类映射为空")
+                self.logger.warning(f"[阶段4/6] 行业分类映射为空")
         except Exception as e:
-            self.logger.warning(f"[阶段4/5] 行业分类映射加载失败: {e}，策略将无法使用行业筛选")
+            self.logger.warning(f"[阶段4/6] 行业分类映射加载失败: {e}，策略将无法使用行业筛选")
 
         # ── 阶段5：获取分红数据 ──
-        self.logger.info(f"[阶段5/5] 获取分红数据，共 {len(stock_list)} 只股票...")
+        self.logger.info(f"[阶段5/6] 获取分红数据，共 {len(stock_list)} 只股票...")
         try:
             dividend_data = self._financial_data_processor.get_dividend_data(stock_list)
             if dividend_data:
                 self._financial_adapter.set_dividend_data(dividend_data)
-                self.logger.info(f"[阶段5/5] 分红数据已加载: {len(dividend_data)} 只股票")
+                self.logger.info(f"[阶段5/6] 分红数据已加载: {len(dividend_data)} 只股票")
             else:
-                self.logger.warning(f"[阶段5/5] 分红数据为空，策略将无法计算股息率")
+                self.logger.warning(f"[阶段5/6] 分红数据为空，策略将无法计算股息率")
         except Exception as e:
-            self.logger.warning(f"[阶段5/5] 分红数据加载失败: {e}，策略将无法计算股息率")
+            self.logger.warning(f"[阶段5/6] 分红数据加载失败: {e}，策略将无法计算股息率")
 
         overall_elapsed = _time.time() - overall_start
         self.logger.info(
@@ -601,18 +631,41 @@ class BacktestAPI(BaseAPI):
 
         self.logger.info(f"开始加载股票池行情数据: {total} 只股票, 周期={self._period}")
 
+        # 确保生命周期管理器已初始化
+        if self._lifecycle_manager is None:
+            try:
+                self._lifecycle_manager = get_lifecycle_manager(
+                    xtdata=self.data_processor.xtdata if hasattr(self.data_processor, 'xtdata') else None
+                )
+            except Exception:
+                pass
+
         symbols_to_load = [s for s in pool if s not in self._symbols]
         skipped_count = total - len(symbols_to_load)
 
         def _fetch_market_data(symbol):
             try:
+                # 新增：获取有效日期范围
+                lifecycle_mgr = self._lifecycle_manager
+                effective_start, effective_end = None, None
+                if lifecycle_mgr:
+                    effective_start, effective_end = lifecycle_mgr.get_effective_date_range(
+                        symbol, self._data_start_date, self._data_end_date
+                    )
+
+                # 如果股票在回测区间内无有效数据 → 完全跳过
+                if effective_start is None or effective_end is None:
+                    self.logger.debug(f"跳过 {symbol}: 在回测区间内无有效数据(退市或未上市)")
+                    return (symbol, None, None)
+
+                # 使用有效日期范围请求数据（而非回测全区间）
                 data = None
                 try:
-                    data = self._opendata_processor.get_data(symbol, self._data_start_date, self._data_end_date, self._period)
+                    data = self._opendata_processor.get_data(symbol, effective_start, effective_end, self._period)
                 except Exception:
                     pass
                 if data is None or (hasattr(data, 'empty') and data.empty):
-                    data = self.data_processor.get_data(symbol, self._data_start_date, self._data_end_date, self._period)
+                    data = self.data_processor.get_data(symbol, effective_start, effective_end, self._period)
                 return (symbol, data, None)
             except Exception as e:
                 return (symbol, None, e)

@@ -66,6 +66,7 @@ class CacheIndexManager:
         self._dividend_checked: Dict[str, str] = {}
         self._financial_nodata: Dict[str, Dict[str, str]] = {}
         self._market_raw_nodata: Dict[str, str] = {}
+        self._delisted_stocks: Dict[str, str] = {}  # {symbol: delist_date} 永久标记，不过期
         self._dirty_flags = {
             'market': False,
             'market_raw': False,
@@ -73,6 +74,7 @@ class CacheIndexManager:
             'dividend': False,
             'financial_nodata': False,
             'market_raw_nodata': False,
+            'delisted': False,
         }
         self.load_index()
 
@@ -100,6 +102,10 @@ class CacheIndexManager:
     def market_raw_nodata_path(self) -> Path:
         return self.cache_dir / 'index' / 'market_raw_nodata.json'
 
+    @property
+    def delisted_stocks_path(self) -> Path:
+        return self.cache_dir / 'index' / 'delisted_stocks.json'
+
     def load_index(self) -> None:
         for path, attr in [
             (self.market_index_path, '_market_index'),
@@ -108,6 +114,7 @@ class CacheIndexManager:
             (self.dividend_checked_path, '_dividend_checked'),
             (self.financial_nodata_path, '_financial_nodata'),
             (self.market_raw_nodata_path, '_market_raw_nodata'),
+            (self.delisted_stocks_path, '_delisted_stocks'),
         ]:
             if path.exists():
                 try:
@@ -134,6 +141,8 @@ class CacheIndexManager:
                 files_to_save.append((self.financial_nodata_path, self._financial_nodata))
             if self._dirty_flags['market_raw_nodata']:
                 files_to_save.append((self.market_raw_nodata_path, self._market_raw_nodata))
+            if self._dirty_flags['delisted']:
+                files_to_save.append((self.delisted_stocks_path, self._delisted_stocks))
 
             for path, data in files_to_save:
                 max_retries = 3
@@ -345,6 +354,30 @@ class CacheIndexManager:
                 return (pd.Timestamp.now() - check_dt).days < max_age_days
             except Exception:
                 return False
+
+    def mark_delisted(self, symbol: str, delist_date: str = '') -> None:
+        """标记股票为已退市（永久标记，不过期）
+
+        Args:
+            symbol: 股票代码
+            delist_date: 退市日期，格式 'YYYY-MM-DD'，未知则传空字符串
+        """
+        with self.lock:
+            self._delisted_stocks[symbol] = delist_date or 'unknown'
+            self._dirty_flags['delisted'] = True
+
+    def is_delisted(self, symbol: str) -> bool:
+        """检查股票是否已退市（永久标记，永不过期）"""
+        with self.lock:
+            return symbol in self._delisted_stocks
+
+    def get_delist_date(self, symbol: str) -> Optional[str]:
+        """获取退市日期"""
+        with self.lock:
+            date = self._delisted_stocks.get(symbol)
+            if date and date != 'unknown':
+                return date
+            return None
 
     def get_checked_dividend_stocks(self, max_age_days: int = 30) -> set:
         with self.lock:

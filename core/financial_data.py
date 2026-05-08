@@ -104,7 +104,14 @@ class FinancialDataCache:
             self.logger.debug(f"[加载跳过] {stock_code}.{table_name} 已尝试加载，状态: {loaded_status}")
             return
 
+        # 新增：检查退市状态，永久跳过
         from core.cache import cache_manager
+        if cache_manager.index_manager.is_delisted(stock_code):
+            self.logger.debug(f"跳过退市股票: {stock_code}.{table_name}")
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
+            self._loaded_tables[(stock_code, table_name)] = True
+            return
         if cache_manager.index_manager.is_financial_nodata(stock_code, f"{table_name}_{self._report_type}"):
             self._loaded_tables[(stock_code, table_name)] = False
             if stock_code not in self._data:

@@ -556,21 +556,33 @@ class QMTDataProcessor(DataProcessor):
         """下载一个批次的数据，返回成功下载的股票集合
 
         策略:
-        1. 先检查哪些股票已有缓存（无需下载）
-        2. 对缺失的股票调用 download_financial_data2
-        3. 轮询等待新数据同步
-        4. 如果批次下载失败或超时，降级为单只下载
+        1. 过滤退市股票
+        2. 先检查哪些股票已有缓存（无需下载）
+        3. 对缺失的股票调用 download_financial_data2
+        4. 轮询等待新数据同步
+        5. 如果批次下载失败或超时，降级为单只下载
         """
         batch_desc = f"[{batch_idx}/{total_batches}]"
 
+        # 新增：过滤退市股票
+        from core.cache import cache_manager
+        active_batch = [s for s in batch if not cache_manager.index_manager.is_delisted(s)]
+        delisted_in_batch = [s for s in batch if cache_manager.index_manager.is_delisted(s)]
+
+        if delisted_in_batch:
+            self.logger.info(f"{batch_desc} 跳过 {len(delisted_in_batch)} 只退市股票")
+
+        if not active_batch:
+            return set()
+
         # 步骤1: 检查已有缓存
         ready_before, missing_before = self._check_data_ready(
-            batch, tables, start_time, end_time
+            active_batch, tables, start_time, end_time
         )
 
         if not missing_before:
             # 全部已有缓存
-            self.logger.info(f"{batch_desc} {len(batch)}只股票已有缓存，跳过下载")
+            self.logger.info(f"{batch_desc} {len(active_batch)}只股票已有缓存，跳过下载")
             return ready_before
 
         # 显示准备下载的股票代码（最多显示5只，超出显示数量）
@@ -758,8 +770,30 @@ class QMTDataProcessor(DataProcessor):
             self.logger.warning("xtquant 未安装，无法下载财务数据")
             return
 
+        # 新增：过滤退市股票
+        from core.cache import cache_manager
+        delisted = []
+        active_stocks = []
+        for stock in stock_list:
+            if cache_manager.index_manager.is_delisted(stock):
+                delisted.append(stock)
+                continue
+            active_stocks.append(stock)
+
+        if delisted:
+            delist_display = ', '.join(delisted[:5])
+            if len(delisted) > 5:
+                delist_display += f' 等{len(delisted)}只'
+            self.logger.info(
+                f"跳过 {len(delisted)} 只退市股票: {delist_display}"
+            )
+
+        if not active_stocks:
+            self.logger.info("全部股票已退市，无需下载财务数据")
+            return
+
         tables = table_list or self.FINANCIAL_TABLES
-        total = len(stock_list)
+        total = len(active_stocks)
 
         start_ts = time.time()
         all_success = set()
@@ -770,7 +804,7 @@ class QMTDataProcessor(DataProcessor):
 
         for batch_start in range(0, total, batch_size):
             batch_end = min(batch_start + batch_size, total)
-            batch = stock_list[batch_start:batch_end]
+            batch = active_stocks[batch_start:batch_end]
             batch_idx = batch_start // batch_size + 1
 
             try:
@@ -781,13 +815,13 @@ class QMTDataProcessor(DataProcessor):
                 continue
 
         # 下载完成后，对所有传入的股票调用 get_financial_data 保存到缓存
-        # 注意：这里使用 stock_list 而不是 all_success，因为即使 _download_batch
+        # 注意：这里使用 active_stocks 而不是 all_success，因为即使 _download_batch
         # 认为某只股票已就绪（QMT中有数据），也可能需要保存到本地缓存
-        self.logger.info(f"正在将 {len(stock_list)} 只股票的数据保存到缓存...")
+        self.logger.info(f"正在将 {len(active_stocks)} 只股票的数据保存到缓存...")
         try:
             # 使用 announce_time 作为默认 report_type
             self.get_financial_data(
-                stock_list, tables, start_time, end_time, report_type='announce_time'
+                active_stocks, tables, start_time, end_time, report_type='announce_time'
             )
         except Exception as e:
             self.logger.warning(f"保存数据到缓存时出错: {e}")
@@ -909,6 +943,12 @@ class QMTDataProcessor(DataProcessor):
         self.logger.info(f"开始获取财务数据: {total} 只股票, 表: {', '.join(tables)}, 请求年份={req_years or '全部'}")
 
         for i, stock in enumerate(stock_list, 1):
+            # 新增：跳过退市股票
+            from core.cache import cache_manager as _cm
+            if _cm.index_manager.is_delisted(stock):
+                self.logger.debug(f"跳过退市股票: {stock}")
+                continue
+
             stock_data = {}
             tables_to_download = []
             missing_years_by_table = {}  # 记录每个表缺失的年份
