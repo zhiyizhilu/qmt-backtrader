@@ -1321,16 +1321,26 @@ class SmartCacheManager:
         truly_missing = missing_years - checked_years
 
         cached_frames = []
+        actually_cached_years = set()
         if cached_years:
-            df = self.disk_cache.get_yearly_range(namespace, symbol, sorted(cached_years), period)
-            if df is not None and not df.empty:
-                cached_frames.append(df)
-                self.stats['yearly_hits'] += 1
+            for year in sorted(cached_years):
+                df = self.disk_cache.get_yearly(namespace, symbol, year, period)
+                if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
+                    cached_frames.append(df)
+                    actually_cached_years.add(year)
+                    self.stats['yearly_hits'] += 1
+                else:
+                    self.logger.info(f"[{namespace}] {symbol} 索引声称有{year}年缓存但文件缺失，将重新获取")
+
+            stale_index_years = cached_years - actually_cached_years
+            if stale_index_years:
+                truly_missing |= stale_index_years
+                self.logger.info(f"[{namespace}] {symbol} 索引与实际缓存不同步，缺失年份: {sorted(stale_index_years)}")
 
         if not truly_missing:
             if cached_frames:
                 coverage_missing = self._verify_cache_date_coverage(
-                    namespace, symbol, cached_frames[0], req_years, req_end, checked_years
+                    namespace, symbol, pd.concat(cached_frames), req_years, req_start, req_end, checked_years
                 )
                 if coverage_missing == set(req_years):
                     cached_frames = []
@@ -1346,7 +1356,8 @@ class SmartCacheManager:
 
     def _verify_cache_date_coverage(self, namespace: str, symbol: str,
                                      cached_df: pd.DataFrame, req_years: List[int],
-                                     req_end: str, checked_years: set) -> set:
+                                     req_start: str, req_end: str,
+                                     checked_years: set) -> set:
         """验证缓存数据是否覆盖请求的日期范围，返回仍需获取的年份集合
 
         返回空集表示缓存完全覆盖，无需增量获取。
@@ -1356,23 +1367,31 @@ class SmartCacheManager:
             self.logger.info(f"[{namespace}] {symbol} 缓存索引非时间类型，重新获取: {sorted(req_years)}")
             return set(req_years)
 
+        disk_start = cached_df.index.min().strftime('%Y-%m-%d')
         disk_end = cached_df.index.max().strftime('%Y-%m-%d')
-        if disk_end >= req_end:
-            return set()
 
-        last_cached_year = cached_df.index.max().year
-        truly_missing = set(y for y in req_years if y > last_cached_year)
-        truly_missing -= checked_years
-        if not truly_missing:
-            truly_missing = {max(req_years)} - checked_years
-
-        if truly_missing:
+        missing = set()
+        if disk_start > req_start:
+            first_cached_year = cached_df.index.min().year
+            missing |= set(y for y in req_years if y < first_cached_year)
             self.logger.info(
-                f"[{namespace}] {symbol} 缓存未覆盖结束日期: "
-                f"缓存截止={disk_end}, 请求截止={req_end}, 增量获取年份={sorted(truly_missing)}"
+                f"[{namespace}] {symbol} 缓存未覆盖起始日期: "
+                f"缓存起始={disk_start}, 请求起始={req_start}, 缺失年份={sorted(missing)}"
             )
 
-        return truly_missing
+        if disk_end < req_end:
+            last_cached_year = cached_df.index.max().year
+            end_missing = set(y for y in req_years if y > last_cached_year)
+            end_missing -= checked_years
+            if not end_missing:
+                end_missing = {max(req_years)} - checked_years
+            missing |= end_missing
+            self.logger.info(
+                f"[{namespace}] {symbol} 缓存未覆盖结束日期: "
+                f"缓存截止={disk_end}, 请求截止={req_end}, 增量获取年份={sorted(end_missing)}"
+            )
+
+        return missing
 
     def _fetch_missing_years(self, namespace: str, func: Callable, args: tuple,
                               kwargs: dict, symbol: str, period: str,

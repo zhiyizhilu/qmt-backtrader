@@ -113,18 +113,25 @@ class OpenDataProcessor(DataProcessor):
         return None
 
     def _get_index_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d") -> Optional[pd.DataFrame]:
-        """从akshare获取指数历史行情数据"""
-        # 转换为 akshare 指数接口格式: 000300.SH -> sh000300
+        """获取指数历史行情数据（优先腾讯财经，备用东方财富/新浪）"""
         if '.' in symbol:
             code, suffix = symbol.split('.')
+            tx_symbol = f"{suffix.lower()}{code}"
             em_symbol = f"{suffix.lower()}{code}"
             sina_symbol = f"{suffix.lower()}{code}"
         else:
+            tx_symbol = symbol
             em_symbol = symbol
             sina_symbol = symbol
 
         try:
-            # 东方财富指数接口，日期格式为 YYYYMMDD
+            df = self._ak.stock_zh_index_daily_tx(symbol=tx_symbol)
+            if df is not None and not df.empty:
+                return self._process_akshare_data(df, symbol, start_date, end_date)
+        except Exception as e:
+            self.logger.debug(f"腾讯财经指数接口失败: {e}")
+
+        try:
             em_start = start_date.replace('-', '')
             em_end = end_date.replace('-', '')
             df = self._ak.stock_zh_index_daily_em(symbol=em_symbol, start_date=em_start, end_date=em_end)
@@ -134,7 +141,6 @@ class OpenDataProcessor(DataProcessor):
             self.logger.debug(f"东方财富指数接口失败: {e}")
 
         try:
-            # 备用：新浪指数接口（返回全部历史数据，需要自行过滤）
             df = self._ak.stock_zh_index_daily(symbol=sina_symbol)
             if df is not None and not df.empty:
                 return self._process_akshare_data(df, symbol, start_date, end_date)

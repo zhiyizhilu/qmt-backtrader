@@ -985,15 +985,22 @@ class BacktestAPI(BaseAPI):
                     self._data_end_date,
                     self._period,
                 )
-            except Exception:
-                pass
+                if benchmark_data is not None and not benchmark_data.empty:
+                    self.logger.info(f"基准数据从OpenData获取成功: {self._benchmark}, {len(benchmark_data)}条")
+            except Exception as e:
+                self.logger.warning(f"基准数据OpenData获取失败: {self._benchmark}, {e}")
+
             if benchmark_data is None or benchmark_data.empty:
+                self.logger.info(f"OpenData无基准数据，尝试QMT: {self._benchmark}")
                 benchmark_data = self.data_processor.get_data(
                     self._benchmark,
                     self._data_start_date,
                     self._data_end_date,
                     self._period,
                 )
+                if benchmark_data is not None and not benchmark_data.empty:
+                    self.logger.info(f"基准数据从QMT获取: {self._benchmark}, {len(benchmark_data)}条")
+
             if benchmark_data is not None and not benchmark_data.empty:
                 if not isinstance(benchmark_data.index, pd.DatetimeIndex):
                     benchmark_data.index = pd.to_datetime(benchmark_data.index)
@@ -1001,8 +1008,10 @@ class BacktestAPI(BaseAPI):
                 benchmark_data = benchmark_data[keep_cols].copy()
                 self._backtest_result.benchmark_df = benchmark_data
                 self._backtest_result.benchmark_symbol = self._benchmark
-        except Exception:
-            pass
+            else:
+                self.logger.warning(f"基准数据获取失败: {self._benchmark}, 所有数据源均无数据")
+        except Exception as e:
+            self.logger.warning(f"基准数据获取异常: {self._benchmark}, {e}")
 
     def get_result(self):
         return self._backtest_result

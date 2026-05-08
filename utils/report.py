@@ -2147,10 +2147,12 @@ class BacktestReportWindow(QMainWindow):
                 aligned_benchmark.append(None)
 
         first_valid_idx = None
+        last_valid_idx = None
         for i, v in enumerate(aligned_benchmark):
             if v is not None:
-                first_valid_idx = i
-                break
+                if first_valid_idx is None:
+                    first_valid_idx = i
+                last_valid_idx = i
 
         if first_valid_idx is None:
             layout.addWidget(
@@ -2161,6 +2163,21 @@ class BacktestReportWindow(QMainWindow):
                 )
             )
             return tab
+
+        valid_count = sum(1 for v in aligned_benchmark if v is not None)
+        total_count = len(aligned_benchmark)
+        coverage = valid_count / total_count if total_count > 0 else 0
+
+        if coverage < 0.5:
+            warning_label = QLabel(
+                f"警告：基准数据（{benchmark_display_name}）覆盖率仅 {coverage:.1%}，"
+                f"实际数据 {valid_count}/{total_count} 天，图表可能显示不正确"
+            )
+            warning_label.setAlignment(Qt.AlignCenter)
+            warning_label.setStyleSheet(
+                "QLabel { font-size: 14px; font-weight: bold; color: #d14545; padding: 10px; }"
+            )
+            layout.addWidget(warning_label)
 
         for i in range(first_valid_idx):
             aligned_benchmark[i] = aligned_benchmark[first_valid_idx]
