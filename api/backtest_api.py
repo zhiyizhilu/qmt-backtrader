@@ -660,11 +660,12 @@ class BacktestAPI(BaseAPI):
         def _fetch_market_data(symbol):
             try:
                 lifecycle_mgr = self._lifecycle_manager
-                effective_start, effective_end = None, None
                 if lifecycle_mgr:
                     effective_start, effective_end = lifecycle_mgr.get_effective_date_range(
                         symbol, self._data_start_date, self._data_end_date
                     )
+                else:
+                    effective_start, effective_end = self._data_start_date, self._data_end_date
 
                 if effective_start is None or effective_end is None:
                     self.logger.debug(f"跳过 {symbol}: 在回测区间内无有效数据(退市或未上市)")

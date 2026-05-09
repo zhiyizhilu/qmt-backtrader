@@ -49,9 +49,12 @@ class StockLifecycleManager:
         return info.get('list_date') if info else None
 
     def get_delist_date(self, symbol: str) -> Optional[str]:
-        """获取退市日期，格式 'YYYY-MM-DD'，未退市返回None"""
+        """获取退市日期，格式 'YYYY-MM-DD'，未退市或日期未知返回None"""
         info = self._data.get(symbol)
-        return info.get('delist_date') if info else None
+        if not info:
+            return None
+        dd = info.get('delist_date')
+        return None if dd == 'unknown' else dd
 
     def is_delisted(self, symbol: str) -> bool:
         """判断股票是否已退市"""
@@ -401,8 +404,11 @@ class StockLifecycleManager:
                     date_col = '日期' if '日期' in hist_df.columns else hist_df.columns[0]
                     last_date_str = str(hist_df.iloc[-1][date_col])
                     last_dt = self._normalize_date(last_date_str)
-                    if last_dt and last_dt < '2025-01-01':
-                        pass
+                    if last_dt:
+                        last_dt_obj = datetime.strptime(last_dt, '%Y-%m-%d')
+                        days_inactive = (datetime.now() - last_dt_obj).days
+                        if days_inactive > 90:
+                            delist_date = last_dt
 
             time.sleep(0.3)
         except Exception as e:
@@ -429,7 +435,6 @@ class StockLifecycleManager:
 
         date_str = str(date_str).strip()
 
-        # YYYY-MM-DD 格式
         if len(date_str) == 10 and date_str[4] == '-':
             try:
                 datetime.strptime(date_str, '%Y-%m-%d')
@@ -437,7 +442,6 @@ class StockLifecycleManager:
             except ValueError:
                 pass
 
-        # YYYYMMDD 格式
         if len(date_str) == 8 and date_str.isdigit():
             try:
                 dt = datetime.strptime(date_str, '%Y%m%d')
@@ -445,32 +449,23 @@ class StockLifecycleManager:
             except ValueError:
                 pass
 
-        # YYYY年MM月DD日 格式
+        if len(date_str) == 10 and date_str[4] == '/':
+            try:
+                dt = datetime.strptime(date_str, '%Y/%m/%d')
+                return dt.strftime('%Y-%m-%d')
+            except ValueError:
+                pass
+
         try:
             dt = datetime.strptime(date_str, '%Y年%m月%d日')
             return dt.strftime('%Y-%m-%d')
         except ValueError:
             pass
 
-        # 通用解析
         try:
-            from datetime import datetime as _dt
-            parsed = _dt.strptime(date_str[:19], '%Y-%m-%dT%H:%M:%S') if 'T' in date_str else None
-            if parsed:
-                return parsed.strftime('%Y-%m-%d')
-        except Exception:
-            pass
-
-        try:
-            from datetime import datetime as _dt
-            # 尝试各种常见格式
-            for fmt in ['%Y-%m-%d', '%Y/%m/%d', '%Y%m%d']:
-                try:
-                    parsed = _dt.strptime(date_str[:len(fmt.replace('%','')) + 2], fmt)
-                    return parsed.strftime('%Y-%m-%d')
-                except ValueError:
-                    continue
-        except Exception:
+            parsed = datetime.strptime(date_str[:19], '%Y-%m-%dT%H:%M:%S')
+            return parsed.strftime('%Y-%m-%d')
+        except (ValueError, TypeError):
             pass
 
         return None
