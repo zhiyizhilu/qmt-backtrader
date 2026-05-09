@@ -1,0 +1,17 @@
+{
+  "initial_capital": 30000000,
+  "final_value": 56046648.2476855,
+  "total_return_pct": 86.82216082561834,
+  "sharpe_ratio": 0.8940941699722365,
+  "max_drawdown_pct": -16.14761529083939,
+  "annual_return_pct": 11.540885446016702,
+  "trading_days": 1442,
+  "fee": 0,
+  "turnover": 2605178722.119898,
+  "label": "opt07_extended_regression",
+  "extra_params": {
+    "regression_window": 60,
+    "min_regression_window": 40
+  },
+  "timestamp": "2026-05-09T13:14:59.023139"
+}

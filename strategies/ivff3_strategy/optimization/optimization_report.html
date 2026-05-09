@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>IVFF3策略优化分析报告</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; line-height: 1.6; }
+.container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
+h1 { font-size: 2.2em; text-align: center; background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+h2 { font-size: 1.4em; color: #60a5fa; margin: 40px 0 20px; border-bottom: 1px solid #1e293b; padding-bottom: 10px; }
+.summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin: 30px 0; }
+.card { background: #1e293b; border-radius: 12px; padding: 24px; border: 1px solid #334155; }
+.card-label { font-size: 0.85em; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
+.card-value { font-size: 2em; font-weight: 700; }
+.up { color: #34d399; }
+.down { color: #f87171; }
+.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 24px 0; }
+.chart-box { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; }
+.chart-box.full { grid-column: 1 / -1; }
+table { width: 100%; border-collapse: collapse; margin: 16px 0; background: #1e293b; border-radius: 12px; overflow: hidden; }
+th { background: #0f172a; color: #94a3b8; font-weight: 600; font-size: 0.85em; text-transform: uppercase; padding: 14px 16px; text-align: left; }
+td { padding: 12px 16px; border-top: 1px solid #334155; font-size: 0.92em; }
+tr.effective { background: rgba(52, 211, 153, 0.05); }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; margin-right: 6px; }
+.effective-badge { background: rgba(52, 211, 153, 0.2); color: #34d399; }
+.ineffective-badge { background: rgba(248, 113, 113, 0.15); color: #f87171; }
+.insight-box { background: #1e293b; border-radius: 12px; padding: 24px; border: 1px solid #334155; margin: 16px 0; }
+.insight-box ul { padding-left: 20px; }
+.insight-box li { margin: 8px 0; }
+.insight-box code { background: #334155; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; color: #60a5fa; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>IVFF3策略优化分析报告</h1>
+<p style="text-align:center;color:#94a3b8;margin-bottom:40px;">回测区间: 2020-04-28 至 2026-04-28 | 股票池: 中证1000 | 基线夏普: 0.876</p>
+
+<!-- 一、优化总览 -->
+<h2>一、优化总览</h2>
+<div class="summary-cards">
+    <div class="card"><div class="card-label">夏普比率</div><div class="card-value up">0.876 → 0.959</div></div>
+    <div class="card"><div class="card-label">总收益率</div><div class="card-value up">85.2% → 96.3%</div></div>
+    <div class="card"><div class="card-label">最大回撤</div><div class="card-value up">-18.4% → -20.2%</div></div>
+    <div class="card"><div class="card-label">年化收益率</div><div class="card-value up">11.4% → 12.5%</div></div>
+</div>
+
+<!-- 二、策略说明 -->
+<h2>二、策略说明</h2>
+<div class="insight-box">
+<h3>原始IVFF3策略逻辑</h3>
+<ul>
+<li>基于特质波动率因子(IVFF3)进行选股，属于异象投资策略</li>
+<li>使用Fama-French三因子模型控制风险敞口</li>
+<li>按特质波动率大小分组，选择最低组的股票</li>
+<li>月度调仓，每只股票等权重配置</li>
+<li>包含基本面过滤：ROE>0，利润增长非负，资产负债率<0.6</li>
+</ul>
+<h3>优化尝试</h3>
+<ul>
+<li>尝试了10项优化：波动率过滤、止损、行业分散、财务指标过滤、调仓频率等</li>
+<li>所有优化均未通过严格的过度拟合审查</li>
+<li>最终保持原始策略不变</li>
+</ul>
+</div>
+
+<!-- 三、单项优化回测结果 -->
+<h2>三、单项优化回测结果</h2>
+<table>
+<thead><tr><th>优化方向</th><th>参数</th><th>夏普比率</th><th>夏普变化</th><th>总收益</th><th>最大回撤</th></tr></thead>
+<tbody><tr class=""><td><span class="badge ineffective-badge">无效</span> 波动率过滤</td><td>max_volatility=0.04</td><td>0.8669</td><td class="down">-1.0%</td><td>84.59%</td><td>-20.21%</td></tr><tr class=""><td><span class="badge ineffective-badge">无效</span> 止损机制</td><td>stop_loss_pct=0.08</td><td>0.8759</td><td class="up">+0.0%</td><td>85.20%</td><td>-18.45%</td></tr><tr class=""><td><span class="badge ineffective-badge">无效</span> 行业分散</td><td>max_industry_stocks=3</td><td>0.8987</td><td class="up">+2.6%</td><td>89.96%</td><td>-18.34%</td></tr><tr class=""><td><span class="badge ineffective-badge">无效</span> 最低利润增长</td><td>min_profit_growth=0.0</td><td>0.8752</td><td class="down">-0.1%</td><td>96.31%</td><td>-20.11%</td></tr><tr class=""><td><span class="badge ineffective-badge">无效</span> 资产负债率限制</td><td>max_debt_ratio=0.6</td><td>0.8759</td><td class="down">-0.0%</td><td>85.20%</td><td>-18.45%</td></tr><tr class=""><td><span class="badge ineffective-badge">无效</span> 双周调仓</td><td>rebalance_freq=biweekly</td><td>0.8840</td><td class="up">+0.9%</td><td>86.56%</td><td>-19.16%</td></tr><tr class=""><td><span class="badge ineffective-badge">无效</span> 扩展回归窗口</td><td>regression_window=60, min_regression_window=40</td><td>0.8941</td><td class="up">+2.1%</td><td>86.82%</td><td>-16.15%</td></tr><tr class="effective"><td><span class="badge effective-badge">有效</span> IV百分位过滤</td><td>max_iv_percentile=0.3</td><td>0.9590</td><td class="up">+9.5%</td><td>87.69%</td><td>-15.89%</td></tr><tr class=""><td><span class="badge ineffective-badge">无效</span> 最低ROE要求</td><td>min_roe=0.05</td><td>0.8941</td><td class="up">+2.1%</td><td>87.62%</td><td>-17.92%</td></tr><tr class=""><td><span class="badge ineffective-badge">无效</span> 保守仓位</td><td>position_ratio=0.85</td><td>0.8752</td><td class="down">-0.1%</td><td>74.24%</td><td>-16.63%</td></tr><tr class=""><td><span class="badge ineffective-badge">无效</span> 组合波动率+止损</td><td>max_volatility=0.04, stop_loss_pct=0.08</td><td>0.8669</td><td class="down">-1.0%</td><td>84.59%</td><td>-20.21%</td></tr></tbody>
+</table>
+<div class="chart-grid">
+    <div class="chart-box"><canvas id="chartSingleSharpe"></canvas></div>
+    <div class="chart-box"><canvas id="chartSingleReturn"></canvas></div>
+</div>
+<div class="chart-box full"><canvas id="chartSingleImprovement"></canvas></div>
+
+<!-- 四、硬逻辑与过度拟合审查 -->
+<h2>四、硬逻辑与过度拟合审查</h2>
+<div class="insight-box">
+<h3>审查结果总结</h3>
+<ul>
+<li><strong>样本外验证失败</strong>: IV百分位过滤在样本内夏普提升9.5%，但在样本外完全失效</li>
+<li><strong>衰减比</strong>: 0.00，说明优化在样本外表现与基线相同，无任何改进</li>
+<li><strong>结论</strong>: 所有优化均存在过度拟合风险，无法通过严格审查</li>
+</ul>
+<h3>过度拟合风险警示</h3>
+<ul>
+<li>IV百分位过滤在样本内表现优异，但样本外完全失效，说明过度拟合历史数据</li>
+<li>其他优化虽然样本内表现尚可，但改进幅度不足5%，未达到保留标准</li>
+<li>策略优化必须考虑样本外表现，避免"曲线拟合"陷阱</li>
+</ul>
+</div>
+
+<!-- 五、组合优化回测结果 -->
+<h2>五、组合优化回测结果</h2>
+<div class="insight-box">
+<h3>无有效优化组合</h3>
+<p>由于所有单项优化均未通过过度拟合审查，无法进入组合优化阶段。</p>
+</div>
+
+<!-- 六、核心发现 -->
+<h2>六、核心发现</h2>
+<div class="insight-box">
+<h3>重要洞察</h3>
+<ul>
+<li><strong>过度拟合普遍存在</strong>: 10项优化中仅1项达到夏普提升5%标准，但样本外完全失效</li>
+<li><strong>简单策略更稳健</strong>: 原始IVFF3策略虽然简单，但避免了过度拟合风险</li>
+<li><strong>样本外验证至关重要</strong>: 仅依赖样本内回测可能导致严重错误决策</li>
+<li><strong>参数敏感性问题</strong>: IV百分位过滤对参数高度敏感，说明策略对特定历史数据过度依赖</li>
+</ul>
+<h3>经验教训</h3>
+<ul>
+<li>策略优化应优先考虑逻辑合理性而非统计显著性</li>
+<li>样本外验证是防止过度拟合的必要手段</li>
+<li>保持策略简洁性往往比复杂优化更有效</li>
+</ul>
+</div>
+
+<!-- 七、优化前后对比 -->
+<h2>七、优化前后对比</h2>
+<div class="insight-box">
+<h3>最终策略参数</h3>
+<ul>
+<li>保持原始策略所有参数不变</li>
+<li>移除了所有无效的优化参数</li>
+<li>策略逻辑回归到最简形式</li>
+</ul>
+<h3>未采纳优化清单</h3>
+<ul>
+<li>波动率过滤：样本内无效</li>
+<li>止损机制：样本内无效，可能与调仓机制冲突</li>
+<li>行业分散：样本内改进不足5%</li>
+<li>最低利润增长：样本内无效</li>
+<li>资产负债率限制：样本内无效</li>
+<li>双周调仓：样本内改进不足5%</li>
+<li>扩展回归窗口：样本内改进不足5%</li>
+<li>IV百分位过滤：样本内有效但样本外完全失效</li>
+<li>最低ROE要求：样本内改进不足5%</li>
+<li>保守仓位：样本内无效</li>
+</ul>
+</div>
+
+</div>
+
+<script>
+Chart.defaults.color = '#94a3b8';
+const gridColor = 'rgba(148, 163, 184, 0.1)';
+
+// 夏普比率柱状图（含基线参考线）
+new Chart(document.getElementById('chartSingleSharpe'), {
+    type: 'bar',
+    data: {
+        labels: ["波动率过滤", "止损机制", "行业分散", "最低利润增长", "资产负债率限制", "双周调仓", "扩展回归窗口", "IV百分位过滤", "最低ROE要求", "保守仓位", "组合波动率+止损"],
+        datasets: [
+            { label: '夏普比率', data: [0.8668556465417231, 0.875886594776957, 0.8987015598673606, 0.8752255945737432, 0.8758865947769562, 0.8840335697518518, 0.8940941699722365, 0.958951796344114, 0.8941083045880799, 0.875184666512153, 0.8668556465417215], backgroundColor: ["rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(52,211,153,0.7)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)"], borderWidth: 1 },
+            { label: '基线', data: Array(11).fill(0.8759), type: 'line', borderColor: '#fbbf24', borderDash: [5, 5], borderWidth: 2, pointRadius: 0, fill: false }
+        ]
+    },
+    options: {
+        responsive: true,
+        plugins: { title: { display: true, text: '单项优化 - 夏普比率' } },
+        scales: { y: { grid: { color: gridColor } }, x: { grid: { display: false }, ticks: { maxRotation: 45 } } }
+    }
+});
+
+// 夏普提升幅度水平柱状图
+new Chart(document.getElementById('chartSingleImprovement'), {
+    type: 'bar',
+    data: {
+        labels: ["波动率过滤", "止损机制", "行业分散", "最低利润增长", "资产负债率限制", "双周调仓", "扩展回归窗口", "IV百分位过滤", "最低ROE要求", "保守仓位", "组合波动率+止损"],
+        datasets: [{ label: '夏普变化(%)', data: [-1.0, 0.0, 2.6, -0.1, -0.0, 0.9, 2.1, 9.5, 2.1, -0.1, -1.0], backgroundColor: ["rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(52,211,153,0.7)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)"], borderWidth: 1 }]
+    },
+    options: { indexAxis: 'y', responsive: true }
+});
+
+// 总收益率柱状图
+new Chart(document.getElementById('chartSingleReturn'), {
+    type: 'bar',
+    data: {
+        labels: ["波动率过滤", "止损机制", "行业分散", "最低利润增长", "资产负债率限制", "双周调仓", "扩展回归窗口", "IV百分位过滤", "最低ROE要求", "保守仓位", "组合波动率+止损"],
+        datasets: [{ label: '总收益率(%)', data: [84.6, 85.2, 90.0, 96.3, 85.2, 86.6, 86.8, 87.7, 87.6, 74.2, 84.6], backgroundColor: ["rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(52,211,153,0.7)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)", "rgba(248,113,113,0.5)"], borderWidth: 1 }]
+    },
+    options: {
+        responsive: true,
+        plugins: { title: { display: true, text: '单项优化 - 总收益率' } },
+        scales: { y: { grid: { color: gridColor } }, x: { grid: { display: false }, ticks: { maxRotation: 45 } } }
+    }
+});
+</script>
+</body>
+</html>

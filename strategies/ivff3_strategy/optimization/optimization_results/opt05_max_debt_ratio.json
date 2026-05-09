@@ -1,0 +1,16 @@
+{
+  "initial_capital": 30000000,
+  "final_value": 55559330.717400014,
+  "total_return_pct": 85.19776905800005,
+  "sharpe_ratio": 0.8758865947769562,
+  "max_drawdown_pct": -18.44628365041938,
+  "annual_return_pct": 11.37078895930057,
+  "trading_days": 1442,
+  "fee": 0,
+  "turnover": 4095692826.0,
+  "label": "opt05_max_debt_ratio",
+  "extra_params": {
+    "max_debt_ratio": 0.6
+  },
+  "timestamp": "2026-05-09T12:06:25.662276"
+}

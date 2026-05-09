@@ -1,0 +1,16 @@
+{
+  "initial_capital": 30000000,
+  "final_value": 56989298.379489675,
+  "total_return_pct": 89.96432793163225,
+  "sharpe_ratio": 0.8987015598673606,
+  "max_drawdown_pct": -18.342234074069548,
+  "annual_return_pct": 11.86647951412494,
+  "trading_days": 1442,
+  "fee": 0,
+  "turnover": 4253823761.5290904,
+  "label": "opt03_industry_dispersion",
+  "extra_params": {
+    "max_industry_stocks": 3
+  },
+  "timestamp": "2026-05-09T08:57:31.514698"
+}

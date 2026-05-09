@@ -1,0 +1,16 @@
+{
+  "initial_capital": 30000000,
+  "final_value": 56306088.14509992,
+  "total_return_pct": 87.68696048366641,
+  "sharpe_ratio": 0.958951796344114,
+  "max_drawdown_pct": -15.886398529321436,
+  "annual_return_pct": 11.630944734894587,
+  "trading_days": 1442,
+  "fee": 0,
+  "turnover": 4707808549.0,
+  "label": "opt08_iv_percentile_filter",
+  "extra_params": {
+    "max_iv_percentile": 0.3
+  },
+  "timestamp": "2026-05-09T14:15:12.340265"
+}
