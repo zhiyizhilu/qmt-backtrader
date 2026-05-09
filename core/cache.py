@@ -22,6 +22,36 @@ except ImportError:
     logging.warning("pyarrow 未安装，行情数据缓存将退级使用 pickle，建议 pip install pyarrow 提升性能")
 
 
+_SAFE_PICKLE_MODULES = {
+    'pandas', 'pandas.core', 'pandas.core.frame', 'pandas.core.series',
+    'pandas.core.indexes', 'pandas.core.indexes.base', 'pandas.core.indexes.datetimes',
+    'pandas.core.indexes.range', 'pandas.core.indexes.multi',
+    'numpy', 'numpy.core', 'numpy.core.multiarray', 'numpy.core.numeric',
+    'numpy.dtype', 'numpy.ndarray',
+    'collections', 'collections.OrderedDict',
+    'datetime', 'datetime datetime', 'datetime date',
+    'builtins', '__builtin__',
+}
+
+
+class _RestrictedUnpickler(pickle.Unpickler):
+    """限制 pickle 反序列化的类白名单，防止恶意代码执行"""
+
+    def find_class(self, module, name):
+        if module in _SAFE_PICKLE_MODULES or module.startswith('pandas.') or module.startswith('numpy.'):
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(
+            f"Forbidden class: {module}.{name} — "
+            f"pickle cache only allows pandas/numpy/datetime types. "
+            f"If this is legitimate, add '{module}' to _SAFE_PICKLE_MODULES."
+        )
+
+
+def _safe_pickle_load(file_obj):
+    """安全地加载 pickle 数据，限制可反序列化的类型"""
+    return _RestrictedUnpickler(file_obj).load()
+
+
 class MemCache:
     """基于 OrderedDict 的线程安全 LRU 内存缓存"""
     def __init__(self, capacity: int = 500):
@@ -551,7 +581,7 @@ class DiskCache:
                     return pd.read_parquet(file_path)
                 else:
                     with open(file_path, 'rb') as f:
-                        return pickle.load(f)
+                        return _safe_pickle_load(f)
             except Exception as e:
                 self.logger.warning(f"读取磁盘缓存失败 (文件可能损坏)，自动删除: {file_path}, 错误: {e}")
                 try:
@@ -580,7 +610,7 @@ class DiskCache:
                     return pd.read_parquet(file_path)
                 else:
                     with open(file_path, 'rb') as f:
-                        return pickle.load(f)
+                        return _safe_pickle_load(f)
             except Exception as e:
                 self.logger.warning(f"读取年份缓存失败: {file_path}, 错误: {e}")
                 try:
@@ -739,7 +769,7 @@ class DiskCache:
                             data = pd.read_parquet(f)
                         else:
                             with open(f, 'rb') as fh:
-                                data = pickle.load(fh)
+                                data = _safe_pickle_load(fh)
                         return (key, data)
                     except Exception as e:
                         self.logger.warning(f"读取磁盘缓存失败: {f}, 错误: {e}")
@@ -769,7 +799,7 @@ class DiskCache:
                         data = pd.read_parquet(f)
                     else:
                         with open(f, 'rb') as fh:
-                            data = pickle.load(fh)
+                            data = _safe_pickle_load(fh)
                     if data is not None:
                         results.append((key, data))
                 except Exception as e:
@@ -1020,25 +1050,28 @@ class SmartCacheManager:
     def __new__(cls, *args, **kwargs):
         with cls._lock:
             if cls._instance is None:
-                cls._instance = super(SmartCacheManager, cls).__new__(cls)
-        return cls._instance
+                instance = super(SmartCacheManager, cls).__new__(cls)
+                instance._init_done = False
+                cls._instance = instance
+            return cls._instance
 
     def __init__(self):
-        if not hasattr(self, 'initialized'):
-            self.base_cache_dir = os.environ.get('QMT_CACHE_DIR', os.path.join(os.getcwd(), '.cache'))
-            self.mem_cache = MemCache(capacity=int(os.environ.get('QMT_MEM_CACHE_LIMIT', 500)))
-            self.disk_cache = DiskCache(self.base_cache_dir)
-            self.index_manager = CacheIndexManager(Path(self.base_cache_dir))
-            self.stats = {
-                'mem_hits': 0,
-                'disk_hits': 0,
-                'misses': 0,
-                'incremental_merges': 0,
-                'yearly_hits': 0,
-                'total_load_time_ms': 0.0
-            }
-            self.logger = logging.getLogger(self.__class__.__name__)
-            self.initialized = True
+        if self._init_done:
+            return
+        self.base_cache_dir = os.environ.get('QMT_CACHE_DIR', os.path.join(os.getcwd(), '.cache'))
+        self.mem_cache = MemCache(capacity=int(os.environ.get('QMT_MEM_CACHE_LIMIT', 500)))
+        self.disk_cache = DiskCache(self.base_cache_dir)
+        self.index_manager = CacheIndexManager(Path(self.base_cache_dir))
+        self.stats = {
+            'mem_hits': 0,
+            'disk_hits': 0,
+            'misses': 0,
+            'incremental_merges': 0,
+            'yearly_hits': 0,
+            'total_load_time_ms': 0.0
+        }
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self._init_done = True
 
     def configure(self, cache_dir: str, mem_limit: int = 500):
         self.base_cache_dir = cache_dir

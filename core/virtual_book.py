@@ -50,7 +50,14 @@ class VirtualBook:
     def on_buy_filled(self, symbol: str, price: float, volume: int, commission: float = 0):
         """买入成交，更新持仓和现金"""
         self._positions[symbol] = self._positions.get(symbol, 0) + volume
-        self._cash -= price * volume + commission
+        cost = price * volume + commission
+        self._cash -= cost
+        if self._cash < 0:
+            self.logger.error(
+                f'[{self.strategy_id}] 现金为负! symbol={symbol}, '
+                f'cost={cost:.2f}, cash={self._cash:.2f}. '
+                f'多策略共享账户资金不足，簿记可能与实际不符'
+            )
         self.logger.info(
             f'[{self.strategy_id}] 买入成交: {symbol}, '
             f'价格={price:.2f}, 数量={volume}, 手续费={commission:.2f}'

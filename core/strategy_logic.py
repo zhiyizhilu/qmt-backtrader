@@ -38,10 +38,15 @@ class OrderInfo:
     STATUS_REJECTED = 'rejected'
     STATUS_MARGIN = 'margin'
 
+    __slots__ = (
+        'order_id', 'symbol', 'direction', 'price', 'volume', 'status',
+        'executed_volume', 'executed_price', 'commission', 'datetime',
+    )
+
     def __init__(self, order_id: str = '', symbol: str = '', direction: str = '',
                  price: float = 0.0, volume: int = 0, status: str = '',
                  executed_volume: int = 0, executed_price: float = 0.0,
-                 commission: float = 0.0, **kwargs):
+                 commission: float = 0.0, datetime=None, **kwargs):
         self.order_id = order_id
         self.symbol = symbol
         self.direction = direction
@@ -51,8 +56,13 @@ class OrderInfo:
         self.executed_volume = executed_volume
         self.executed_price = executed_price
         self.commission = commission
-        for key, value in kwargs.items():
-            setattr(self, key, value)
+        self.datetime = datetime
+        if kwargs:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"OrderInfo 忽略未知字段: {list(kwargs.keys())}. "
+                f"请将新字段添加到 OrderInfo.__slots__ 中"
+            )
 
     @property
     def is_active(self) -> bool:
@@ -78,6 +88,11 @@ class OrderInfo:
 class TradeInfo:
     """成交信息 - 统一不同环境的成交数据结构"""
 
+    __slots__ = (
+        'trade_id', 'order_id', 'symbol', 'direction', 'price', 'volume',
+        'commission', 'pnl',
+    )
+
     def __init__(self, trade_id: str = '', order_id: str = '', symbol: str = '',
                  direction: str = '', price: float = 0.0, volume: int = 0,
                  commission: float = 0.0, pnl: float = 0.0, **kwargs):
@@ -89,8 +104,12 @@ class TradeInfo:
         self.volume = volume
         self.commission = commission
         self.pnl = pnl
-        for key, value in kwargs.items():
-            setattr(self, key, value)
+        if kwargs:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"TradeInfo 忽略未知字段: {list(kwargs.keys())}. "
+                f"请将新字段添加到 TradeInfo.__slots__ 中"
+            )
 
     @property
     def is_buy(self) -> bool:
@@ -284,33 +303,33 @@ class StrategyLogic:
     def buy(self, symbol: str, price: float, volume: int):
         self.log(f'买入委托: {symbol}, 价格: {price:.2f}, 数量: {volume}')
         if not self._check_risk_before_buy(symbol, price, volume):
-            self.log(f'风控拒绝买入: {symbol}')
+            self.log(f'风控拒绝买入: {symbol}', level='warning')
             return None
         if self.is_suspended(symbol):
-            self.log(f'停牌拒绝买入: {symbol}')
+            self.log(f'停牌拒绝买入: {symbol}', level='warning')
             return None
         if self.is_limit_up(symbol):
-            self.log(f'涨停拒绝买入: {symbol}')
+            self.log(f'涨停拒绝买入: {symbol}', level='warning')
             return None
         if self.executor:
             return self.executor.execute_buy(symbol, price, volume)
-        self.log(f'[WARNING] 买入失败: executor未设置!')
+        self.log(f'[WARNING] 买入失败: executor未设置!', level='error')
         return None
 
     def sell(self, symbol: str, price: float, volume: int):
         self.log(f'卖出委托: {symbol}, 价格: {price:.2f}, 数量: {volume}')
         if not self._check_risk_before_sell(symbol, price, volume):
-            self.log(f'风控拒绝卖出: {symbol}')
+            self.log(f'风控拒绝卖出: {symbol}', level='warning')
             return None
         if self.is_suspended(symbol):
-            self.log(f'停牌拒绝卖出: {symbol}')
+            self.log(f'停牌拒绝卖出: {symbol}', level='warning')
             return None
         if self.is_limit_down(symbol):
-            self.log(f'跌停拒绝卖出: {symbol}')
+            self.log(f'跌停拒绝卖出: {symbol}', level='warning')
             return None
         if self.executor:
             return self.executor.execute_sell(symbol, price, volume)
-        self.log(f'[WARNING] 卖出失败: executor未设置!')
+        self.log(f'[WARNING] 卖出失败: executor未设置!', level='error')
         return None
 
     def cancel(self, order_id: str):
@@ -693,13 +712,20 @@ class StrategyLogic:
     # 通用工具
     # ================================================================
 
-    def log(self, txt, dt=None):
-        """日志记录"""
+    def log(self, txt, dt=None, level='debug'):
+        """日志记录
+
+        Args:
+            txt: 日志内容
+            dt: 日期时间，可选
+            level: 日志级别，'debug'/'info'/'warning'，默认 'debug'
+        """
         if dt:
             log_text = f'{dt.isoformat()}, {txt}'
         else:
             log_text = txt
-        self.logger.info(log_text)
+        log_fn = getattr(self.logger, level, self.logger.debug)
+        log_fn(log_text)
 
     # ================================================================
     # 向后兼容别名
@@ -809,7 +835,9 @@ class RiskController:
         if account_value <= 0:
             return False
 
-        if account_value > self._peak_value:
+        if self._peak_value <= 0:
+            self._peak_value = account_value
+        elif account_value > self._peak_value:
             self._peak_value = account_value
 
         if self._peak_value > 0:

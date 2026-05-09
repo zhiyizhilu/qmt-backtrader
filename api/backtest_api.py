@@ -71,8 +71,8 @@ class BacktestStrategyAdapter(BaseStrategy):
 
         logic = strategy_logic_class(**strategy_kwargs)
 
-        executor = BacktestExecutor(self)
         adapter = BacktraderDataAdapter(period=period)
+        executor = BacktestExecutor(self, data_adapter=adapter)
 
         logging.getLogger(__name__).debug(
             f'[BacktestStrategyAdapter] 初始化: symbols={symbols}, period={period}, '
@@ -620,6 +620,21 @@ class BacktestAPI(BaseAPI):
         self._strategy_logic_class = strategy_class
         self._strategy_kwargs = kwargs
 
+        loaded_count, failed_count, skipped_count = self._load_pool_market_data(pool)
+
+        self._preload_auxiliary_data(pool)
+
+        self._register_stock_selection_strategy(strategy_class, kwargs)
+
+    def _load_pool_market_data(self, pool: List[str]):
+        """加载股票池行情数据到回测引擎
+
+        Args:
+            pool: 股票代码列表
+
+        Returns:
+            (loaded_count, failed_count, skipped_count) 元组
+        """
         import time as _time
         from concurrent.futures import ThreadPoolExecutor, as_completed
         load_start = _time.time()
@@ -631,7 +646,6 @@ class BacktestAPI(BaseAPI):
 
         self.logger.info(f"开始加载股票池行情数据: {total} 只股票, 周期={self._period}")
 
-        # 确保生命周期管理器已初始化
         if self._lifecycle_manager is None:
             try:
                 self._lifecycle_manager = get_lifecycle_manager(
@@ -645,7 +659,6 @@ class BacktestAPI(BaseAPI):
 
         def _fetch_market_data(symbol):
             try:
-                # 新增：获取有效日期范围
                 lifecycle_mgr = self._lifecycle_manager
                 effective_start, effective_end = None, None
                 if lifecycle_mgr:
@@ -653,12 +666,10 @@ class BacktestAPI(BaseAPI):
                         symbol, self._data_start_date, self._data_end_date
                     )
 
-                # 如果股票在回测区间内无有效数据 → 完全跳过
                 if effective_start is None or effective_end is None:
                     self.logger.debug(f"跳过 {symbol}: 在回测区间内无有效数据(退市或未上市)")
                     return (symbol, None, None)
 
-                # 使用有效日期范围请求数据（而非回测全区间）
                 data = None
                 try:
                     data = self._opendata_processor.get_data(symbol, effective_start, effective_end, self._period)
@@ -751,6 +762,16 @@ class BacktestAPI(BaseAPI):
             f"股票池行情数据加载完成: 成功 {loaded_count}, 失败 {failed_count}, "
             f"已存在 {skipped_count}, 耗时 {load_elapsed:.1f}秒"
         )
+        return loaded_count, failed_count, skipped_count
+
+    def _preload_auxiliary_data(self, pool: List[str]):
+        """预加载财务数据和不复权行情数据
+
+        Args:
+            pool: 股票代码列表
+        """
+        import time as _time
+        from concurrent.futures import ThreadPoolExecutor
 
         if self._financial_adapter and self._financial_adapter.cache:
             preload_start = _time.time()
@@ -760,6 +781,7 @@ class BacktestAPI(BaseAPI):
             )
 
             raw_download_future = None
+            raw_executor = None
             if self._opendata_processor:
                 raw_executor = ThreadPoolExecutor(max_workers=1)
 
@@ -822,7 +844,7 @@ class BacktestAPI(BaseAPI):
                 f"财务数据预加载完成: {len(pool)} 只股票, 耗时 {preload_elapsed:.1f}秒"
             )
 
-            if raw_download_future is not None:
+            if raw_download_future is not None and raw_executor is not None:
                 try:
                     raw_download_future.result()
                 except Exception as e:
@@ -831,55 +853,72 @@ class BacktestAPI(BaseAPI):
                     raw_executor.shutdown(wait=False)
 
         elif self._opendata_processor:
-            raw_start = _time.time()
-            raw_loaded = 0
-            raw_skipped = 0
-            raw_nodata = 0
-            self.logger.info(f"预下载不复权行情数据: {len(pool)} 只股票")
+            self._preload_raw_market_data(pool)
 
-            from core.cache import cache_manager as _cm
-            idx = _cm.index_manager
+    def _preload_raw_market_data(self, pool: List[str]):
+        """预下载不复权行情数据（无财务适配器时的独立路径）
 
-            symbols_to_fetch = []
-            for symbol in pool:
-                if idx.is_market_raw_nodata(symbol, self._period):
-                    raw_nodata += 1
-                    continue
-                symbols_to_fetch.append(symbol)
+        Args:
+            pool: 股票代码列表
+        """
+        import time as _time
+        raw_start = _time.time()
+        raw_loaded = 0
+        raw_skipped = 0
+        raw_nodata = 0
+        self.logger.info(f"预下载不复权行情数据: {len(pool)} 只股票")
 
-            if raw_nodata > 0:
-                self.logger.info(
-                    f"不复权行情预下载: 跳过 {raw_nodata} 只无数据股票(黑名单), "
-                    f"剩余 {len(symbols_to_fetch)} 只待下载"
-                )
+        from core.cache import cache_manager as _cm
+        idx = _cm.index_manager
 
-            for i, symbol in enumerate(symbols_to_fetch, 1):
-                try:
-                    df = self._opendata_processor.get_raw_data(
-                        symbol, self._data_start_date, self._data_end_date, self._period
-                    )
-                    if df is not None and not df.empty:
-                        raw_loaded += 1
-                    else:
-                        raw_skipped += 1
-                        idx.mark_market_raw_nodata(symbol, self._period)
-                except Exception:
-                    raw_skipped += 1
-                    idx.mark_market_raw_nodata(symbol, self._period)
-                if i % 100 == 0 or i == len(symbols_to_fetch):
-                    self.logger.info(f"[ {i} / {len(symbols_to_fetch)} ] 不复权行情预下载进度")
+        symbols_to_fetch = []
+        for symbol in pool:
+            if idx.is_market_raw_nodata(symbol, self._period):
+                raw_nodata += 1
+                continue
+            symbols_to_fetch.append(symbol)
 
-            try:
-                idx.save_index()
-            except Exception:
-                pass
-
-            raw_elapsed = _time.time() - raw_start
+        if raw_nodata > 0:
             self.logger.info(
-                f"不复权行情数据预下载完成: {raw_loaded} 已缓存, "
-                f"{raw_skipped} 跳过, {raw_nodata} 黑名单跳过, 耗时 {raw_elapsed:.1f}秒"
+                f"不复权行情预下载: 跳过 {raw_nodata} 只无数据股票(黑名单), "
+                f"剩余 {len(symbols_to_fetch)} 只待下载"
             )
 
+        for i, symbol in enumerate(symbols_to_fetch, 1):
+            try:
+                df = self._opendata_processor.get_raw_data(
+                    symbol, self._data_start_date, self._data_end_date, self._period
+                )
+                if df is not None and not df.empty:
+                    raw_loaded += 1
+                else:
+                    raw_skipped += 1
+                    idx.mark_market_raw_nodata(symbol, self._period)
+            except Exception:
+                raw_skipped += 1
+                idx.mark_market_raw_nodata(symbol, self._period)
+            if i % 100 == 0 or i == len(symbols_to_fetch):
+                self.logger.info(f"[ {i} / {len(symbols_to_fetch)} ] 不复权行情预下载进度")
+
+        try:
+            idx.save_index()
+        except Exception:
+            pass
+
+        raw_elapsed = _time.time() - raw_start
+        self.logger.info(
+            f"不复权行情数据预下载完成: {raw_loaded} 已缓存, "
+            f"{raw_skipped} 跳过, {raw_nodata} 黑名单跳过, 耗时 {raw_elapsed:.1f}秒"
+        )
+
+    def _register_stock_selection_strategy(self, strategy_class: Type[StockSelectionStrategy],
+                                            kwargs: Dict[str, Any]):
+        """注册选股策略到回测引擎
+
+        Args:
+            strategy_class: 选股策略类
+            kwargs: 策略参数
+        """
         self._ensure_default_analyzers()
 
         strategy_logic_class_ref = strategy_class

@@ -6,48 +6,7 @@ import math
 if TYPE_CHECKING:
     from core.virtual_book import VirtualBook
     from core.order_router import OrderRouter
-
-
-def _check_suspended(data_feed) -> bool:
-    try:
-        vol = data_feed.volume[0]
-        if isinstance(vol, float) and math.isnan(vol):
-            return True
-        return float(vol) == 0
-    except (AttributeError, IndexError):
-        return True
-
-
-def _check_limit_up(data_feed, symbol: str) -> bool:
-    from core.data_adapter import get_limit_ratio
-    try:
-        close = data_feed.close[0]
-        if math.isnan(close):
-            return False
-        prev_close = data_feed.close[-1]
-        if math.isnan(prev_close) or prev_close <= 0:
-            return False
-    except (AttributeError, IndexError):
-        return False
-    limit_ratio = get_limit_ratio(symbol)
-    limit_price = round(prev_close * (1 + limit_ratio), 2)
-    return close >= limit_price - 0.005
-
-
-def _check_limit_down(data_feed, symbol: str) -> bool:
-    from core.data_adapter import get_limit_ratio
-    try:
-        close = data_feed.close[0]
-        if math.isnan(close):
-            return False
-        prev_close = data_feed.close[-1]
-        if math.isnan(prev_close) or prev_close <= 0:
-            return False
-    except (AttributeError, IndexError):
-        return False
-    limit_ratio = get_limit_ratio(symbol)
-    limit_price = round(prev_close * (1 - limit_ratio), 2)
-    return close <= limit_price + 0.005
+    from core.data_adapter import MarketDataAdapter
 
 
 class StrategyExecutor(ABC):
@@ -92,10 +51,16 @@ class StrategyExecutor(ABC):
 class BacktestExecutor(StrategyExecutor):
     """回测执行器 - 通过backtrader执行交易"""
 
-    def __init__(self, strategy):
-        """初始化回测执行器"""
+    def __init__(self, strategy, data_adapter=None):
+        """初始化回测执行器
+
+        Args:
+            strategy: backtrader Strategy 实例
+            data_adapter: BacktraderDataAdapter 实例，用于涨跌停/停牌检查
+        """
         self.strategy = strategy
         self._symbol_data_map: Dict[str, Any] = {}
+        self._data_adapter = data_adapter
 
     def register_data(self, symbol: str, data_feed) -> None:
         """注册标的与数据源的映射"""
@@ -110,12 +75,12 @@ class BacktestExecutor(StrategyExecutor):
                     f'[BacktestExecutor] 买入拒绝-数据为NaN: {symbol}'
                 )
                 return None
-            if _check_suspended(data):
+            if self._data_adapter and self._data_adapter.is_suspended(symbol):
                 logging.getLogger(__name__).warning(
                     f'[BacktestExecutor] 买入拒绝-停牌(成交量为0): {symbol}'
                 )
                 return None
-            if _check_limit_up(data, symbol):
+            if self._data_adapter and self._data_adapter.is_limit_up(symbol):
                 logging.getLogger(__name__).warning(
                     f'[BacktestExecutor] 买入拒绝-涨停: {symbol}, '
                     f'收盘价={current_close:.2f}'
@@ -141,12 +106,12 @@ class BacktestExecutor(StrategyExecutor):
                     f'[BacktestExecutor] 卖出拒绝-数据为NaN: {symbol}'
                 )
                 return None
-            if _check_suspended(data):
+            if self._data_adapter and self._data_adapter.is_suspended(symbol):
                 logging.getLogger(__name__).warning(
                     f'[BacktestExecutor] 卖出拒绝-停牌(成交量为0): {symbol}'
                 )
                 return None
-            if _check_limit_down(data, symbol):
+            if self._data_adapter and self._data_adapter.is_limit_down(symbol):
                 logging.getLogger(__name__).warning(
                     f'[BacktestExecutor] 卖出拒绝-跌停: {symbol}, '
                     f'收盘价={current_close:.2f}'
@@ -204,15 +169,18 @@ class QMTExecutor(StrategyExecutor):
     走 VirtualBook，而非直接查账户，实现策略级隔离。
     """
 
-    def __init__(self, qmt_api, virtual_book: 'VirtualBook' = None):
+    def __init__(self, qmt_api, virtual_book: 'VirtualBook' = None,
+                 data_adapter: 'MarketDataAdapter' = None):
         """初始化QMT执行器
 
         Args:
             qmt_api: QMTTrader 实例，用于执行实际交易操作
             virtual_book: 虚拟持仓簿，可选。传入后持仓/资金查询走簿记
+            data_adapter: 数据适配器，可选。传入后启用涨跌停/停牌校验
         """
         self.qmt_api = qmt_api
         self.virtual_book = virtual_book
+        self._data_adapter = data_adapter
         self._order_router: Optional['OrderRouter'] = None
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
 
@@ -220,8 +188,19 @@ class QMTExecutor(StrategyExecutor):
         """设置订单路由器"""
         self._order_router = order_router
 
+    def set_data_adapter(self, data_adapter: 'MarketDataAdapter'):
+        """设置数据适配器，用于涨跌停/停牌校验"""
+        self._data_adapter = data_adapter
+
     def execute_buy(self, symbol: str, price: float, volume: int) -> Any:
         """执行买入操作"""
+        if self._data_adapter:
+            if self._data_adapter.is_suspended(symbol):
+                self.logger.warning(f'买入拒绝-停牌: {symbol}')
+                return None
+            if self._data_adapter.is_limit_up(symbol):
+                self.logger.warning(f'买入拒绝-涨停: {symbol}')
+                return None
         result = self.qmt_api.buy(symbol, price, volume)
         if result is None:
             self.logger.error(f'买入失败: {symbol}, 价格: {price}, 数量: {volume}')
@@ -235,6 +214,13 @@ class QMTExecutor(StrategyExecutor):
 
     def execute_sell(self, symbol: str, price: float, volume: int) -> Any:
         """执行卖出操作"""
+        if self._data_adapter:
+            if self._data_adapter.is_suspended(symbol):
+                self.logger.warning(f'卖出拒绝-停牌: {symbol}')
+                return None
+            if self._data_adapter.is_limit_down(symbol):
+                self.logger.warning(f'卖出拒绝-跌停: {symbol}')
+                return None
         result = self.qmt_api.sell(symbol, price, volume)
         if result is None:
             self.logger.error(f'卖出失败: {symbol}, 价格: {price}, 数量: {volume}')

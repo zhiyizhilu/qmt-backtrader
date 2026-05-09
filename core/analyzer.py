@@ -125,10 +125,30 @@ class PerformanceAnalyzer:
             if o.is_completed and (o.executed_volume > 0 or o.executed_price > 0)
         ]
 
+        used_trade_indices = set()
+        def _find_matching_trade(symbol: str, direction: str, fallback_idx: int):
+            """基于 symbol + direction 匹配 trade_record，回退到顺序索引"""
+            for i, tr in enumerate(trade_records):
+                if i in used_trade_indices:
+                    continue
+                tr_symbol = tr.get("symbol", "")
+                tr_direction = str(tr.get("direction", ""))
+                if tr_symbol == symbol:
+                    is_buy_trade = tr_direction in ("1", "买", "buy")
+                    is_sell_trade = tr_direction in ("2", "卖", "sell", "-1")
+                    order_is_buy = direction == "0"
+                    if (order_is_buy and is_buy_trade) or (not order_is_buy and is_sell_trade):
+                        used_trade_indices.add(i)
+                        return tr
+            if fallback_idx < len(trade_records) and fallback_idx not in used_trade_indices:
+                used_trade_indices.add(fallback_idx)
+                return trade_records[fallback_idx]
+            return None
+
         # 跟踪持仓，用于判断开平仓
         positions = {}
         trade_rec_idx = 0
-        
+
         for order_info in completed_orders:
             direction = "0" if order_info.is_buy else "1"
             exec_price = order_info.executed_price if order_info.executed_price > 0 else order_info.price
@@ -180,15 +200,13 @@ class PerformanceAnalyzer:
             pnl_val = 0.0
             fee_val = getattr(order_info, 'commission', 0.0)
 
-            if trade_datetime is None and trade_rec_idx < len(trade_records):
-                tr = trade_records[trade_rec_idx]
-                trade_datetime = tr.get("datetime")
-                pnl_val = tr.get("pnl_no_commission", 0.0)
-                fee_val = tr.get("commission", fee_val)
+            if trade_datetime is None:
+                tr = _find_matching_trade(order_info.symbol, direction, trade_rec_idx)
+                if tr is not None:
+                    trade_datetime = tr.get("datetime")
+                    pnl_val = tr.get("pnl_no_commission", 0.0)
+                    fee_val = tr.get("commission", fee_val)
                 trade_rec_idx += 1
-
-            if trade_datetime is None and trade_rec_idx > 0 and trade_rec_idx <= len(trade_records):
-                trade_datetime = trade_records[min(trade_rec_idx - 1, len(trade_records) - 1)].get("datetime")
 
             trade = TradeRecord(
                 order_id=len(trades) + 1,
@@ -305,6 +323,18 @@ class PerformanceAnalyzer:
         return turnover
 
     def calculate_metrics(self, cerebro: bt.Cerebro) -> Dict[str, float]:
+        """计算回测指标
+
+        .. deprecated::
+            此方法会重新执行 cerebro.run()，导致回测运行两次。
+            请使用 from_strategy() 从已运行的策略实例获取指标。
+        """
+        import warnings
+        warnings.warn(
+            "calculate_metrics() 会重新执行回测，请使用 from_strategy() 代替",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         results = cerebro.run()
         strategy = results[0]
         metrics = {}

@@ -38,36 +38,32 @@ class InstrumentData:
     volume_multiple: float = 1.0
 
 
+@dataclass
 class BacktestingResult:
-    def __init__(
-        self,
-        account: Optional[AccountInfo] = None,
-        config: Optional[BacktestConfig] = None,
-        strategy_params: Optional[Dict[str, Any]] = None,
-        klines: Optional[List[Dict]] = None,
-        trade_log: Optional[List[TradeRecord]] = None,
-        df: Optional[pd.DataFrame] = None,
-        instruments_data: Optional[Dict[str, InstrumentData]] = None,
-        benchmark_df: Optional[pd.DataFrame] = None,
-        benchmark_symbol: str = "",
-        trade_start_date: Optional[str] = None,
-        instrument_close_prices: Optional[Dict[str, Dict[str, float]]] = None,
-    ):
-        self.account = account or AccountInfo()
-        self.config = config or BacktestConfig()
-        self.strategy_params = strategy_params or {}
-        self.klines = klines or []
-        self.trade_log = trade_log or []
-        self.df = df
-        self.instruments_data = instruments_data or {}
-        self.benchmark_df = benchmark_df
-        self.benchmark_symbol = benchmark_symbol
-        self.trade_start_date: Optional[str] = trade_start_date
-        self.instrument_close_prices = instrument_close_prices or {}
-        self.turnover: float = 0.0
-        self.total_volume: int = 0
-        self.total_trading_days: int = 0
-        self.pnl_days: tuple = (0, 0)
+    account: AccountInfo = None
+    config: BacktestConfig = None
+    strategy_params: Dict[str, Any] = None
+    klines: List[Dict] = None
+    trade_log: List[TradeRecord] = None
+    df: Optional[pd.DataFrame] = None
+    instruments_data: Dict[str, InstrumentData] = None
+    benchmark_df: Optional[pd.DataFrame] = None
+    benchmark_symbol: str = ""
+    trade_start_date: Optional[str] = None
+    instrument_close_prices: Dict[str, Dict[str, float]] = None
+    turnover: float = 0.0
+    total_volume: int = 0
+    total_trading_days: int = 0
+    pnl_days: tuple = (0, 0)
+
+    def __post_init__(self):
+        self.account = self.account or AccountInfo()
+        self.config = self.config or BacktestConfig()
+        self.strategy_params = self.strategy_params or {}
+        self.klines = self.klines or []
+        self.trade_log = self.trade_log or []
+        self.instruments_data = self.instruments_data or {}
+        self.instrument_close_prices = self.instrument_close_prices or {}
         self._data_prepared = False
 
     def prepare_data(self):

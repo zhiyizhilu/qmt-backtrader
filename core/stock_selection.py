@@ -2,6 +2,7 @@ import datetime as dt_module
 from abc import abstractmethod
 from typing import Dict, List, Optional, Any
 from core.strategy_logic import StrategyLogic, BarData, OrderInfo
+from core.data_adapter import get_trade_unit, validate_trade_volume
 
 
 class StockSelectionStrategy(StrategyLogic):
@@ -102,7 +103,7 @@ class StockSelectionStrategy(StrategyLogic):
             return
 
         if self.is_rebalance_day(current_date):
-            self.log(f'[选股] 调仓日: {current_date}')
+            self.log(f'[选股] 调仓日: {current_date}', level='info')
             self._execute_rebalance(current_date)
 
     def on_order(self, order: OrderInfo):
@@ -191,7 +192,7 @@ class StockSelectionStrategy(StrategyLogic):
         self._last_rebalance_date = current_date
         self._rebalance_count += 1
 
-        self.log(f'调仓 #{self._rebalance_count} @ {current_date}: 选中 {len(target_stocks)} 只股票')
+        self.log(f'调仓 #{self._rebalance_count} @ {current_date}: 选中 {len(target_stocks)} 只股票', level='info')
 
         self.rebalance_to(target_stocks)
 
@@ -275,8 +276,9 @@ class StockSelectionStrategy(StrategyLogic):
                     current_value = price * pos_size
                     if current_value > per_stock_target * 1.01:
                         excess_value = current_value - per_stock_target
-                        sell_volume = int(excess_value / price / 100) * 100
-                        if sell_volume >= 100:
+                        sell_volume = int(excess_value / price / get_trade_unit(symbol)) * get_trade_unit(symbol)
+                        is_valid, _ = validate_trade_volume(symbol, sell_volume)
+                        if is_valid:
                             if self.is_limit_down(symbol):
                                 self.log(f'调仓跳过减仓(跌停): {symbol}')
                             else:
@@ -366,8 +368,9 @@ class StockSelectionStrategy(StrategyLogic):
                 current_value = current_volume * price
                 deficit = per_stock_target - current_value
                 if deficit > per_stock_target * 0.01:
-                    buy_volume = int(deficit / price / 100) * 100
-                    if buy_volume >= 100:
+                    buy_volume = int(deficit / price / get_trade_unit(symbol)) * get_trade_unit(symbol)
+                    is_valid, _ = validate_trade_volume(symbol, buy_volume)
+                    if is_valid:
                         self.buy(symbol, price, buy_volume)
                         self._current_holdings[symbol] = current_volume + buy_volume
                         self.log(

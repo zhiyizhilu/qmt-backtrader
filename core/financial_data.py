@@ -104,6 +104,16 @@ class FinancialDataCache:
             self.logger.debug(f"[加载跳过] {stock_code}.{table_name} 已尝试加载，状态: {loaded_status}")
             return
 
+        with self._lock:
+            if (stock_code, table_name) in self._loaded_tables:
+                return
+
+            self._ensure_table_loaded_inner(stock_code, table_name, start_time, end_time)
+
+    def _ensure_table_loaded_inner(self, stock_code: str, table_name: str,
+                                    start_time: str, end_time: str) -> None:
+        """_ensure_table_loaded 的内部实现，调用方已持有 self._lock"""
+
         # 新增：检查退市状态，永久跳过
         from core.cache import cache_manager
         if cache_manager.index_manager.is_delisted(stock_code):
