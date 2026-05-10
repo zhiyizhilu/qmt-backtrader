@@ -51,6 +51,7 @@ class BacktestingResult:
     benchmark_symbol: str = ""
     trade_start_date: Optional[str] = None
     instrument_close_prices: Dict[str, Dict[str, float]] = None
+    compare_data: Dict[str, pd.DataFrame] = None
     turnover: float = 0.0
     total_volume: int = 0
     total_trading_days: int = 0
@@ -64,6 +65,7 @@ class BacktestingResult:
         self.trade_log = self.trade_log or []
         self.instruments_data = self.instruments_data or {}
         self.instrument_close_prices = self.instrument_close_prices or {}
+        self.compare_data = self.compare_data or {}
         self._data_prepared = False
 
     def prepare_data(self):

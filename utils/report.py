@@ -1,9 +1,10 @@
 import sys
 import bisect
+import datetime as dt_module
 import numpy as np
 import pandas as pd
 import pyqtgraph as pg
-from collections import deque, defaultdict
+from collections import deque, defaultdict, OrderedDict
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -491,6 +492,40 @@ class BacktestReportWindow(QMainWindow):
         "399006.SZ": "创业板指",
     }
 
+    def _resample_klines_to_daily(self, klines):
+        if not klines:
+            return klines
+        has_intraday = any(
+            k["datetime"].hour != 15 or k["datetime"].minute != 0
+            for k in klines
+            if isinstance(k["datetime"], dt_module.datetime)
+        )
+        if not has_intraday:
+            return klines
+        daily_map = OrderedDict()
+        for k in klines:
+            dt = k["datetime"]
+            if isinstance(dt, dt_module.datetime):
+                date_key = dt.date()
+            else:
+                date_key = pd.Timestamp(dt).date()
+            if date_key not in daily_map:
+                daily_map[date_key] = {
+                    "datetime": dt_module.datetime.combine(date_key, dt_module.time(15, 0)),
+                    "open": k["open"],
+                    "high": k["high"],
+                    "low": k["low"],
+                    "close": k["close"],
+                    "volume": k["volume"],
+                }
+            else:
+                d = daily_map[date_key]
+                d["high"] = max(d["high"], k["high"])
+                d["low"] = min(d["low"], k["low"])
+                d["close"] = k["close"]
+                d["volume"] += k["volume"]
+        return list(daily_map.values())
+
     def _convert_benchmark_to_klines(self, benchmark_df):
         klines = []
         for dt, row in benchmark_df.iterrows():
@@ -554,6 +589,7 @@ class BacktestReportWindow(QMainWindow):
                 return tab
 
             klines_full = self.result.klines[10:]
+            klines_full = self._resample_klines_to_daily(klines_full)
             kline_title = "K线图"
         if not klines_full:
             label = QLabel("K线数据量不足。", alignment=Qt.AlignCenter)
@@ -579,12 +615,12 @@ class BacktestReportWindow(QMainWindow):
             for i, k in enumerate(initial_klines)
         ]
         self.kline_x_axis_ticks = {
-            self.loaded_data_index + i: k["datetime"].strftime("%Y-%m-%d %H:%M")
+            self.loaded_data_index + i: k["datetime"].strftime("%Y-%m-%d")
             for i, k in enumerate(initial_klines)
         }
 
         all_date_strings = [
-            k["datetime"].strftime("%Y-%m-%d %H:%M") for k in self.all_klines
+            k["datetime"].strftime("%Y-%m-%d") for k in self.all_klines
         ]
         axis = DateAxis(x_values=all_date_strings, orientation="bottom")
         left_axis = FullValueAxis(orientation="left")
@@ -655,7 +691,7 @@ class BacktestReportWindow(QMainWindow):
             for i, k in enumerate(new_klines)
         ]
         new_x_axis_ticks = {
-            start_index + i: k["datetime"].strftime("%Y-%m-%d %H:%M")
+            start_index + i: k["datetime"].strftime("%Y-%m-%d")
             for i, k in enumerate(new_klines)
         }
 
@@ -697,7 +733,7 @@ class BacktestReportWindow(QMainWindow):
         ):
             return
 
-        kline_times = [k["datetime"] for k in self.all_klines]
+        kline_dates = [k["datetime"].date() if isinstance(k["datetime"], dt_module.datetime) else pd.Timestamp(k["datetime"]).date() for k in self.all_klines]
 
         trades_by_kline_index = defaultdict(list)
         for trade in self.result.trade_log:
@@ -706,19 +742,17 @@ class BacktestReportWindow(QMainWindow):
             if not trade.trade_time:
                 continue
 
-            idx = bisect.bisect_left(kline_times, trade.trade_time)
-            if idx == 0:
-                closest_kline_index = 0
-            elif idx == len(kline_times):
-                closest_kline_index = len(kline_times) - 1
-            else:
-                closest_kline_index = (
-                    idx - 1
-                    if abs(trade.trade_time - kline_times[idx - 1])
-                    < abs(trade.trade_time - kline_times[idx])
-                    else idx
-                )
-            trades_by_kline_index[closest_kline_index].append(trade)
+            trade_date = trade.trade_time.date() if isinstance(trade.trade_time, dt_module.datetime) else pd.Timestamp(trade.trade_time).date()
+
+            best_idx = None
+            best_dist = None
+            for i, kd in enumerate(kline_dates):
+                dist = abs((kd - trade_date).days)
+                if best_dist is None or dist < best_dist:
+                    best_dist = dist
+                    best_idx = i
+            if best_idx is not None:
+                trades_by_kline_index[best_idx].append(trade)
 
         (
             buy_spots,
@@ -2228,6 +2262,50 @@ class BacktestReportWindow(QMainWindow):
             name="超额收益",
         )
 
+        compare_curves = []
+        compare_net_values = {}
+        compare_colors = ["#28a745", "#6f42c1", "#fd7e14", "#20c997", "#e83e8c", "#17a2b8"]
+        if hasattr(self.result, "compare_data") and self.result.compare_data:
+            for idx, (symbol, cmp_df) in enumerate(self.result.compare_data.items()):
+                cmp_close_map = {}
+                for dt in cmp_df.index:
+                    if hasattr(dt, "date"):
+                        cmp_close_map[dt.date()] = cmp_df.loc[dt, "close"]
+                    else:
+                        cmp_close_map[pd.Timestamp(dt).date()] = cmp_df.loc[dt, "close"]
+                aligned_cmp = []
+                for dt in strategy_dates:
+                    if hasattr(dt, "date"):
+                        trade_date = dt.date()
+                    else:
+                        trade_date = pd.Timestamp(dt).date()
+                    if trade_date in cmp_close_map:
+                        aligned_cmp.append(cmp_close_map[trade_date])
+                    else:
+                        aligned_cmp.append(None)
+                first_valid = None
+                for i, v in enumerate(aligned_cmp):
+                    if v is not None:
+                        first_valid = i
+                        break
+                if first_valid is not None:
+                    for i in range(first_valid):
+                        aligned_cmp[i] = aligned_cmp[first_valid]
+                    for i in range(first_valid + 1, len(aligned_cmp)):
+                        if aligned_cmp[i] is None:
+                            aligned_cmp[i] = aligned_cmp[i - 1]
+                    cmp_initial = aligned_cmp[0]
+                    cmp_nv = [c / cmp_initial for c in aligned_cmp]
+                    color = compare_colors[idx % len(compare_colors)]
+                    cmp_curve = plot_widget.plot(
+                        x,
+                        cmp_nv,
+                        pen=pg.mkPen(color, width=1.5, style=Qt.SolidLine),
+                        name=symbol,
+                    )
+                    compare_curves.append((symbol, cmp_curve, cmp_nv, color))
+                    compare_net_values[symbol] = cmp_nv
+
         legend = ClickableLegend()
         legend.setParentItem(plot_widget.getPlotItem().getViewBox())
         legend.setBrush(QBrush(QColor("#f0f0f0")))
@@ -2239,6 +2317,8 @@ class BacktestReportWindow(QMainWindow):
         legend.addItem(strategy_curve, "策略净值")
         legend.addItem(benchmark_curve, benchmark_display_name)
         legend.addItem(excess_curve, "超额收益")
+        for symbol, cmp_curve, _, _ in compare_curves:
+            legend.addItem(cmp_curve, symbol)
         plot_widget.setLabel("left", "净值 / 超额收益", **{"color": "k", "font-size": "12pt"})
 
         margin = 2
@@ -2263,12 +2343,15 @@ class BacktestReportWindow(QMainWindow):
                     strategy_nv = strategy_net_value[index]
                     benchmark_nv = benchmark_net_value[index]
                     excess = excess_return[index]
-                    info_label.setPlainText(
+                    tooltip_text = (
                         f"日期: {date_str}\n"
                         f"策略净值: {strategy_nv:.4f}\n"
                         f"{benchmark_display_name}净值: {benchmark_nv:.4f}\n"
                         f"超额收益: {excess:.4f}"
                     )
+                    for symbol, _, cmp_nv, _ in compare_curves:
+                        tooltip_text += f"\n{symbol}净值: {cmp_nv[index]:.4f}"
+                    info_label.setPlainText(tooltip_text)
                     info_label.adjustSize()
                     self._update_tooltip_position(info_label, pos, vb)
                     info_label.show()

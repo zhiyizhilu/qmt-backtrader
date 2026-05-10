@@ -147,11 +147,8 @@ class BacktestAPI(BaseAPI):
         self._financial_data_processor = create_data_processor(
             fallback_to_simulated=False, proxy=proxy, use_opendata=False
         )
-        # 富途数据源不需要 OpenData 处理器
-        if data_source == 'futu':
-            self._opendata_processor = None
-        else:
-            self._opendata_processor = OpenDataProcessor(fallback_to_simulated=False)
+        # 即使使用富途数据源，仍需要 OpenData 处理器用于获取基准数据
+        self._opendata_processor = OpenDataProcessor(fallback_to_simulated=False)
         self._symbols: List[str] = []
         self._strategy_logic_class: Optional[Type[StrategyLogic]] = None
         self._strategy_kwargs: Dict[str, Any] = {}
@@ -166,6 +163,7 @@ class BacktestAPI(BaseAPI):
         self._custom_analyzers_added = False
         self._financial_adapter: Optional[FinancialDataAdapter] = None
         self._stock_pool: Optional[List[str]] = None
+        self._compare_symbols: List[str] = []
         self._ai_mode: bool = False
         self._no_record: bool = False
         self._strategy_name: str = ''
@@ -177,7 +175,8 @@ class BacktestAPI(BaseAPI):
                   start_date: Optional[str] = None, end_date: Optional[str] = None,
                   data_lookback_days: int = 40, benchmark: str = '000300.SH',
                   period: str = '1d', trade_start_date: Optional[str] = None,
-                  slippage: float = 0.0, **kwargs):
+                  slippage: float = 0.0, compare_symbols: Optional[List[str]] = None,
+                  **kwargs):
         """一次性配置回测参数
 
         将 start_date 自动前移 data_lookback_days 天作为数据加载起始日，
@@ -202,6 +201,7 @@ class BacktestAPI(BaseAPI):
         self.set_slippage(slippage)
         self.set_benchmark(benchmark)
         self._period = period
+        self._compare_symbols = compare_symbols or []
 
         if start_date and end_date:
             start_dt = datetime.datetime.strptime(start_date, '%Y-%m-%d')
@@ -1059,6 +1059,7 @@ class BacktestAPI(BaseAPI):
             )
 
             self._fetch_benchmark_data()
+            self._fetch_compare_data()
             self._log_summary(strategy)
 
             if not self._no_record:
@@ -1103,7 +1104,7 @@ class BacktestAPI(BaseAPI):
                     self._benchmark,
                     self._data_start_date,
                     self._data_end_date,
-                    self._period,
+                    "1d",
                 )
                 if benchmark_data is not None and not benchmark_data.empty:
                     self.logger.info(f"基准数据从OpenData获取成功: {self._benchmark}, {len(benchmark_data)}条")
@@ -1116,7 +1117,7 @@ class BacktestAPI(BaseAPI):
                     self._benchmark,
                     self._data_start_date,
                     self._data_end_date,
-                    self._period,
+                    "1d",
                 )
                 if benchmark_data is not None and not benchmark_data.empty:
                     self.logger.info(f"基准数据从QMT获取: {self._benchmark}, {len(benchmark_data)}条")
@@ -1132,6 +1133,44 @@ class BacktestAPI(BaseAPI):
                 self.logger.warning(f"基准数据获取失败: {self._benchmark}, 所有数据源均无数据")
         except Exception as e:
             self.logger.warning(f"基准数据获取异常: {self._benchmark}, {e}")
+
+    def _fetch_compare_data(self):
+        if not self._data_start_date or not self._data_end_date:
+            return
+        if self._backtest_result is None:
+            return
+
+        compare_symbols = list(self._compare_symbols) if self._compare_symbols else []
+
+        if not compare_symbols:
+            return
+
+        compare_data = {}
+        for symbol in compare_symbols:
+            try:
+                df = self._opendata_processor.get_data(
+                    symbol,
+                    self._data_start_date,
+                    self._data_end_date,
+                    "1d",
+                )
+                if df is not None and not df.empty:
+                    if not isinstance(df.index, pd.DatetimeIndex):
+                        df.index = pd.to_datetime(df.index)
+                    keep_cols = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
+                    compare_data[symbol] = df[keep_cols].copy()
+                    first_dt = df.index[0]
+                    last_dt = df.index[-1]
+                    self.logger.info(
+                        f"对比数据获取成功: {symbol}, {len(df)}条, "
+                        f"日期范围: {first_dt.strftime('%Y-%m-%d')} ~ {last_dt.strftime('%Y-%m-%d')}"
+                    )
+                else:
+                    self.logger.warning(f"对比数据为空: {symbol}")
+            except Exception as e:
+                self.logger.warning(f"对比数据获取失败: {symbol}, {e}")
+
+        self._backtest_result.compare_data = compare_data
 
     def get_result(self):
         return self._backtest_result

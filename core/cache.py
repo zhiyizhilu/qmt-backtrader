@@ -226,6 +226,14 @@ class CacheIndexManager:
             self._market_index[symbol][period]['last_update'] = now
             self._dirty_flags['market'] = True
 
+    def remove_market_index(self, symbol: str, period: str) -> None:
+        with self.lock:
+            if symbol in self._market_index and period in self._market_index[symbol]:
+                del self._market_index[symbol][period]
+                if not self._market_index[symbol]:
+                    del self._market_index[symbol]
+                self._dirty_flags['market'] = True
+
     def get_checked_market_years(self, symbol: str, period: str, max_age_days: int = 30) -> List[int]:
         with self.lock:
             entry = self._market_index.get(symbol, {}).get(period, {})
@@ -1410,6 +1418,11 @@ class SmartCacheManager:
                 )
                 if coverage_missing == set(req_years):
                     cached_frames = []
+                elif coverage_missing:
+                    cached_frames = [f for f in cached_frames
+                                     if not (isinstance(f.index, pd.DatetimeIndex) and
+                                             f.index.year.unique().tolist() and
+                                             set(f.index.year.unique()) & coverage_missing)]
                 truly_missing = coverage_missing
             else:
                 if missing_years and missing_years == checked_years:
@@ -1456,6 +1469,43 @@ class SmartCacheManager:
                 f"[{namespace}] {symbol} 缓存未覆盖结束日期: "
                 f"缓存截止={disk_end}, 请求截止={req_end}, 增量获取年份={sorted(end_missing)}"
             )
+
+        gap_missing = self._detect_date_gaps(namespace, symbol, cached_df, req_years, checked_years)
+        if gap_missing:
+            missing |= gap_missing
+
+        return missing
+
+    def _detect_date_gaps(self, namespace: str, symbol: str,
+                          cached_df: pd.DataFrame, req_years: List[int],
+                          checked_years: set) -> set:
+        """检测缓存数据中的日期空洞，返回有空洞的年份集合
+
+        正常交易日间隔不超过5天（含周末），超过15天视为异常空洞。
+        空洞所在年份需要重新获取。
+        """
+        if len(cached_df) < 2:
+            return set()
+
+        missing = set()
+        dates = cached_df.index
+        for i in range(1, len(dates)):
+            gap_days = (dates[i] - dates[i - 1]).days
+            if gap_days > 15:
+                gap_year_start = dates[i - 1].year
+                gap_year_end = dates[i].year
+                gap_years = set()
+                for y in req_years:
+                    if gap_year_start <= y <= gap_year_end:
+                        gap_years.add(y)
+                gap_years -= checked_years
+                if gap_years:
+                    missing |= gap_years
+                    self.logger.info(
+                        f"[{namespace}] {symbol} 检测到日期空洞: "
+                        f"{dates[i-1].strftime('%Y-%m-%d')} ~ {dates[i].strftime('%Y-%m-%d')} "
+                        f"(间隔{gap_days}天), 需重新获取年份={sorted(gap_years)}"
+                    )
 
         return missing
 
