@@ -78,13 +78,13 @@ def _init_virtual_book_from_account(api: QMTAPI, book: VirtualBook):
 
 def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
                  start_date=None, end_date=None, proxy='', ai_mode=False,
-                 no_record=False, slippage=None):
+                 no_record=False, slippage=None, data_source='qmt'):
     """运行回测"""
     _setup_debug_logging()
     log_file = Logger.setup_global_file_handler(strategy_name)
     logger = Logger.get_default_logger(strategy_name)
     logger.info(f"日志文件: {log_file}")
-    logger.info(f"开始回测 (周期: {period})")
+    logger.info(f"开始回测 (周期: {period}, 数据源: {data_source})")
     if proxy:
         logger.info(f"使用代理: {proxy}")
     if ai_mode:
@@ -106,7 +106,7 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
     benchmark = IndexConstituentManager.SECTOR_TO_INDEX.get(pool, '000300.SH')
     config.setdefault('benchmark', benchmark)
 
-    api = BacktestAPI(proxy=proxy)
+    api = BacktestAPI(proxy=proxy, data_source=data_source)
     if ai_mode:
         api.set_ai_mode(True)
     if no_record:
@@ -246,6 +246,9 @@ def main():
                         help='禁用回测结果自动记录到本地文件')
     parser.add_argument('--slippage', type=float, default=None,
                         help='滑点百分比，如0.001表示0.1%，不传则使用策略默认值')
+    parser.add_argument('--data-source', type=str, default='qmt',
+                        choices=['qmt', 'futu'],
+                        help='数据源: qmt=QMT+OpenData(默认), futu=富途本地数据(.cache/FutuData)')
 
     args = parser.parse_args()
 
@@ -258,7 +261,7 @@ def main():
         cache_manager.configure(cache_dir=args.cache_dir, mem_limit=args.mem_limit)
 
     if args.mode == 'backtest':
-        run_backtest(args.strategy, args.period, args.pool, args.start, args.end, args.proxy, args.ai_mode, args.no_record, args.slippage)
+        run_backtest(args.strategy, args.period, args.pool, args.start, args.end, args.proxy, args.ai_mode, args.no_record, args.slippage, args.data_source)
     elif args.mode == 'sim':
         run_sim_trade(args.strategy, args.qmt_path, args.account)
     elif args.mode == 'real':

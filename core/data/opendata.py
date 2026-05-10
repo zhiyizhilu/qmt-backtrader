@@ -56,7 +56,7 @@ class OpenDataProcessor(DataProcessor):
         '1M': 'monthly', 'month': 'monthly', 'monthly': 'monthly',
     }
 
-    def __init__(self, fallback_to_simulated: bool = True):
+    def __init__(self, fallback_to_simulated: bool = False):
         try:
             import akshare as ak
             self._ak = ak
@@ -71,8 +71,6 @@ class OpenDataProcessor(DataProcessor):
     def get_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> pd.DataFrame:
         """获取行情数据（个股用腾讯财经，指数用akshare指数接口）"""
         if not self._ak:
-            if self._fallback_to_simulated:
-                return self._generate_simulated_data(start_date, end_date, symbol)
             raise RuntimeError("akshare 未安装，请 pip install akshare")
 
         # 判断是否为指数
@@ -80,8 +78,6 @@ class OpenDataProcessor(DataProcessor):
             df = self._get_index_data(symbol, start_date, end_date, period)
             if df is not None and not df.empty:
                 return df
-            if self._fallback_to_simulated:
-                return self._generate_simulated_data(start_date, end_date, symbol)
             raise ValueError(f"{symbol} 在 {start_date} 到 {end_date} 期间没有数据")
 
         # 使用腾讯财经获取个股数据
@@ -90,8 +86,6 @@ class OpenDataProcessor(DataProcessor):
             return self._process_akshare_data(df, symbol, start_date, end_date)
 
         # 腾讯财经失败
-        if self._fallback_to_simulated:
-            return self._generate_simulated_data(start_date, end_date, symbol)
         raise ValueError(f"{symbol} 在 {start_date} 到 {end_date} 期间没有数据")
 
     def _get_data_from_tx(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
@@ -805,31 +799,6 @@ class OpenDataProcessor(DataProcessor):
                 cache_manager.disk_cache.put(namespace, merged_cache_key, merged_df, 'parquet')
         return result
 
-    def _generate_simulated_data(self, start_date: str, end_date: str, symbol: str = None) -> pd.DataFrame:
-        """生成模拟数据（fallback，仅当真实数据完全不可用时使用）"""
-        date_range = pd.date_range(start=start_date, end=end_date, freq='B')
-        seed = hash(symbol) % 10000 if symbol else 42
-        rng = np.random.default_rng(seed)
-
-        # 根据symbol类型设置合理的基准价格
-        if symbol and ('300' in symbol or '000016' in symbol):
-            base_price = 4000.0  # 沪深300/上证50 约4000点
-        elif symbol and ('905' in symbol or '852' in symbol):
-            base_price = 6000.0  # 中证500/1000 约6000点
-        else:
-            base_price = 10.0 + rng.random() * 5.0
-
-        prices = []
-        for i in range(len(date_range)):
-            base_price *= (1 + rng.normal(0, 0.015))
-            prices.append(base_price)
-        df = pd.DataFrame({
-            'open': [p * 0.999 for p in prices], 'high': [p * 1.002 for p in prices],
-            'low': [p * 0.998 for p in prices], 'close': prices,
-            'volume': rng.integers(10000, 100000, len(date_range)),
-        }, index=date_range)
-        return self.preprocess_data(df)
-
     def get_raw_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> pd.DataFrame:
         """获取不复权行情数据，用于股息率等需要实际价格的计算
 
@@ -853,16 +822,12 @@ class OpenDataProcessor_Raw:
     def get_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> pd.DataFrame:
         """获取不复权行情数据"""
         if not self._processor._ak:
-            if self._processor._fallback_to_simulated:
-                return self._processor._generate_simulated_data(start_date, end_date, symbol)
             raise RuntimeError("akshare 未安装，请 pip install akshare")
 
         df = self._get_raw_data_from_tx(symbol, start_date, end_date)
         if df is not None and not df.empty:
             return self._processor._process_akshare_data(df, symbol, start_date, end_date)
 
-        if self._processor._fallback_to_simulated:
-            return self._processor._generate_simulated_data(start_date, end_date, symbol)
         raise ValueError(f"{symbol} 在 {start_date} 到 {end_date} 期间没有不复权数据")
 
     def _get_raw_data_from_tx(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:

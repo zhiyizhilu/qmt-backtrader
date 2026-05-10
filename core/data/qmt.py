@@ -125,8 +125,6 @@ class QMTDataProcessor(DataProcessor):
                 self.logger.warning(f"OpenData兜底也失败: {e}")
         
         # 5. 全部失败
-        if self._fallback_to_simulated:
-            return self._generate_simulated_data(start_date, end_date, symbol)
         raise RuntimeError(f"无法获取数据: {symbol}")
 
     def _get_data_from_qmt(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> Optional[pd.DataFrame]:
@@ -923,9 +921,6 @@ class QMTDataProcessor(DataProcessor):
         向后兼容旧格式（合并缓存、逐只缓存）。
         """
         if not self.xtdata:
-            if self._fallback_to_simulated:
-                self.logger.warning("xtquant 未安装，返回空财务数据")
-                return {}
             raise RuntimeError("xtquant 未安装，请安装 xtquant 后重试")
 
         tables = table_list or self.FINANCIAL_TABLES
@@ -1252,9 +1247,6 @@ class QMTDataProcessor(DataProcessor):
                 self.logger.warning(f"OpenData获取成分股也失败: {e}")
 
         # 全部失败
-        if self._fallback_to_simulated:
-            self.logger.warning("所有数据源获取成分股失败，返回模拟列表")
-            return ['000001.SZ', '000002.SZ', '600000.SH', '600036.SH']
         raise RuntimeError(f"获取板块成分股失败: {sector}")
 
     def get_historical_stock_list(self, sector: str = '沪深A股',
@@ -1450,12 +1442,6 @@ class QMTDataProcessor(DataProcessor):
                 self.logger.warning(f"OpenData获取行业映射也失败: {e}")
 
         # 3. 全部失败
-        if self._fallback_to_simulated:
-            self.logger.warning("所有数据源获取行业映射失败，返回模拟数据")
-            return {
-                '000001.SZ': '银行', '000002.SZ': '房地产',
-                '600000.SH': '银行', '600036.SH': '银行',
-            }
         raise RuntimeError("获取行业映射失败")
 
     def get_historical_industry_mapping(self, stock_list: List[str],
@@ -1517,9 +1503,6 @@ class QMTDataProcessor(DataProcessor):
             interest 列为每股派息金额
         """
         if not self.xtdata:
-            if self._fallback_to_simulated:
-                self.logger.warning("xtquant 未安装，返回空分红数据")
-                return {}
             raise RuntimeError("xtquant 未安装，请安装 xtquant 后重试")
 
         namespace = 'QMTDataProcessor_Financial'
@@ -1659,40 +1642,13 @@ class QMTDataProcessor(DataProcessor):
         except Exception:
             return None
 
-    def _generate_simulated_data(self, start_date: str, end_date: str, symbol: str = None) -> pd.DataFrame:
-        """生成模拟数据"""
-        import numpy as np
-        date_range = pd.date_range(start=start_date, end=end_date, freq='B')
-        
-        seed = 42
-        if symbol:
-            seed = hash(symbol) % 10000
-        rng = np.random.default_rng(seed)
-        
-        base_price = 10.0 + rng.random() * 5.0
-        prices = []
-        for i in range(len(date_range)):
-            price_change = rng.normal(0, 0.02)
-            base_price *= (1 + price_change)
-            prices.append(base_price)
-        
-        df = pd.DataFrame({
-            'open': [p * 0.999 for p in prices],
-            'high': [p * 1.002 for p in prices],
-            'low': [p * 0.998 for p in prices],
-            'close': prices,
-            'volume': rng.integers(10000, 100000, len(date_range)),
-        }, index=date_range)
-        
-        return self.preprocess_data(df)
-
     def get_raw_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> pd.DataFrame:
         """获取不复权行情数据，用于股息率等需要实际价格的计算
 
         与 get_data() 使用后复权数据不同，此方法获取不复权数据，
         独立缓存于 market_raw 命名空间，与后复权缓存互不干扰。
 
-        数据源优先级与 get_data() 一致：QMT → OpenData → 模拟数据
+        数据源优先级与 get_data() 一致：QMT → OpenData → 抛出异常
         """
         return self._raw_fetcher.get_data(symbol, start_date, end_date, period, **kwargs)
 
@@ -1743,8 +1699,6 @@ class QMTDataProcessor_Raw:
             except Exception as e:
                 self._processor.logger.warning(f"OpenData不复权兜底失败: {e}")
 
-        if self._processor._fallback_to_simulated:
-            return self._processor._generate_simulated_data(start_date, end_date, symbol)
         raise RuntimeError(f"无法获取不复权数据: {symbol}")
 
     def _get_raw_data_from_qmt(self, symbol: str, start_date: str, end_date: str, period: str = "1d") -> Optional[pd.DataFrame]:

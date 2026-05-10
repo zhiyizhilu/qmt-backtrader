@@ -246,6 +246,10 @@ class StockSelectionStrategy(StrategyLogic):
         for symbol in full_sell_symbols:
             pos_size = self._current_holdings.get(symbol, 0)
             if pos_size > 0:
+                sellable = self.get_sellable_volume(symbol)
+                if sellable <= 0:
+                    self.log(f'调仓跳过卖出(T+1): {symbol}, 将在后续调仓处理')
+                    continue
                 price = self.get_current_price(symbol)
                 if not price or price <= 0:
                     self.log(f'调仓跳过卖出(无数据): {symbol}, 将在后续调仓处理')
@@ -256,7 +260,7 @@ class StockSelectionStrategy(StrategyLogic):
                 if self.is_limit_down(symbol):
                     self.log(f'调仓跳过卖出(跌停): {symbol}, 将在后续调仓处理')
                     continue
-                self.sell(symbol, price, pos_size)
+                self.sell(symbol, price, sellable)
                 sell_value = price * pos_size
                 self.log(
                     f'调仓卖出(清仓): {symbol}, '
@@ -271,15 +275,19 @@ class StockSelectionStrategy(StrategyLogic):
         for symbol in hold_symbols:
             pos_size = self._current_holdings.get(symbol, 0)
             if pos_size > 0:
+                sellable = self.get_sellable_volume(symbol)
                 price = self.get_current_price(symbol)
                 if price and price > 0:
                     current_value = price * pos_size
                     if current_value > per_stock_target * 1.01:
                         excess_value = current_value - per_stock_target
                         sell_volume = int(excess_value / price / get_trade_unit(symbol)) * get_trade_unit(symbol)
+                        sell_volume = min(sell_volume, sellable)
                         is_valid, _ = validate_trade_volume(symbol, sell_volume)
                         if is_valid:
-                            if self.is_limit_down(symbol):
+                            if sellable <= 0:
+                                self.log(f'调仓跳过减仓(T+1): {symbol}')
+                            elif self.is_limit_down(symbol):
                                 self.log(f'调仓跳过减仓(跌停): {symbol}')
                             else:
                                 self.sell(symbol, price, sell_volume)
@@ -399,6 +407,11 @@ class StockSelectionStrategy(StrategyLogic):
         unsold = {}
         for symbol, pos_size in list(self._current_holdings.items()):
             if pos_size > 0:
+                sellable = self.get_sellable_volume(symbol)
+                if sellable <= 0:
+                    self.log(f'清仓跳过(T+1): {symbol}')
+                    unsold[symbol] = pos_size
+                    continue
                 price = self.get_current_price(symbol)
                 if not price or price <= 0:
                     unsold[symbol] = pos_size
@@ -411,7 +424,7 @@ class StockSelectionStrategy(StrategyLogic):
                     self.log(f'清仓跳过(跌停): {symbol}')
                     unsold[symbol] = pos_size
                     continue
-                self.sell(symbol, price, pos_size)
+                self.sell(symbol, price, sellable)
         self._current_holdings = unsold
 
     def get_current_holdings(self) -> Dict[str, int]:

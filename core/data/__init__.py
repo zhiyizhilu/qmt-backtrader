@@ -15,6 +15,7 @@ from core.data.opendata import (
     _convert_symbol_to_opendata,
     get_qvix_data,
 )
+from core.data.futu import FutuDataProcessor
 from core.data.factory import create_data_processor
 from core.data.index_constituent import IndexConstituentManager
 from core.data.industry_constituent import IndustryConstituentManager
@@ -24,6 +25,7 @@ __all__ = [
     'QMTDataProcessor',
     'CSVDataProcessor',
     'OpenDataProcessor',
+    'FutuDataProcessor',
     'IndexConstituentManager',
     'IndustryConstituentManager',
     'create_data_processor',

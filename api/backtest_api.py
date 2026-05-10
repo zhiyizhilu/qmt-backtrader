@@ -129,14 +129,29 @@ class BacktestAPI(BaseAPI):
         api.add_data('000001.SZ', '2025-01-01', '2026-04-17', period='1d')
         api.add_strategy(strategy_class, **default_kwargs)
         api.run()
+
+        # 指定富途数据源
+        api = BacktestAPI(data_source='futu')
+        api.configure(**backtest_config, period='1d')
+        api.add_strategy(strategy_class, **default_kwargs)
+        api.run()
     """
 
-    def __init__(self, proxy: str = ''):
+    def __init__(self, proxy: str = '', data_source: str = 'qmt'):
         super().__init__()
         self.cerebro = bt.Cerebro()
-        self.data_processor = create_data_processor(fallback_to_simulated=True, proxy=proxy)
-        self._financial_data_processor = create_data_processor(fallback_to_simulated=True, proxy=proxy, use_opendata=False)
-        self._opendata_processor = OpenDataProcessor(fallback_to_simulated=True)
+        self._data_source = data_source
+        self.data_processor = create_data_processor(
+            fallback_to_simulated=False, proxy=proxy, data_source=data_source
+        )
+        self._financial_data_processor = create_data_processor(
+            fallback_to_simulated=False, proxy=proxy, use_opendata=False
+        )
+        # 富途数据源不需要 OpenData 处理器
+        if data_source == 'futu':
+            self._opendata_processor = None
+        else:
+            self._opendata_processor = OpenDataProcessor(fallback_to_simulated=False)
         self._symbols: List[str] = []
         self._strategy_logic_class: Optional[Type[StrategyLogic]] = None
         self._strategy_kwargs: Dict[str, Any] = {}
@@ -220,21 +235,18 @@ class BacktestAPI(BaseAPI):
                  skip_if_late_start: bool = False):
         """加载标的数据到回测引擎
 
-        回测模式下优先使用 OpenData 的后复权数据，因为 QMT 和 OpenData 的
-        后复权因子存在系统性差异（QMT dividend_type="back" 与 akshare adjust='hfq'
-        计算方式不同），使用统一数据源可避免混合数据源时价格断裂。
-        不复权数据两者完全一致，不受影响。
-        模拟盘和实盘仍优先使用 QMT 数据。
+        数据源选择逻辑：
+        - data_source='futu': 使用 FutuDataProcessor 从 .cache/FutuData 读取
+        - data_source='qmt'(默认): 优先使用 OpenData 的后复权数据，因为 QMT 和 OpenData 的
+          后复权因子存在系统性差异，使用统一数据源可避免混合数据源时价格断裂。
+          不复权数据两者完全一致，不受影响。
 
         Args:
             symbol: 标的代码
             start_date: 数据起始日
             end_date: 数据结束日
             period: 数据周期
-            skip_if_late_start: 如果数据实际起始日晚于trade_start_date，是否跳过该标的。
-                已废弃：现在不再跳过，而是用 NaN 填充前置日期，使该标的数据与其它
-                数据源对齐。策略层通过检测 NaN 价格自动跳过无数据的交易日。
-                保留此参数仅为向后兼容，实际不再生效。
+            skip_if_late_start: 已废弃参数，保留仅为向后兼容
         """
         import numpy as np
 
@@ -243,15 +255,22 @@ class BacktestAPI(BaseAPI):
         self._data_end_date = end_date
 
         data = None
-        try:
-            data = self._opendata_processor.get_data(symbol, start_date, end_date, period)
-            if data is not None and not data.empty:
-                pass
-        except Exception as e:
-            self.logger.warning(f'[add_data] {symbol}: OpenData获取失败({e})，降级使用QMT数据')
 
-        if data is None or data.empty:
-            data = self.data_processor.get_data(symbol, start_date, end_date, period)
+        if self._data_source == 'futu':
+            # 富途数据源：直接从 FutuDataProcessor 获取
+            try:
+                data = self.data_processor.get_data(symbol, start_date, end_date, period)
+            except Exception as e:
+                self.logger.warning(f'[add_data] {symbol}: FutuData获取失败({e})')
+        else:
+            # 默认数据源：优先 OpenData，降级 QMT
+            try:
+                data = self._opendata_processor.get_data(symbol, start_date, end_date, period)
+            except Exception as e:
+                self.logger.warning(f'[add_data] {symbol}: OpenData获取失败({e})，降级使用QMT数据')
+
+            if data is None or data.empty:
+                data = self.data_processor.get_data(symbol, start_date, end_date, period)
 
         if not data.empty:
             # 如果数据实际起始日晚于请求的起始日，用 NaN 行补齐前置日期
@@ -672,12 +691,20 @@ class BacktestAPI(BaseAPI):
                     return (symbol, None, None)
 
                 data = None
-                try:
-                    data = self._opendata_processor.get_data(symbol, effective_start, effective_end, self._period)
-                except Exception:
-                    pass
-                if data is None or (hasattr(data, 'empty') and data.empty):
-                    data = self.data_processor.get_data(symbol, effective_start, effective_end, self._period)
+                if self._data_source == 'futu':
+                    # 富途数据源
+                    try:
+                        data = self.data_processor.get_data(symbol, effective_start, effective_end, self._period)
+                    except Exception:
+                        pass
+                else:
+                    # 默认数据源：优先 OpenData，降级 QMT
+                    try:
+                        data = self._opendata_processor.get_data(symbol, effective_start, effective_end, self._period)
+                    except Exception:
+                        pass
+                    if data is None or (hasattr(data, 'empty') and data.empty):
+                        data = self.data_processor.get_data(symbol, effective_start, effective_end, self._period)
                 return (symbol, data, None)
             except Exception as e:
                 return (symbol, None, e)

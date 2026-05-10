@@ -143,7 +143,7 @@ from strategies import register_strategy
 @register_strategy('<strategy_name>',
                    default_kwargs={'max_stocks': <N>},
                    backtest_config={'cash': 1000000, 'commission': 0.0001,
-                                    'start_date': '2020-01-01', 'end_date': '2026-04-28',
+                                    'start_date': '2020-04-28', 'end_date': '2026-04-28',
                                     'period': '1d', 'pool': '<股票池>'})
 class <StrategyName>Strategy(StockSelectionStrategy):
     """<策略中文名> - <一句话描述>
@@ -209,7 +209,7 @@ from strategies import register_strategy
 
 @register_strategy('<strategy_name>',
                    backtest_config={'cash': 200000, 'commission': 0.0005,
-                                    'start_date': '2020-01-01', 'end_date': '2026-04-28',
+                                    'start_date': '2020-04-28', 'end_date': '2026-04-28',
                                     'period': '1d'})
 class <StrategyName>Strategy(StrategyLogic):
     """<策略中文名> - <一句话描述>
@@ -272,7 +272,7 @@ strategies/<strategy_name>_strategy/     (或 strategies_for_vip/<strategy_name>
 
 - 初始资金: 1,000,000
 - 股票池: 中证1000
-- 回测区间: 2020-01-01 ~ 2026-04-28
+- 回测区间: 2020-04-28 ~ 2026-04-28
 - 佣金: 0.01%
 
 ## 数据来源
@@ -291,7 +291,7 @@ strategies/<strategy_name>_strategy/     (或 strategies_for_vip/<strategy_name>
 | 初始资金 (cash) | 1,000,000 | 200,000 | 文档中的"初始资金"、"资金量" |
 | 佣金 (commission) | 0.0001 | 0.0005 | 文档中的"手续费"、"佣金" |
 | 股票池 (pool) | 中证1000 | - | 文档中的"股票池"、"选股范围" |
-| 回测起始 (start_date) | 2020-01-01 | 2020-01-01 | 文档中的"回测区间" |
+| 回测起始 (start_date) | 2020-04-28 | 2020-04-28 | 文档中的"回测区间" |
 | 回测结束 (end_date) | 2026-04-28 | 2026-04-28 | 文档中的"回测区间" |
 | 基准 (benchmark) | 自动根据股票池 | 000300.SH | 文档中的"基准"、"对比指数" |
 

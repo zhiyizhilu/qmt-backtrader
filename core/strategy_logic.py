@@ -180,7 +180,9 @@ class StrategyLogic:
     实现策略逻辑与执行环境的完全解耦。
     """
 
-    params = ()
+    params = (
+        ('t_plus_1', True),
+    )
 
     def __init__(self, executor: Optional[StrategyExecutor] = None, **kwargs):
         if isinstance(self.params, tuple):
@@ -197,6 +199,10 @@ class StrategyLogic:
         self._orders: Dict[str, OrderInfo] = {}
         self._risk_controller: Optional['RiskController'] = None
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
+
+        self._today_buys: Dict[str, int] = {}
+        self._current_trade_date = None
+        self._t_plus_1_overrides: Dict[str, bool] = {}
 
     def set_data_adapter(self, adapter: MarketDataAdapter) -> None:
         """设置数据适配器"""
@@ -276,6 +282,9 @@ class StrategyLogic:
         self._orders[order.order_id] = order
         self.log(f'委托回调: {order}')
 
+        if order.is_completed and order.is_buy and order.executed_volume > 0:
+            self._update_today_buys(order.symbol, order.executed_volume)
+
     def on_trade(self, trade: TradeInfo):
         """成交回报时触发
 
@@ -318,6 +327,18 @@ class StrategyLogic:
 
     def sell(self, symbol: str, price: float, volume: int):
         self.log(f'卖出委托: {symbol}, 价格: {price:.2f}, 数量: {volume}')
+
+        sellable = self.get_sellable_volume(symbol)
+        if sellable <= 0:
+            if self.is_t_plus_1(symbol):
+                self.log(f'T+1拒绝卖出: {symbol}, 当天买入不可卖出', level='warning')
+            else:
+                self.log(f'拒绝卖出: {symbol}, 无持仓', level='warning')
+            return None
+        if volume > sellable:
+            self.log(f'T+1调整卖出数量: {symbol}, 请求{volume}股, 可卖{sellable}股', level='warning')
+            volume = sellable
+
         if not self._check_risk_before_sell(symbol, price, volume):
             self.log(f'风控拒绝卖出: {symbol}', level='warning')
             return None
@@ -361,6 +382,67 @@ class StrategyLogic:
         if self.executor and hasattr(self.executor, 'get_position_size'):
             return self.executor.get_position_size(symbol)
         return 0
+
+    def get_sellable_volume(self, symbol: str) -> int:
+        """获取指定标的的可卖出数量
+
+        T+1品种（默认）：当天买入不可卖出，可卖 = 总持仓 - 当天买入量
+        T+0品种（可转债、部分基金等）：可卖 = 总持仓
+
+        Returns:
+            可卖出数量
+        """
+        if not self.is_t_plus_1(symbol):
+            return self.get_position_size(symbol)
+
+        self._check_trade_date_rollover()
+        total = self.get_position_size(symbol)
+        today_bought = self._today_buys.get(symbol, 0)
+        return max(0, total - today_bought)
+
+    def is_t_plus_1(self, symbol: str) -> bool:
+        """判断指定标的是否适用T+1规则
+
+        优先级：逐标的覆盖 > 全局参数 > 自动推断
+
+        Args:
+            symbol: 标的代码
+
+        Returns:
+            True表示T+1（当天买入不可卖出），False表示T+0
+        """
+        if symbol in self._t_plus_1_overrides:
+            return self._t_plus_1_overrides[symbol]
+        return getattr(self.params, 't_plus_1', True)
+
+    def set_t_plus_1(self, symbol: str, t_plus_1: bool):
+        """设置指定标的的T+1/T+0规则
+
+        用于覆盖全局默认设置，例如：
+        - 可转债设为T+0: set_t_plus_1('123456.SZ', False)
+        - T+0基金设为T+0: set_t_plus_1('510050.SH', False)
+
+        Args:
+            symbol: 标的代码
+            t_plus_1: True为T+1（当天买入不可卖出），False为T+0
+        """
+        self._t_plus_1_overrides[symbol] = t_plus_1
+
+    def _check_trade_date_rollover(self):
+        """检查是否跨日，跨日则清零当天买入记录"""
+        current_date = self.get_current_date()
+        if current_date is not None:
+            date_key = current_date.strftime('%Y-%m-%d') if hasattr(current_date, 'strftime') else str(current_date)
+        else:
+            return
+        if date_key != self._current_trade_date:
+            self._current_trade_date = date_key
+            self._today_buys.clear()
+
+    def _update_today_buys(self, symbol: str, volume: int):
+        """记录当天买入数量"""
+        self._check_trade_date_rollover()
+        self._today_buys[symbol] = self._today_buys.get(symbol, 0) + volume
 
     def get_cash(self) -> float:
         """获取可用现金"""
