@@ -89,6 +89,7 @@ class FilterPopup(QFrame):
     def __init__(self, values, current_filter, on_confirm, parent=None):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         self.on_confirm = on_confirm
+        self._updating_select_all = False
         self.setStyleSheet(
             "QFrame { background-color: white; border: 1px solid #ccc; border-radius: 4px; }"
         )
@@ -136,6 +137,7 @@ class FilterPopup(QFrame):
                 cb.setChecked(True)
             else:
                 cb.setChecked(val in current_filter)
+            cb.stateChanged.connect(self._on_item_changed)
             self.item_layout.addWidget(cb)
             self.checkboxes.append(cb)
 
@@ -149,22 +151,34 @@ class FilterPopup(QFrame):
         self.setFixedWidth(220)
 
     def _toggle_all(self, state):
+        if self._updating_select_all:
+            return
         checked = state == Qt.Checked
+        self._updating_select_all = True
         for cb in self.checkboxes:
             if cb.isVisible():
                 cb.setChecked(checked)
+        self._updating_select_all = False
+
+    def _on_item_changed(self):
+        if self._updating_select_all:
+            return
+        self._update_select_all_state()
+
+    def _update_select_all_state(self):
+        visible_cbs = [cb for cb in self.checkboxes if cb.isVisible()]
+        if not visible_cbs:
+            return
+        all_vis_checked = all(cb.isChecked() for cb in visible_cbs)
+        self._updating_select_all = True
+        self.select_all_cb.setChecked(all_vis_checked)
+        self._updating_select_all = False
 
     def _filter_search(self, text):
         lower = text.lower()
         for cb in self.checkboxes:
             cb.setVisible(lower in cb.text().lower())
-        # 更新全选状态
-        visible_cbs = [cb for cb in self.checkboxes if cb.isVisible()]
-        if visible_cbs:
-            all_vis_checked = all(cb.isChecked() for cb in visible_cbs)
-            self.select_all_cb.blockSignals(True)
-            self.select_all_cb.setChecked(all_vis_checked)
-            self.select_all_cb.blockSignals(False)
+        self._update_select_all_state()
 
     def _on_confirm(self):
         selected = set()
