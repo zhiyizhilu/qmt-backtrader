@@ -29,6 +29,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QWidgetAction,
     QTextEdit,
+    QScrollArea,
 )
 from PyQt5.QtGui import QFont, QColor, QPainter, QPicture, QBrush, QPen, QPolygonF
 from PyQt5.QtCore import Qt, QPointF, QRectF
@@ -80,6 +81,105 @@ class FilterButton(QPushButton):
         ]
         p.drawPolygon(QPolygonF(funnel))
         p.end()
+
+
+class FilterPopup(QFrame):
+    """支持多选和确认的筛选弹出窗口"""
+
+    def __init__(self, values, current_filter, on_confirm, parent=None):
+        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
+        self.on_confirm = on_confirm
+        self.setStyleSheet(
+            "QFrame { background-color: white; border: 1px solid #ccc; border-radius: 4px; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+
+        # 搜索框
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("搜索...")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.setStyleSheet("QLineEdit { padding: 4px; font-family: Microsoft YaHei; font-size: 12px; }")
+        layout.addWidget(self.search_edit)
+
+        # 确定按钮
+        confirm_btn = QPushButton("确定")
+        confirm_btn.setStyleSheet(
+            "QPushButton { background-color: #4CAF50; color: white; border: none; "
+            "border-radius: 3px; padding: 5px 10px; font-family: Microsoft YaHei; font-size: 12px; }"
+            "QPushButton:hover { background-color: #45a049; }"
+        )
+        confirm_btn.clicked.connect(self._on_confirm)
+        layout.addWidget(confirm_btn)
+
+        # 全选按钮
+        self.select_all_cb = QCheckBox("(全选)")
+        self.select_all_cb.setStyleSheet("font-family: Microsoft YaHei; font-size: 12px;")
+        layout.addWidget(self.select_all_cb)
+
+        # 滚动区域
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(250)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
+        scroll_widget = QWidget()
+        self.item_layout = QVBoxLayout(scroll_widget)
+        self.item_layout.setContentsMargins(0, 0, 0, 0)
+        self.item_layout.setSpacing(2)
+
+        self.checkboxes = []
+        for val in values:
+            cb = QCheckBox(val)
+            cb.setStyleSheet("font-family: Microsoft YaHei; font-size: 12px;")
+            if current_filter is None:
+                cb.setChecked(True)
+            else:
+                cb.setChecked(val in current_filter)
+            self.item_layout.addWidget(cb)
+            self.checkboxes.append(cb)
+
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll)
+
+        self.select_all_cb.setChecked(all(cb.isChecked() for cb in self.checkboxes))
+        self.select_all_cb.stateChanged.connect(self._toggle_all)
+        self.search_edit.textChanged.connect(self._filter_search)
+
+        self.setFixedWidth(220)
+
+    def _toggle_all(self, state):
+        checked = state == Qt.Checked
+        for cb in self.checkboxes:
+            if cb.isVisible():
+                cb.setChecked(checked)
+
+    def _filter_search(self, text):
+        lower = text.lower()
+        for cb in self.checkboxes:
+            cb.setVisible(lower in cb.text().lower())
+        # 更新全选状态
+        visible_cbs = [cb for cb in self.checkboxes if cb.isVisible()]
+        if visible_cbs:
+            all_vis_checked = all(cb.isChecked() for cb in visible_cbs)
+            self.select_all_cb.blockSignals(True)
+            self.select_all_cb.setChecked(all_vis_checked)
+            self.select_all_cb.blockSignals(False)
+
+    def _on_confirm(self):
+        selected = set()
+        for cb in self.checkboxes:
+            if cb.isChecked():
+                selected.add(cb.text())
+        all_checked = all(cb.isChecked() for cb in self.checkboxes)
+        self.hide()
+        self.on_confirm(selected, all_checked)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.hide()
+        else:
+            super().keyPressEvent(event)
 
 
 class ClickableLegend(pg.LegendItem):
@@ -1957,9 +2057,6 @@ class BacktestReportWindow(QMainWindow):
             btn.setVisible(header.sectionSize(col) > 40)
 
     def _show_filter_menu(self, col):
-        menu = QMenu(self)
-        menu.setStyleSheet("QMenu { font-family: Microsoft YaHei; font-size: 12px; }")
-
         values = set()
         for row in range(self.trade_table.rowCount()):
             item = self.trade_table.item(row, col)
@@ -1968,50 +2065,22 @@ class BacktestReportWindow(QMainWindow):
 
         sorted_values = sorted(values, key=lambda x: (x == "--", x))
 
-        search_edit = QLineEdit(menu)
-        search_edit.setPlaceholderText("搜索...")
-        search_edit.setClearButtonEnabled(True)
-        search_edit.setStyleSheet("QLineEdit { padding: 4px; }")
-        search_action = QWidgetAction(menu)
-        search_action.setDefaultWidget(search_edit)
-        menu.addAction(search_action)
-        menu.addSeparator()
-
-        select_all_action = QAction("(全选)", menu)
-        menu.addAction(select_all_action)
-
-        actions = []
-        for val in sorted_values:
-            action = QAction(val, menu)
-            action.setCheckable(True)
-            current_filter = self._column_filters.get(col)
-            if current_filter is None:
-                action.setChecked(True)
+        def on_confirm(selected, all_checked):
+            if all_checked:
+                self._column_filters.pop(col, None)
             else:
-                action.setChecked(val in current_filter)
-            menu.addAction(action)
-            actions.append(action)
+                self._column_filters[col] = selected
+            self._apply_filters()
+            self._update_filter_button_style(col)
 
-        select_all_action.triggered.connect(lambda: self._toggle_all_filter(actions))
-        search_edit.textChanged.connect(lambda text: self._filter_menu_search(actions, text))
-
-        menu.exec_(self._filter_buttons[col].mapToGlobal(self._filter_buttons[col].rect().bottomLeft()))
-
-        selected = set()
-        all_checked = True
-        for action in actions:
-            if action.isChecked():
-                selected.add(action.text())
-            else:
-                all_checked = False
-
-        if all_checked:
-            self._column_filters.pop(col, None)
-        else:
-            self._column_filters[col] = selected
-
-        self._apply_filters()
-        self._update_filter_button_style(col)
+        popup = FilterPopup(
+            sorted_values, self._column_filters.get(col), on_confirm, self
+        )
+        pos = self._filter_buttons[col].mapToGlobal(
+            self._filter_buttons[col].rect().bottomLeft()
+        )
+        popup.move(pos)
+        popup.show()
 
     def _toggle_all_filter(self, actions):
         all_checked = all(action.isChecked() for action in actions)
@@ -2785,9 +2854,6 @@ class BacktestReportWindow(QMainWindow):
             btn.setVisible(header.sectionSize(col) > 40)
 
     def _show_dp_filter_menu(self, col):
-        menu = QMenu(self)
-        menu.setStyleSheet("QMenu { font-family: Microsoft YaHei; font-size: 12px; }")
-
         values = set()
         for row in range(self.daily_position_table.rowCount()):
             item = self.daily_position_table.item(row, col)
@@ -2796,50 +2862,22 @@ class BacktestReportWindow(QMainWindow):
 
         sorted_values = sorted(values, key=lambda x: (x == "--", x))
 
-        search_edit = QLineEdit(menu)
-        search_edit.setPlaceholderText("搜索...")
-        search_edit.setClearButtonEnabled(True)
-        search_edit.setStyleSheet("QLineEdit { padding: 4px; }")
-        search_action = QWidgetAction(menu)
-        search_action.setDefaultWidget(search_edit)
-        menu.addAction(search_action)
-        menu.addSeparator()
-
-        select_all_action = QAction("(全选)", menu)
-        menu.addAction(select_all_action)
-
-        actions = []
-        for val in sorted_values:
-            action = QAction(val, menu)
-            action.setCheckable(True)
-            current_filter = self._dp_column_filters.get(col)
-            if current_filter is None:
-                action.setChecked(True)
+        def on_confirm(selected, all_checked):
+            if all_checked:
+                self._dp_column_filters.pop(col, None)
             else:
-                action.setChecked(val in current_filter)
-            menu.addAction(action)
-            actions.append(action)
+                self._dp_column_filters[col] = selected
+            self._apply_dp_filters()
+            self._update_dp_filter_button_style(col)
 
-        select_all_action.triggered.connect(lambda: self._toggle_all_dp_filter(actions))
-        search_edit.textChanged.connect(lambda text: self._filter_dp_menu_search(actions, text))
-
-        menu.exec_(self._dp_filter_buttons[col].mapToGlobal(self._dp_filter_buttons[col].rect().bottomLeft()))
-
-        selected = set()
-        all_checked = True
-        for action in actions:
-            if action.isChecked():
-                selected.add(action.text())
-            else:
-                all_checked = False
-
-        if all_checked:
-            self._dp_column_filters.pop(col, None)
-        else:
-            self._dp_column_filters[col] = selected
-
-        self._apply_dp_filters()
-        self._update_dp_filter_button_style(col)
+        popup = FilterPopup(
+            sorted_values, self._dp_column_filters.get(col), on_confirm, self
+        )
+        pos = self._dp_filter_buttons[col].mapToGlobal(
+            self._dp_filter_buttons[col].rect().bottomLeft()
+        )
+        popup.move(pos)
+        popup.show()
 
     def _toggle_all_dp_filter(self, actions):
         all_checked = all(action.isChecked() for action in actions)
