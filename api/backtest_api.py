@@ -6,6 +6,7 @@ import pandas as pd
 from typing import Dict, List, Optional, Any, Type
 from tqdm import tqdm
 from core.data import DataProcessor, QMTDataProcessor, OpenDataProcessor, create_data_processor
+from core.data.futu import FutuServiceError
 from core.executor import BacktestExecutor
 from core.data_adapter import BacktraderDataAdapter
 from core.strategy_logic import StrategyLogic
@@ -260,6 +261,9 @@ class BacktestAPI(BaseAPI):
             # 富途数据源：直接从 FutuDataProcessor 获取
             try:
                 data = self.data_processor.get_data(symbol, start_date, end_date, period)
+            except FutuServiceError:
+                # OpenD服务未开启，直接退出
+                raise
             except Exception as e:
                 self.logger.warning(f'[add_data] {symbol}: FutuData获取失败({e})')
         else:
@@ -695,6 +699,9 @@ class BacktestAPI(BaseAPI):
                     # 富途数据源
                     try:
                         data = self.data_processor.get_data(symbol, effective_start, effective_end, self._period)
+                    except FutuServiceError:
+                        # OpenD服务未开启，直接向上抛出以终止回测
+                        raise
                     except Exception:
                         pass
                 else:
@@ -706,6 +713,9 @@ class BacktestAPI(BaseAPI):
                     if data is None or (hasattr(data, 'empty') and data.empty):
                         data = self.data_processor.get_data(symbol, effective_start, effective_end, self._period)
                 return (symbol, data, None)
+            except FutuServiceError:
+                # OpenD服务未开启，直接向上抛出以终止回测
+                raise
             except Exception as e:
                 return (symbol, None, e)
 

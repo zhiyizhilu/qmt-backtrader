@@ -1,9 +1,11 @@
 import argparse
 import os
+import sys
 import logging
 from api.backtest_api import BacktestAPI
 from core.cache import cache_manager
 from core.data.index_constituent import IndexConstituentManager
+from core.data.futu import FutuServiceError
 from api.qmt_api import QMTAPI
 from api.instance_manager import StrategyInstanceManager
 from core.stock_selection import StockSelectionStrategy
@@ -106,31 +108,35 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
     benchmark = IndexConstituentManager.SECTOR_TO_INDEX.get(pool, '000300.SH')
     config.setdefault('benchmark', benchmark)
 
-    api = BacktestAPI(proxy=proxy, data_source=data_source)
-    if ai_mode:
-        api.set_ai_mode(True)
-    if no_record:
-        api.set_no_record(True)
+    try:
+        api = BacktestAPI(proxy=proxy, data_source=data_source)
+        if ai_mode:
+            api.set_ai_mode(True)
+        if no_record:
+            api.set_no_record(True)
 
-    api.set_strategy_name(strategy_name)
-    api.set_backtest_config(config)
+        api.set_strategy_name(strategy_name)
+        api.set_backtest_config(config)
 
-    if issubclass(strategy_class, StockSelectionStrategy):
-        api.configure(**config)
-        api.load_financial_data(sector=pool)
-        api.add_stock_selection_strategy(strategy_class, **default_kwargs)
-    else:
-        api.configure(**config)
-        api.add_strategy(strategy_class, **default_kwargs)
+        if issubclass(strategy_class, StockSelectionStrategy):
+            api.configure(**config)
+            api.load_financial_data(sector=pool)
+            api.add_stock_selection_strategy(strategy_class, **default_kwargs)
+        else:
+            api.configure(**config)
+            api.add_strategy(strategy_class, **default_kwargs)
 
-    results = api.run()
+        results = api.run()
 
-    if results:
-        api.show_report()
-    else:
-        logger.info("回测未产生结果，可能是因为没有数据")
+        if results:
+            api.show_report()
+        else:
+            logger.info("回测未产生结果，可能是因为没有数据")
 
-    logger.info("回测完成")
+        logger.info("回测完成")
+    except FutuServiceError as e:
+        logger.error(str(e))
+        sys.exit(1)
 
 
 def run_sim_trade(strategy_name='double_ma', path=r'D:\qmt\userdata_mini', account_id=None):

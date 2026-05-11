@@ -489,6 +489,10 @@ class StrategyLogic:
                     if price > 0:
                         return price
             except Exception as e:
+                # FutuServiceError 需要向上传播以终止回测
+                from core.data.futu import FutuServiceError
+                if isinstance(e, FutuServiceError):
+                    raise
                 self.logger.debug(f"获取不复权价格失败 {symbol}: {e}")
 
         return self.get_current_price(symbol)

@@ -1,29 +1,90 @@
 """富途数据处理器 - 从本地 .cache/FutuData 目录读取预存的行情数据
 
-数据来源: 富途OpenD API (futu-api)，通过 save_futu_data.py 预先下载到本地。
+数据来源: 富途OpenD API (futu-api)，支持自动增量下载。
 存储格式: .cache/FutuData/market/{symbol}/{year}_{period}.parquet
           .cache/FutuData/market_raw/{symbol}/{year}_{period}.parquet
+
+当数据缺失时，会自动检测富途OpenD服务是否可用：
+  - 如果服务已开启 → 自动增量下载缺失数据并缓存到本地
+  - 如果服务未开启 → 报错并退出
 """
 import os
+import sys
+import time
 import logging
+import threading
 import pandas as pd
 import numpy as np
-from typing import Optional
+from typing import Optional, List, Tuple
 
 from core.data.base import DataProcessor
 from core.cache import cache_manager
+
+
+class FutuRateLimiter:
+    """富途API请求频率限制器
+
+    富途OpenD限制: 每30秒最多60次请求。
+    使用滑动窗口算法控制请求频率，预留安全余量。
+    """
+
+    def __init__(self, max_requests: int = 50, window_seconds: float = 30.0):
+        self._max_requests = max_requests
+        self._window_seconds = window_seconds
+        self._lock = threading.Lock()
+        self._timestamps: List[float] = []
+
+    def wait(self):
+        """等待直到可以发送下一个请求
+
+        清理过期的时间戳，如果窗口内请求数已达上限则等待。
+        """
+        with self._lock:
+            now = time.time()
+            # 清理超过滑动窗口的旧时间戳
+            cutoff = now - self._window_seconds
+            self._timestamps = [t for t in self._timestamps if t > cutoff]
+
+            if len(self._timestamps) >= self._max_requests:
+                # 窗口已满，需要等待最早的请求过期
+                oldest = self._timestamps[0]
+                wait_time = oldest + self._window_seconds - now + 0.1
+                if wait_time > 0:
+                    self._lock.release()
+                    try:
+                        time.sleep(wait_time)
+                    finally:
+                        self._lock.acquire()
+                    now = time.time()
+                    cutoff = now - self._window_seconds
+                    self._timestamps = [t for t in self._timestamps if t > cutoff]
+
+            self._timestamps.append(time.time())
+
+
+class FutuServiceError(Exception):
+    """富途OpenD服务不可用异常"""
+    pass
 
 
 class FutuDataProcessor(DataProcessor):
     """富途数据处理器
 
     从本地 .cache/FutuData 目录读取预存的行情数据（parquet格式）。
-    数据需要通过 save_futu_data.py 预先下载。
+    数据缺失时，自动检测富途OpenD服务并进行增量下载缓存。
 
     支持后复权（market/）和不复权（market_raw/）两种数据。
     """
 
-    def __init__(self, fallback_to_simulated: bool = False, data_dir: str = ''):
+    # 默认富途OpenD连接参数
+    DEFAULT_HOST = '127.0.0.1'
+    DEFAULT_PORT = 11111
+
+    # 类级别共享限速器，所有实例共用，防止多线程突破频率限制
+    _rate_limiter = FutuRateLimiter(max_requests=55, window_seconds=30.0)
+
+    def __init__(self, fallback_to_simulated: bool = False, data_dir: str = '',
+                 futu_host: str = '', futu_port: int = 0):
         self._fallback_to_simulated = fallback_to_simulated
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
 
@@ -33,22 +94,367 @@ class FutuDataProcessor(DataProcessor):
             base = os.environ.get('QMT_CACHE_DIR', os.path.join(os.getcwd(), '.cache'))
             self._data_dir = os.path.join(base, 'FutuData')
 
+        self._futu_host = futu_host or self.DEFAULT_HOST
+        self._futu_port = futu_port or self.DEFAULT_PORT
+
         self._raw_fetcher = FutuDataProcessor_Raw(self)
+
+    # ── symbol 格式转换 ──
+
+    @staticmethod
+    def qmt_to_futu_code(symbol: str) -> Optional[str]:
+        """将QMT格式 (601398.SH) 转换为富途格式 (SH.601398)"""
+        if '.' not in symbol:
+            return None
+        parts = symbol.split('.')
+        if len(parts) != 2:
+            return None
+        code, market = parts
+        return f"{market}.{code}"
+
+    @staticmethod
+    def futu_to_qmt_code(futu_code: str) -> Optional[str]:
+        """将富途格式 (SH.601398) 转换为QMT格式 (601398.SH)"""
+        if '.' not in futu_code:
+            return None
+        parts = futu_code.split('.')
+        if len(parts) != 2:
+            return None
+        market, code = parts
+        return f"{code}.{market.upper()}"
+
+    # ── 富途OpenD服务检测 ──
+
+    def check_futu_service(self) -> bool:
+        """检测富途OpenD服务是否可用
+
+        尝试建立连接并获取全局状态，成功则返回True。
+        """
+        try:
+            from futu import OpenQuoteContext, RET_OK
+            ctx = OpenQuoteContext(host=self._futu_host, port=self._futu_port)
+            try:
+                ret, data = ctx.get_global_state()
+                return ret == RET_OK
+            finally:
+                ctx.close()
+        except ImportError:
+            self.logger.error("futu-api 未安装，无法连接富途OpenD服务。请运行: pip install futu-api")
+            return False
+        except Exception as e:
+            self.logger.debug(f"富途OpenD服务不可用: {e}")
+            return False
+
+    def _ensure_futu_service(self):
+        """确保富途OpenD服务可用，不可用则抛出异常并退出"""
+        if self.check_futu_service():
+            return
+        msg = (
+            f"\n{'='*60}\n"
+            f"错误: {self._futu_host}:{self._futu_port} 富途OpenD服务未开启！\n"
+            f"数据缺失且无法自动下载，请执行以下操作后重试：\n"
+            f"  1. 启动富途OpenD网关程序\n"
+            f"  2. 确认OpenD监听地址为 {self._futu_host}:{self._futu_port}\n"
+            f"{'='*60}"
+        )
+        self.logger.error(msg)
+        raise FutuServiceError(msg)
+
+    # ── 数据下载与缓存 ──
+
+    # API调用超时时间（秒）
+    API_TIMEOUT = 60
+    # API调用最大重试次数
+    API_MAX_RETRIES = 3
+
+    def _download_kline(self, ctx, futu_code: str, start: str, end: str,
+                        ktype, autype) -> Optional[pd.DataFrame]:
+        """分页获取历史K线数据（带超时和重试）
+
+        Args:
+            ctx: OpenQuoteContext 实例
+            futu_code: 富途格式代码 (如 SH.601398)
+            start: 起始日期 'YYYY-MM-DD'
+            end: 结束日期 'YYYY-MM-DD'
+            ktype: KLType 常量
+            autype: AuType 常量 (HFQ/QFQ/NONE)
+
+        Returns:
+            原始DataFrame（含 time_key/open/high/low/close/volume 等列），失败返回 None
+        """
+        import concurrent.futures
+        from futu import RET_OK
+
+        all_dfs = []
+        page_req_key = None
+
+        while True:
+            result = None
+            last_error = None
+
+            for attempt in range(1, self.API_MAX_RETRIES + 1):
+                self._rate_limiter.wait()
+
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(
+                            ctx.request_history_kline,
+                            code=futu_code,
+                            start=start,
+                            end=end,
+                            ktype=ktype,
+                            autype=autype,
+                            max_count=1000,
+                            page_req_key=page_req_key
+                        )
+                        result = future.result(timeout=self.API_TIMEOUT)
+                except concurrent.futures.TimeoutError:
+                    last_error = f"API调用超时 ({self.API_TIMEOUT}秒)"
+                    self.logger.warning(
+                        f"富途API调用超时 ({attempt}/{self.API_MAX_RETRIES}): "
+                        f"{futu_code} {start}~{end}"
+                    )
+                    if attempt < self.API_MAX_RETRIES:
+                        time.sleep(2 * attempt)  # 递增等待
+                    continue
+                except Exception as e:
+                    last_error = str(e)
+                    self.logger.warning(
+                        f"富途API调用异常 ({attempt}/{self.API_MAX_RETRIES}): {e}"
+                    )
+                    if attempt < self.API_MAX_RETRIES:
+                        time.sleep(2 * attempt)
+                    continue
+
+                break  # 成功，跳出重试循环
+
+            if result is None:
+                self.logger.error(f"富途API请求失败（已重试{self.API_MAX_RETRIES}次）: {last_error}")
+                return None
+
+            ret, data, page_req_key = result
+
+            if ret != RET_OK:
+                # 区分"未知股票"（富途不支持退市股票）和其他错误
+                err_msg = str(data)
+                if '未知股票' in err_msg or '不存在的股票' in err_msg:
+                    self.logger.debug(f"富途不支持该股票: {futu_code} - {err_msg}")
+                    return None
+                self.logger.error(f"富途API请求失败: {data}")
+                return None
+
+            if data is not None and not data.empty:
+                all_dfs.append(data)
+
+            if page_req_key is None:
+                break
+
+        if not all_dfs:
+            return None
+
+        return pd.concat(all_dfs, ignore_index=True)
+
+    def _save_kline_to_parquet(self, raw_df: pd.DataFrame, symbol: str,
+                               year: int, period: str, sub_dir: str = 'market'):
+        """将富途API返回的K线数据保存为parquet文件
+
+        Args:
+            raw_df: 富途API原始返回的DataFrame
+            symbol: QMT格式代码
+            year: 年份
+            period: 周期后缀 (如 '1d', '1m')
+            sub_dir: 'market' (后复权) 或 'market_raw' (不复权)
+        """
+        if raw_df is None or raw_df.empty:
+            return
+
+        # 转换 time_key 为 datetime 索引
+        df = raw_df.copy()
+        df['datetime'] = pd.to_datetime(df['time_key'])
+        df = df.set_index('datetime')
+
+        # 只保留标准列
+        keep_cols = [c for c in ['open', 'high', 'low', 'close', 'volume'] if c in df.columns]
+        df = df[keep_cols]
+
+        for col in df.columns:
+            df[col] = df[col].astype(float)
+
+        df = df.sort_index()
+
+        # 过滤只保留该年份的数据
+        df = df[df.index.year == year]
+
+        if df.empty:
+            return
+
+        # 保存
+        symbol_dir = os.path.join(self._data_dir, sub_dir, symbol)
+        os.makedirs(symbol_dir, exist_ok=True)
+        fpath = os.path.join(symbol_dir, f'{year}_{period}.parquet')
+        df.to_parquet(fpath, index=True)
+        self.logger.info(f"已缓存: {fpath} ({len(df)} 行)")
+
+    def _get_missing_years(self, symbol: str, start_date: str, end_date: str,
+                            period: str, sub_dir: str = 'market') -> List[int]:
+        """获取缺失数据的年份列表
+
+        检查指定范围内哪些年份的parquet文件不存在。
+        """
+        try:
+            start_year = pd.Timestamp(start_date).year
+            end_year = pd.Timestamp(end_date).year
+        except Exception:
+            return []
+
+        period_suffix = self._map_period(period)
+        symbol_dir = os.path.join(self._data_dir, sub_dir, symbol)
+
+        missing_years = []
+        for year in range(start_year, end_year + 1):
+            file_path = os.path.join(symbol_dir, f"{year}_{period_suffix}.parquet")
+            if not os.path.exists(file_path):
+                missing_years.append(year)
+
+        return missing_years
+
+    def _download_missing_data(self, symbol: str, start_date: str, end_date: str,
+                               period: str, sub_dir: str = 'market') -> bool:
+        """增量下载缺失数据并缓存到本地
+
+        Args:
+            symbol: QMT格式代码
+            start_date: 起始日期
+            end_date: 结束日期
+            period: 周期
+            sub_dir: 'market' (后复权) 或 'market_raw' (不复权)
+
+        Returns:
+            True 如果下载成功（或有数据可读），False 如果失败
+        """
+        from futu import OpenQuoteContext, KLType, AuType
+
+        # 检查服务
+        self._ensure_futu_service()
+
+        # symbol 格式转换
+        futu_code = self.qmt_to_futu_code(symbol)
+        if not futu_code:
+            self.logger.error(f"无法将 {symbol} 转换为富途代码格式")
+            return False
+
+        # 确定缺失年份
+        missing_years = self._get_missing_years(symbol, start_date, end_date, period, sub_dir)
+
+        if not missing_years:
+            self.logger.debug(f"{symbol}: 无需增量下载，所有年份文件已存在")
+            return True
+
+        self.logger.info(f"{symbol}: 检测到缺失数据，自动增量下载年份 {missing_years}")
+
+        # 映射 period 到 KLType 和 autype
+        ktype = self._map_period_to_kltype(period)
+        autype = AuType.HFQ if sub_dir == 'market' else AuType.NONE
+        period_suffix = self._map_period(period)
+
+        ctx = OpenQuoteContext(host=self._futu_host, port=self._futu_port)
+        try:
+            stock_unknown = False  # 标记该股票是否被富途识别为"未知股票"
+            for year in missing_years:
+                if stock_unknown:
+                    # 已确认富途不支持该股票，后续年份直接跳过
+                    self.logger.debug(f"  {symbol} {year}年 - 跳过（富途不支持该股票）")
+                    continue
+
+                year_start = f'{year}-01-01'
+                year_end = f'{year}-12-31'
+
+                self.logger.info(f"  下载 {symbol} {year}年 {sub_dir} 数据...")
+                raw_df = self._download_kline(ctx, futu_code, year_start, year_end, ktype, autype)
+
+                if raw_df is not None and not raw_df.empty:
+                    self._save_kline_to_parquet(raw_df, symbol, year, period_suffix, sub_dir)
+                else:
+                    # 检查是否是"未知股票"导致的失败
+                    # _download_kline 对未知股票会返回 None（非超时/非其他错误）
+                    # 尝试首次请求即失败，很可能是富途不支持该股票
+                    self.logger.warning(f"  {symbol} {year}年无数据（可能未上市或已退市）")
+                    # 如果是第一个缺失年份就失败，标记为未知股票
+                    if year == missing_years[0]:
+                        stock_unknown = True
+                        self.logger.info(f"  {symbol} - 富途不支持该股票，跳过剩余年份")
+        except Exception as e:
+            self.logger.error(f"增量下载 {symbol} 失败: {e}")
+            return False
+        finally:
+            ctx.close()
+
+        return True
+
+    @staticmethod
+    def _map_period_to_kltype(period: str):
+        """映射周期字符串到富途KLType常量"""
+        try:
+            from futu import KLType
+            mapping = {
+                '1d': KLType.K_DAY,
+                'day': KLType.K_DAY,
+                'daily': KLType.K_DAY,
+                '1m': KLType.K_1M,
+                '1min': KLType.K_1M,
+                'minute': KLType.K_1M,
+                '5m': KLType.K_5M,
+                '5min': KLType.K_5M,
+                '15m': KLType.K_15M,
+                '15min': KLType.K_15M,
+                '30m': KLType.K_30M,
+                '30min': KLType.K_30M,
+                '60m': KLType.K_60M,
+                '60min': KLType.K_60M,
+            }
+            return mapping.get(period, KLType.K_DAY)
+        except ImportError:
+            return None
+
+    # ── 数据获取主入口 ──
 
     def get_data(self, symbol: str, start_date: str, end_date: str,
                  period: str = "1d", **kwargs) -> pd.DataFrame:
         """获取后复权行情数据
 
         从 .cache/FutuData/market/{symbol}/ 目录按年份读取parquet文件并合并。
+        如果本地数据缺失，自动检测富途OpenD服务并进行增量下载。
 
         Args:
             symbol: 股票代码，QMT格式如 '601398.SH'
             start_date: 起始日期 'YYYY-MM-DD'
             end_date: 结束日期 'YYYY-MM-DD'
             period: 周期 '1d', '1m' 等
-        """
-        df = self._load_from_parquet(symbol, start_date, end_date, period, sub_dir='market')
 
+        Raises:
+            FutuServiceError: 数据缺失且富途OpenD服务未开启
+            ValueError: 数据缺失且无法下载
+        """
+        # 1. 尝试从本地缓存读取
+        df = self._load_from_parquet(symbol, start_date, end_date, period, sub_dir='market')
+        if df is not None and not df.empty:
+            return df
+
+        # 2. 本地缺失，尝试自动增量下载
+        self.logger.info(f"{symbol}: 本地数据缺失，尝试自动增量下载...")
+        try:
+            success = self._download_missing_data(symbol, start_date, end_date, period, sub_dir='market')
+        except FutuServiceError:
+            raise  # 服务不可用，直接抛出
+        except Exception as e:
+            self.logger.error(f"{symbol}: 自动增量下载失败: {e}")
+            raise ValueError(f"{symbol} 数据缺失且自动下载失败: {e}")
+
+        if not success:
+            raise ValueError(f"{symbol} 数据缺失且自动下载失败")
+
+        # 3. 重新从本地读取
+        df = self._load_from_parquet(symbol, start_date, end_date, period, sub_dir='market')
         if df is not None and not df.empty:
             return df
 
@@ -146,7 +552,37 @@ class FutuDataProcessor_Raw:
 
     def get_data(self, symbol: str, start_date: str, end_date: str,
                  period: str = "1d", **kwargs) -> pd.DataFrame:
-        """获取不复权行情数据"""
+        """获取不复权行情数据
+
+        本地缺失时自动增量下载（同 FutuDataProcessor.get_data 逻辑）。
+
+        Raises:
+            FutuServiceError: 数据缺失且富途OpenD服务未开启
+            ValueError: 数据缺失且无法下载
+        """
+        # 1. 尝试从本地缓存读取
+        df = self._processor._load_from_parquet(
+            symbol, start_date, end_date, period, sub_dir='market_raw'
+        )
+        if df is not None and not df.empty:
+            return df
+
+        # 2. 本地缺失，尝试自动增量下载
+        self._processor.logger.info(f"{symbol}: 本地不复权数据缺失，尝试自动增量下载...")
+        try:
+            success = self._processor._download_missing_data(
+                symbol, start_date, end_date, period, sub_dir='market_raw'
+            )
+        except FutuServiceError:
+            raise
+        except Exception as e:
+            self._processor.logger.error(f"{symbol}: 不复权数据自动增量下载失败: {e}")
+            raise ValueError(f"{symbol} 不复权数据缺失且自动下载失败: {e}")
+
+        if not success:
+            raise ValueError(f"{symbol} 不复权数据缺失且自动下载失败")
+
+        # 3. 重新从本地读取
         df = self._processor._load_from_parquet(
             symbol, start_date, end_date, period, sub_dir='market_raw'
         )

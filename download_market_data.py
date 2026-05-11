@@ -6,7 +6,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
@@ -17,12 +17,10 @@ from core.data.qmt import QMTDataProcessor
 
 
 def setup_logger(log_to_file: bool = False, log_file: str = None) -> logging.Logger:
-    """设置日志记录器，支持输出到控制台和文件"""
     logger = logging.getLogger('download_market_data')
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
 
-    # 控制台处理器
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_format = logging.Formatter(
@@ -32,15 +30,13 @@ def setup_logger(log_to_file: bool = False, log_file: str = None) -> logging.Log
     console_handler.setFormatter(console_format)
     logger.addHandler(console_handler)
 
-    # 文件处理器
     if log_to_file:
         if log_file is None:
-            # 默认日志文件路径: logs/YYYYMMDD_HHMMSS_download_market_data.log
             log_dir = 'logs'
             if not os.path.exists(log_dir):
                 os.makedirs(log_dir)
             log_file = f"{log_dir}/{datetime.now().strftime('%Y%m%d_%H%M%S')}_download_market_data.log"
-        
+
         file_handler = logging.FileHandler(log_file, encoding='utf-8')
         file_handler.setLevel(logging.DEBUG)
         file_format = logging.Formatter(
@@ -54,8 +50,236 @@ def setup_logger(log_to_file: bool = False, log_file: str = None) -> logging.Log
     return logger
 
 
-# 全局logger，将在main中初始化
 logger = logging.getLogger('download_market_data')
+
+
+class TradingDayCalendar:
+    BENCHMARK_INDEX = '000300.SH'
+
+    def __init__(self, opendata_processor: OpenDataProcessor):
+        self._processor = opendata_processor
+        self._trading_days: Dict[str, Set[str]] = {}
+
+    def get_trading_days(self, start_date: str, end_date: str) -> Set[str]:
+        cache_key = f"{start_date}_{end_date}"
+        if cache_key in self._trading_days:
+            return self._trading_days[cache_key]
+
+        logger.info(f"获取交易日历基准: {self.BENCHMARK_INDEX} ({start_date} ~ {end_date})...")
+        try:
+            df = self._processor.get_data(
+                self.BENCHMARK_INDEX, start_date, end_date, "1d"
+            )
+            if df is not None and not df.empty:
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    df.index = pd.to_datetime(df.index)
+                days = {d.strftime('%Y-%m-%d') for d in df.index}
+                logger.info(f"交易日历获取成功: {len(days)} 个交易日 "
+                            f"({sorted(days)[0]} ~ {sorted(days)[-1]})")
+                self._trading_days[cache_key] = days
+                return days
+        except Exception as e:
+            logger.warning(f"从OpenData获取交易日历失败: {e}")
+
+        logger.info("回退到磁盘缓存获取交易日历...")
+        days = self._load_trading_days_from_cache(start_date, end_date)
+        if days:
+            self._trading_days[cache_key] = days
+            return days
+
+        logger.error("无法获取交易日历，将跳过完整性校验")
+        return set()
+
+    def _load_trading_days_from_cache(self, start_date: str, end_date: str) -> Set[str]:
+        namespace = 'OpenDataProcessor'
+        req_years = cache_manager._parse_years_from_range(start_date, end_date)
+        if not req_years:
+            return set()
+
+        frames = []
+        for year in req_years:
+            df = cache_manager.disk_cache.get_yearly(
+                namespace, self.BENCHMARK_INDEX, year, '1d'
+            )
+            if df is not None and not df.empty:
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    df.index = pd.to_datetime(df.index)
+                frames.append(df)
+
+        if not frames:
+            return set()
+
+        merged = pd.concat(frames).sort_index()
+        merged = merged[~merged.index.duplicated(keep='last')]
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
+        merged = merged[(merged.index >= start_ts) & (merged.index <= end_ts)]
+        return {d.strftime('%Y-%m-%d') for d in merged.index}
+
+
+class DataIntegrityChecker:
+    SUSPENSION_GAP_THRESHOLD = 15
+    MISSING_GAP_THRESHOLD = 8
+
+    def __init__(self, trading_days: Set[str]):
+        self._trading_days = sorted(trading_days)
+        self._trading_day_set = trading_days
+
+    def check_symbol(self, symbol: str, start_date: str, end_date: str,
+                     data_type: str) -> Dict:
+        namespace = 'OpenDataProcessor_Raw' if data_type == 'raw' else 'OpenDataProcessor'
+        req_years = cache_manager._parse_years_from_range(start_date, end_date)
+        if not req_years:
+            return {'status': 'no_data', 'missing_years': set(req_years),
+                    'gaps': [], 'suspended_ranges': []}
+
+        frames = []
+        for year in req_years:
+            df = cache_manager.disk_cache.get_yearly(namespace, symbol, year, '1d')
+            if df is not None and not df.empty:
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    df.index = pd.to_datetime(df.index)
+                frames.append(df)
+
+        if not frames:
+            return {'status': 'no_data', 'missing_years': set(req_years),
+                    'gaps': [], 'suspended_ranges': []}
+
+        merged = pd.concat(frames).sort_index()
+        merged = merged[~merged.index.duplicated(keep='last')]
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
+        merged = merged[(merged.index >= start_ts) & (merged.index <= end_ts)]
+
+        if merged.empty:
+            return {'status': 'no_data', 'missing_years': set(req_years),
+                    'gaps': [], 'suspended_ranges': []}
+
+        cached_dates = {d.strftime('%Y-%m-%d') for d in merged.index}
+        missing_dates = self._trading_day_set - cached_dates
+
+        # 清理已不再适用的停牌区间（修复后数据已完整但停牌标记未清除的情况）
+        # 不再排除停牌区间内的缺失日期——这些日期仍然需要经过分类和修复流程，
+        # 在 verify_and_repair_one 中会先尝试从数据源获取，只有确认数据源也没有时才标记为停牌
+        suspended_ranges = cache_manager.index_manager.get_suspended_ranges(symbol)
+        if suspended_ranges:
+            valid_ranges = []
+            changed = False
+            for s_start, s_end in suspended_ranges:
+                # 检查停牌区间内是否还有缺失的交易日
+                range_missing = sum(1 for d in missing_dates if s_start <= d <= s_end)
+                if range_missing > 0:
+                    valid_ranges.append([s_start, s_end])
+                else:
+                    changed = True
+                    logger.debug(f"[{symbol}] 停牌区间 {s_start}~{s_end} 已有数据，清除标记")
+            if changed:
+                cache_manager.index_manager.mark_suspended(symbol, valid_ranges)
+
+        if not missing_dates:
+            return {'status': 'complete', 'missing_years': set(),
+                    'gaps': [], 'suspended_ranges': []}
+
+        gaps, suspended_ranges = self._classify_missing_dates(
+            symbol, missing_dates, cached_dates
+        )
+
+        missing_years = set()
+        for gap in gaps:
+            for y in req_years:
+                gap_start_year = pd.Timestamp(gap['start']).year
+                gap_end_year = pd.Timestamp(gap['end']).year
+                if gap_start_year <= y <= gap_end_year:
+                    missing_years.add(y)
+
+        return {
+            'status': 'incomplete',
+            'missing_years': missing_years,
+            'gaps': gaps,
+            'suspended_ranges': suspended_ranges,
+            'total_missing': len(missing_dates),
+            'total_trading_days': len(self._trading_day_set),
+            'coverage': f"{len(cached_dates)}/{len(self._trading_day_set)}"
+        }
+
+    def _classify_missing_dates(self, symbol: str, missing_dates: Set[str],
+                                 cached_dates: Set[str]) -> Tuple[List, List]:
+        if not missing_dates:
+            return [], []
+
+        sorted_missing = sorted(missing_dates)
+        groups = self._group_consecutive_dates(sorted_missing)
+
+        gaps = []
+        suspended_ranges = []
+
+        for group in groups:
+            group_start = group[0]
+            group_end = group[-1]
+            group_len = len(group)
+            group_trading_days = sum(1 for d in group if d in self._trading_day_set)
+
+            has_data_before = any(d < group_start for d in cached_dates)
+            has_data_after = any(d > group_end for d in cached_dates)
+
+            if group_trading_days <= 3 and has_data_before and has_data_after:
+                gaps.append({
+                    'start': group_start,
+                    'end': group_end,
+                    'trading_days': group_trading_days,
+                    'type': 'missing'
+                })
+            elif group_trading_days >= self.SUSPENSION_GAP_THRESHOLD:
+                suspended_ranges.append([group_start, group_end])
+                if has_data_before and has_data_after:
+                    gaps.append({
+                        'start': group_start,
+                        'end': group_end,
+                        'trading_days': group_trading_days,
+                        'type': 'suspended'
+                    })
+            elif has_data_before and has_data_after:
+                if group_trading_days <= self.MISSING_GAP_THRESHOLD:
+                    gaps.append({
+                        'start': group_start,
+                        'end': group_end,
+                        'trading_days': group_trading_days,
+                        'type': 'missing'
+                    })
+                else:
+                    suspended_ranges.append([group_start, group_end])
+                    gaps.append({
+                        'start': group_start,
+                        'end': group_end,
+                        'trading_days': group_trading_days,
+                        'type': 'suspended'
+                    })
+            elif not has_data_before or not has_data_after:
+                if group_trading_days <= self.MISSING_GAP_THRESHOLD:
+                    gaps.append({
+                        'start': group_start,
+                        'end': group_end,
+                        'trading_days': group_trading_days,
+                        'type': 'missing'
+                    })
+                else:
+                    suspended_ranges.append([group_start, group_end])
+
+        return gaps, suspended_ranges
+
+    def _group_consecutive_dates(self, sorted_dates: List[str]) -> List[List[str]]:
+        if not sorted_dates:
+            return []
+
+        groups = [[sorted_dates[0]]]
+        for i in range(1, len(sorted_dates)):
+            prev = pd.Timestamp(sorted_dates[i - 1])
+            curr = pd.Timestamp(sorted_dates[i])
+            if (curr - prev).days <= 3:
+                groups[-1].append(sorted_dates[i])
+            else:
+                groups.append([sorted_dates[i]])
+        return groups
 
 
 class DownloadProgress:
@@ -66,6 +290,8 @@ class DownloadProgress:
         self.downloaded = 0
         self.failed = 0
         self.skipped = 0
+        self.repaired = 0
+        self.suspended = 0
         self.lock = threading.Lock()
         self.start_time = time.time()
 
@@ -89,6 +315,16 @@ class DownloadProgress:
             self.skipped += 1
             self.completed += 1
 
+    def record_repaired(self):
+        with self.lock:
+            self.repaired += 1
+            self.completed += 1
+
+    def record_suspended(self):
+        with self.lock:
+            self.suspended += 1
+            self.completed += 1
+
     def report(self) -> str:
         elapsed = time.time() - self.start_time
         if self.completed > 0 and self.completed < self.total:
@@ -96,9 +332,16 @@ class DownloadProgress:
             eta_str = f"{int(eta // 60)}m{int(eta % 60)}s"
         else:
             eta_str = "-"
+        parts = [
+            f"缓存命中={self.cached}",
+            f"下载={self.downloaded}",
+            f"修复={self.repaired}",
+            f"停牌={self.suspended}",
+            f"失败={self.failed}",
+            f"跳过={self.skipped}",
+        ]
         return (
-            f"[ {self.completed} / {self.total} ] 进度: {self.cached} 缓存命中, "
-            f"{self.downloaded} 已下载, {self.failed} 失败, {self.skipped} 跳过 | "
+            f"[ {self.completed} / {self.total} ] {', '.join(parts)} | "
             f"耗时={int(elapsed // 60)}m{int(elapsed % 60)}s ETA={eta_str}"
         )
 
@@ -129,7 +372,47 @@ def _needs_download(symbol: str, start_date: str, end_date: str,
 
     cached_years = set(available)
     missing = set(req_years) - cached_years - checked
-    return bool(missing)
+    if missing:
+        return True
+
+    if not _check_cache_integrity(symbol, start_date, end_date, period, data_type):
+        return True
+
+    return False
+
+
+def _check_cache_integrity(symbol: str, start_date: str, end_date: str,
+                            period: str, data_type: str) -> bool:
+    namespace = 'OpenDataProcessor_Raw' if data_type == 'raw' else 'OpenDataProcessor'
+    req_years = cache_manager._parse_years_from_range(start_date, end_date)
+
+    frames = []
+    for year in req_years:
+        df = cache_manager.disk_cache.get_yearly(namespace, symbol, year, period)
+        if df is not None and not df.empty:
+            if not isinstance(df.index, pd.DatetimeIndex):
+                df.index = pd.to_datetime(df.index)
+            frames.append(df)
+
+    if not frames:
+        return False
+
+    merged = pd.concat(frames).sort_index()
+    merged = merged[~merged.index.duplicated(keep='last')]
+
+    if len(merged) < 2:
+        return True
+
+    dates = merged.index
+    for i in range(1, len(dates)):
+        gap_days = (dates[i] - dates[i - 1]).days
+        if gap_days > 15:
+            logger.debug(f"[{symbol}] 检测到日期空洞: "
+                         f"{dates[i-1].strftime('%Y-%m-%d')} ~ {dates[i].strftime('%Y-%m-%d')} "
+                         f"(间隔{gap_days}天)")
+            return False
+
+    return True
 
 
 def download_one(symbol: str, start_date: str, end_date: str,
@@ -138,7 +421,7 @@ def download_one(symbol: str, start_date: str, end_date: str,
     try:
         if not force and not _needs_download(symbol, start_date, end_date, period, data_type):
             progress.record_cached()
-            logger.debug(f"[{symbol}] 缓存命中，跳过下载")
+            logger.debug(f"[{symbol}] 缓存命中且数据完整，跳过下载")
             return f"cached:{symbol}"
 
         logger.debug(f"[{symbol}] 开始下载 {data_type} 数据...")
@@ -161,6 +444,213 @@ def download_one(symbol: str, start_date: str, end_date: str,
         return f"err:{symbol}:{e}"
 
 
+def _invalidate_missing_years_cache(symbol: str, period: str, data_type: str,
+                                     missing_years: set) -> None:
+    """删除受影响年份的缓存文件和索引条目，使下次 get_data 从数据源重新获取
+
+    当校验发现数据缺失时，缓存系统（smart_cache）会认为年份文件已存在而直接返回旧数据，
+    导致修复无效。本函数在修复前清除受影响年份的缓存，确保 get_data 能真正从数据源下载。
+    """
+    if not missing_years:
+        return
+
+    namespace = 'OpenDataProcessor_Raw' if data_type == 'raw' else 'OpenDataProcessor'
+    is_raw = data_type == 'raw'
+
+    for year in missing_years:
+        deleted = cache_manager.disk_cache.delete_yearly(namespace, symbol, year, period)
+        if deleted:
+            logger.debug(f"[{symbol}] 已删除 {year} 年缓存文件以强制重新下载")
+
+    # 清除受影响年份的索引条目
+    idx = cache_manager.index_manager
+    if is_raw:
+        available = idx.get_available_market_raw_years(symbol, period)
+        new_years = [y for y in available if y not in missing_years]
+        if available != new_years:
+            # 重建该 symbol+period 的索引（移除缺失年份）
+            with idx.lock:
+                entry = idx._market_raw_index.get(symbol, {}).get(period, {})
+                if entry:
+                    entry['years'] = new_years
+                    idx._dirty_flags['market_raw'] = True
+    else:
+        available = idx.get_available_market_years(symbol, period)
+        new_years = [y for y in available if y not in missing_years]
+        if available != new_years:
+            with idx.lock:
+                entry = idx._market_index.get(symbol, {}).get(period, {})
+                if entry:
+                    entry['years'] = new_years
+                    idx._dirty_flags['market'] = True
+
+
+def _merge_suspended_ranges(symbol: str, new_ranges: List[List[str]]) -> None:
+    """合并新的停牌区间到已有停牌标记中（而非覆盖）
+
+    避免修复成功后标记被误覆盖导致数据完整但仍被标记为停牌的问题。
+    """
+    if not new_ranges:
+        return
+    existing = cache_manager.index_manager.get_suspended_ranges(symbol)
+    merged = existing + new_ranges
+    # 按起始日期排序
+    merged.sort(key=lambda x: x[0])
+    # 合并重叠区间
+    result_ranges = [merged[0]]
+    for start, end in merged[1:]:
+        prev_start, prev_end = result_ranges[-1]
+        if start <= prev_end:
+            result_ranges[-1] = [prev_start, max(prev_end, end)]
+        else:
+            result_ranges.append([start, end])
+    cache_manager.index_manager.mark_suspended(symbol, result_ranges)
+
+
+def verify_and_repair_one(symbol: str, start_date: str, end_date: str,
+                           period: str, data_type: str,
+                           processor: OpenDataProcessor,
+                           checker: DataIntegrityChecker,
+                           progress: DownloadProgress) -> str:
+    try:
+        result = checker.check_symbol(symbol, start_date, end_date, data_type)
+
+        if result['status'] == 'complete':
+            progress.record_cached()
+            return f"complete:{symbol}"
+
+        if result['status'] == 'no_data':
+            logger.info(f"[{symbol}] 无缓存数据，执行完整下载...")
+            if data_type == 'raw':
+                df = processor.get_raw_data(symbol, start_date, end_date, period)
+            else:
+                df = processor.get_data(symbol, start_date, end_date, period)
+
+            if df is not None and not df.empty:
+                progress.record_downloaded()
+                return f"ok:{symbol}"
+            else:
+                progress.record_skipped()
+                return f"empty:{symbol}"
+
+        if result['status'] == 'incomplete':
+            missing_gaps = [g for g in result['gaps'] if g['type'] == 'missing']
+            suspended_gaps = [g for g in result['gaps'] if g['type'] == 'suspended']
+
+            if missing_gaps:
+                gap_desc = ", ".join(
+                    f"{g['start']}~{g['end']}({g['trading_days']}天)"
+                    for g in missing_gaps
+                )
+                logger.info(f"[{symbol}] 数据缺失需修复: {gap_desc}, 覆盖率={result['coverage']}")
+
+                # 删除受影响年份的缓存文件和索引，强制从数据源重新下载
+                _invalidate_missing_years_cache(symbol, period, data_type, result['missing_years'])
+
+                if data_type == 'raw':
+                    df = processor.get_raw_data(symbol, start_date, end_date, period)
+                else:
+                    df = processor.get_data(symbol, start_date, end_date, period)
+
+                if df is not None and not df.empty:
+                    # 修复后重新校验，检查是否仍有缺失
+                    recheck = checker.check_symbol(symbol, start_date, end_date, data_type)
+                    if recheck['status'] == 'complete':
+                        # 修复成功，清除之前可能误标的停牌区间
+                        old_suspended = cache_manager.index_manager.get_suspended_ranges(symbol)
+                        if old_suspended:
+                            cache_manager.index_manager.mark_suspended(symbol, [])
+                            logger.debug(f"[{symbol}] 数据修复完整，清除旧停牌标记: {old_suspended}")
+                        progress.record_repaired()
+                        return f"repaired:{symbol}:{result['total_missing']}"
+                    else:
+                        # 数据源本身就没有这些数据，将剩余缺失标记为停牌，避免无限重试
+                        remaining_gaps = [g for g in recheck.get('gaps', []) if g['type'] == 'missing']
+                        if remaining_gaps:
+                            still_missing_ranges = [[g['start'], g['end']] for g in remaining_gaps]
+                            _merge_suspended_ranges(symbol, still_missing_ranges)
+                            still_desc = ", ".join(
+                                f"{g['start']}~{g['end']}({g['trading_days']}天)"
+                                for g in remaining_gaps
+                            )
+                            logger.info(f"[{symbol}] 修复后仍缺失(数据源无数据)，已标记为停牌: {still_desc}")
+
+                        if recheck.get('suspended_ranges'):
+                            _merge_suspended_ranges(symbol, recheck['suspended_ranges'])
+                            logger.info(f"[{symbol}] 标记停牌区间: {recheck['suspended_ranges']}")
+
+                        progress.record_repaired()
+                        return f"repaired:{symbol}:{result['total_missing']}"
+                else:
+                    progress.record_failed()
+                    return f"err:{symbol}:修复下载失败"
+
+            # 有停牌型缺失，先尝试从数据源修复（可能是数据源缺失而非真正停牌）
+            # 只有数据源也拿不到数据时，才真正标记为停牌
+            if suspended_gaps:
+                gap_desc = ", ".join(
+                    f"{g['start']}~{g['end']}({g['trading_days']}天)"
+                    for g in suspended_gaps
+                )
+                logger.info(f"[{symbol}] 疑似停牌区间，尝试从数据源修复: {gap_desc}, 覆盖率={result['coverage']}")
+
+                # 删除受影响年份的缓存文件和索引，强制从数据源重新下载
+                _invalidate_missing_years_cache(symbol, period, data_type, result['missing_years'])
+
+                if data_type == 'raw':
+                    df = processor.get_raw_data(symbol, start_date, end_date, period)
+                else:
+                    df = processor.get_data(symbol, start_date, end_date, period)
+
+                if df is not None and not df.empty:
+                    # 修复后重新校验
+                    recheck = checker.check_symbol(symbol, start_date, end_date, data_type)
+                    if recheck['status'] == 'complete':
+                        # 修复成功！之前是误判为停牌
+                        old_suspended = cache_manager.index_manager.get_suspended_ranges(symbol)
+                        if old_suspended:
+                            cache_manager.index_manager.mark_suspended(symbol, [])
+                            logger.debug(f"[{symbol}] 数据修复完整，清除旧停牌标记: {old_suspended}")
+                        logger.info(f"[{symbol}] 疑似停牌区间修复成功（实际为数据源缺失）")
+                        progress.record_repaired()
+                        return f"repaired:{symbol}:{result['total_missing']}"
+                    else:
+                        # 数据源下载后仍有缺失，确认为真正停牌
+                        if recheck.get('suspended_ranges'):
+                            _merge_suspended_ranges(symbol, recheck['suspended_ranges'])
+                            logger.info(f"[{symbol}] 修复后确认停牌区间: {recheck['suspended_ranges']}")
+                        else:
+                            # 仍有一些小gap标记为missing，将它们也标记为停牌避免无限重试
+                            remaining_missing = [g for g in recheck.get('gaps', []) if g['type'] == 'missing']
+                            if remaining_missing:
+                                still_missing_ranges = [[g['start'], g['end']] for g in remaining_missing]
+                                _merge_suspended_ranges(symbol, still_missing_ranges)
+                                logger.info(f"[{symbol}] 修复后仍有缺失(数据源无数据)，已标记为停牌")
+
+                        progress.record_suspended()
+                        return f"suspended:{symbol}:{len(recheck.get('suspended_ranges', result.get('suspended_ranges', [])))}段"
+                else:
+                    # 数据源完全拿不到数据，确认停牌
+                    suspended_ranges_to_mark = result.get('suspended_ranges', [])
+                    if suspended_ranges_to_mark:
+                        _merge_suspended_ranges(symbol, suspended_ranges_to_mark)
+                        logger.info(f"[{symbol}] 数据源无数据，确认停牌区间: {suspended_ranges_to_mark}")
+
+                    progress.record_suspended()
+                    return f"suspended:{symbol}:{len(suspended_ranges_to_mark)}段"
+
+            progress.record_suspended()
+            return f"suspended:{symbol}:{len(result.get('suspended_ranges', []))}段"
+
+        progress.record_skipped()
+        return f"unknown:{symbol}"
+
+    except Exception as e:
+        progress.record_failed()
+        logger.error(f"[{symbol}] 校验修复失败: {e}")
+        return f"err:{symbol}:{e}"
+
+
 def resolve_stock_list(opendata_processor: OpenDataProcessor,
                         qmt_processor: Optional[QMTDataProcessor],
                         pool: Optional[str],
@@ -179,13 +669,11 @@ def resolve_stock_list(opendata_processor: OpenDataProcessor,
 
     if pool:
         index_code = IndexConstituentManager.sector_to_index_code(pool)
-        
-        # 对于全市场股票（沪深A股），始终获取当前全部股票列表
+
         if pool in ('沪深A股', 'A股', '全部A股'):
             logger.info(f"获取 '{pool}' 全部股票列表（当前）...")
             stock_list = []
-            
-            # 优先使用 QMT
+
             if qmt_processor:
                 try:
                     stock_list = qmt_processor.get_stock_list(pool)
@@ -196,8 +684,7 @@ def resolve_stock_list(opendata_processor: OpenDataProcessor,
                         logger.warning(f"QMT 返回股票数量过少 ({len(stock_list)} 只)")
                 except Exception as e:
                     logger.warning(f"从 QMT 获取股票列表失败: {e}")
-            
-            # 回退到 OpenData
+
             stock_list = opendata_processor.get_stock_list(pool)
             if stock_list and len(stock_list) > 10:
                 logger.info(f"从 OpenData 获取到 {len(stock_list)} 只 {pool} 股票")
@@ -205,8 +692,7 @@ def resolve_stock_list(opendata_processor: OpenDataProcessor,
             else:
                 logger.error(f"无法获取有效的 {pool} 股票列表！")
                 return []
-        
-        # 对于指数成分股，使用历史成分股逻辑
+
         if start_date and end_date and index_code:
             logger.info(f"获取板块 '{pool}' 在 {start_date} ~ {end_date} 期间的历史成分股并集...")
             mgr = IndexConstituentManager()
@@ -221,76 +707,186 @@ def resolve_stock_list(opendata_processor: OpenDataProcessor,
             stock_list = opendata_processor.get_historical_stock_list(pool, date=start_date)
         else:
             logger.info(f"获取板块 '{pool}' 当前成分股...")
-            # 优先使用 QMT 获取当前成分股
             if qmt_processor:
                 try:
                     stock_list = qmt_processor.get_stock_list(pool)
-                    if stock_list and len(stock_list) > 10:  # 确保获取到足够多的股票
+                    if stock_list and len(stock_list) > 10:
                         logger.info(f"从 QMT 获取到 {len(stock_list)} 只 {pool} 成分股")
                         return stock_list
                 except Exception as e:
                     logger.debug(f"QMT获取成分股失败: {e}")
-            # QMT 失败，使用 OpenData
             stock_list = opendata_processor.get_stock_list(pool)
         logger.info(f"板块 '{pool}' 共获取到 {len(stock_list)} 只股票")
         return stock_list
 
-    # 获取全市场股票列表 - 优先使用 QMT
     logger.info("获取沪深A股全部股票列表...")
     stock_list = []
-    
+
     if qmt_processor:
         try:
             stock_list = qmt_processor.get_stock_list('沪深A股')
-            if stock_list and len(stock_list) > 1000:  # 确保获取到足够多的股票
+            if stock_list and len(stock_list) > 1000:
                 logger.info(f"从 QMT 获取到 {len(stock_list)} 只沪深A股")
                 return stock_list
             else:
                 logger.warning(f"QMT 返回股票数量过少 ({len(stock_list)} 只)，尝试其他数据源...")
         except Exception as e:
             logger.warning(f"从 QMT 获取股票列表失败: {e}")
-    
-    # 尝试使用 OpenData (AKShare)
+
     logger.info("尝试从 OpenData (AKShare) 获取...")
     stock_list = opendata_processor.get_stock_list('沪深A股')
-    
+
     if not stock_list or len(stock_list) <= 10:
         logger.error("无法获取有效的全市场股票列表！")
         return []
-        
+
     logger.info(f"共获取到 {len(stock_list)} 只股票")
     return stock_list
 
 
+def run_download(stock_list: List[str], start_date: str, end_date: str,
+                  period: str, data_type: str, processor: OpenDataProcessor,
+                  workers: int, force: bool):
+    logger.info(f"{'='*60}")
+    logger.info(f"开始下载 {data_type} 行情数据: {len(stock_list)} 只股票, "
+                 f"日期范围 {start_date} ~ {end_date}, 周期 {period}")
+    logger.info(f"{'='*60}")
+
+    progress = DownloadProgress(len(stock_list))
+    save_interval = max(1, len(stock_list) // 20)
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {}
+        for symbol in stock_list:
+            future = executor.submit(
+                download_one,
+                symbol, start_date, end_date, period,
+                data_type, processor, progress, force,
+            )
+            futures[future] = symbol
+
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                result = future.result()
+                status = result.split(':')[0]
+
+                if status == "cached":
+                    logger.debug(f"[{progress.completed} / {progress.total}] {symbol} - 缓存命中")
+                elif status == "ok":
+                    logger.info(f"[{progress.completed} / {progress.total}] {symbol} - 下载成功")
+                elif status == "empty":
+                    logger.warning(f"[{progress.completed} / {progress.total}] {symbol} - 数据为空")
+                elif status == "err":
+                    logger.error(f"[{progress.completed} / {progress.total}] {symbol} - 下载失败: {result.split(':', 2)[-1]}")
+            except Exception as e:
+                logger.error(f"[{progress.completed} / {progress.total}] {symbol} - 异常: {e}")
+
+            if progress.completed % save_interval == 0:
+                cache_manager.index_manager.save_index()
+
+            if progress.completed % 5 == 0 or progress.completed == progress.total:
+                logger.info(progress.report())
+
+    logger.info("正在保存索引文件...")
+    cache_manager.index_manager.save_index()
+    logger.info("索引文件保存完成")
+
+    logger.info(f"{'='*60}")
+    logger.info(f"{data_type} 行情数据下载完成: {progress.report()}")
+    logger.info(f"{'='*60}")
+
+
+def run_verify(stock_list: List[str], start_date: str, end_date: str,
+                period: str, data_type: str, processor: OpenDataProcessor,
+                checker: DataIntegrityChecker, workers: int):
+    logger.info(f"{'='*60}")
+    logger.info(f"开始校验 {data_type} 行情数据完整性: {len(stock_list)} 只股票, "
+                 f"日期范围 {start_date} ~ {end_date}")
+    logger.info(f"{'='*60}")
+
+    progress = DownloadProgress(len(stock_list))
+    save_interval = max(1, len(stock_list) // 20)
+    incomplete_symbols = []
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {}
+        for symbol in stock_list:
+            future = executor.submit(
+                verify_and_repair_one,
+                symbol, start_date, end_date, period,
+                data_type, processor, checker, progress,
+            )
+            futures[future] = symbol
+
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                result = future.result()
+                status = result.split(':')[0]
+
+                if status == "complete":
+                    logger.debug(f"[{progress.completed} / {progress.total}] {symbol} - 数据完整")
+                elif status == "repaired":
+                    missing_count = result.split(':')[2] if len(result.split(':')) > 2 else "?"
+                    logger.info(f"[{progress.completed} / {progress.total}] {symbol} - 已修复缺失({missing_count}天)")
+                elif status == "suspended":
+                    seg_count = result.split(':')[2] if len(result.split(':')) > 2 else "?"
+                    logger.info(f"[{progress.completed} / {progress.total}] {symbol} - 含停牌({seg_count}段)")
+                elif status == "ok":
+                    logger.info(f"[{progress.completed} / {progress.total}] {symbol} - 下载成功")
+                elif status == "empty":
+                    logger.warning(f"[{progress.completed} / {progress.total}] {symbol} - 数据为空")
+                elif status == "err":
+                    logger.error(f"[{progress.completed} / {progress.total}] {symbol} - 失败: {result.split(':', 2)[-1]}")
+
+                if status in ('repaired', 'suspended', 'empty', 'err'):
+                    incomplete_symbols.append(symbol)
+
+            except Exception as e:
+                logger.error(f"[{progress.completed} / {progress.total}] {symbol} - 异常: {e}")
+                incomplete_symbols.append(symbol)
+
+            if progress.completed % save_interval == 0:
+                cache_manager.index_manager.save_index()
+
+            if progress.completed % 5 == 0 or progress.completed == progress.total:
+                logger.info(progress.report())
+
+    logger.info("正在保存索引文件...")
+    cache_manager.index_manager.save_index()
+    logger.info("索引文件保存完成")
+
+    logger.info(f"{'='*60}")
+    logger.info(f"{data_type} 行情数据校验完成: {progress.report()}")
+    if incomplete_symbols:
+        logger.info(f"需关注的股票 ({len(incomplete_symbols)}): {incomplete_symbols[:50]}")
+    logger.info(f"{'='*60}")
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='批量并发下载市场行情数据',
+        description='批量并发下载市场行情数据（含完整性校验与修复）',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
-  # 下载中证1000不复权行情数据 (5线程并发)
-  python download_market_data.py --pool 中证1000 --start 2020-04-28 --end 2026-04-28 --type raw --workers 5
-
   # 下载沪深300后复权行情数据
   python download_market_data.py --pool 沪深300 --start 2020-01-01 --end 2026-01-01 --type adjusted --workers 5
 
-  # 同时下载后复权和不复权数据
-  python download_market_data.py --pool 中证1000 --start 2020-01-01 --end 2026-01-01 --type all --workers 5
+  # 下载并校验数据完整性（以沪深300交易日为基准）
+  python download_market_data.py --pool 沪深300 --start 2020-01-01 --end 2026-01-01 --type all --workers 5 --verify
 
-  # 指定股票代码下载
-  python download_market_data.py --stocks 000001.SZ,600000.SH,600519.SH --start 2020-01-01 --end 2026-01-01 --type all
+  # 仅校验已有数据完整性（不下载新数据）
+  python download_market_data.py --pool 沪深300 --start 2020-01-01 --end 2026-01-01 --type adjusted --verify-only
 
   # 强制重新下载 (忽略已有缓存)
   python download_market_data.py --pool 中证1000 --start 2020-01-01 --end 2026-01-01 --type raw --force
 
-  # 启用详细日志输出 (显示每个股票的下载状态)
-  python download_market_data.py --pool 沪深300 --start 2020-01-01 --end 2026-01-01 --type adjusted --workers 5 --verbose
+  # 指定股票代码下载
+  python download_market_data.py --stocks 000001.SZ,600000.SH,600519.SH --start 2020-01-01 --end 2026-01-01 --type all
 
   # 将日志同时写入文件
-  python download_market_data.py --pool 沪深A股 --start 2020-01-01 --end 2026-01-01 --type all --workers 20 --log
-
-  # 指定日志文件路径
-  python download_market_data.py --pool 沪深A股 --start 2020-01-01 --end 2026-01-01 --type all --workers 20 --log --log-file logs/my_download.log
+  python download_market_data.py --pool 沪深A股 --start 2020-01-01 --end 2026-01-01 --type all --workers 20 --log --verify
         """,
     )
     parser.add_argument('--pool', type=str, default=None,
@@ -311,6 +907,10 @@ def main():
                         help='并发线程数 (默认: 5，建议不超过10)')
     parser.add_argument('--force', action='store_true', default=False,
                         help='强制重新下载，忽略已有缓存')
+    parser.add_argument('--verify', action='store_true', default=False,
+                        help='下载后校验数据完整性并修复缺失')
+    parser.add_argument('--verify-only', action='store_true', default=False,
+                        help='仅校验已有数据完整性并修复缺失，不执行新下载')
     parser.add_argument('--cache-dir', type=str, default=None,
                         help='指定缓存数据存储目录 (默认: 项目根目录下的 .cache 文件夹)')
     parser.add_argument('-v', '--verbose', action='store_true', default=False,
@@ -322,11 +922,9 @@ def main():
 
     args = parser.parse_args()
 
-    # 初始化logger
     global logger
     logger = setup_logger(log_to_file=args.log, log_file=args.log_file)
 
-    # 根据 verbose 参数设置日志级别
     if args.verbose:
         logger.setLevel(logging.DEBUG)
         for handler in logger.handlers:
@@ -343,10 +941,8 @@ def main():
     else:
         data_types = [args.type]
 
-    # 初始化数据处理器
     opendata_processor = OpenDataProcessor(fallback_to_simulated=False)
-    
-    # 尝试初始化 QMT 处理器（用于获取股票列表）
+
     qmt_processor = None
     try:
         qmt_processor = QMTDataProcessor(fallback_to_simulated=False)
@@ -363,56 +959,36 @@ def main():
 
     logger.info(f"共 {len(stock_list)} 只股票，数据类型: {data_types}，并发线程: {args.workers}")
 
+    trading_days = set()
+    checker = None
+    if args.verify or args.verify_only:
+        calendar = TradingDayCalendar(opendata_processor)
+        trading_days = calendar.get_trading_days(args.start, args.end)
+        if trading_days:
+            checker = DataIntegrityChecker(trading_days)
+            logger.info(f"交易日历就绪: {len(trading_days)} 个交易日")
+        else:
+            logger.warning("无法获取交易日历，将跳过完整性校验")
+            args.verify = False
+            args.verify_only = False
+
     for dtype in data_types:
-        logger.info(f"{'='*60}")
-        logger.info(f"开始下载 {dtype} 行情数据: {len(stock_list)} 只股票, "
-                     f"日期范围 {args.start} ~ {args.end}, 周期 {args.period}")
-        logger.info(f"{'='*60}")
+        if not args.verify_only:
+            run_download(
+                stock_list, args.start, args.end, args.period,
+                dtype, opendata_processor, args.workers, args.force
+            )
 
-        progress = DownloadProgress(len(stock_list))
-
-        with ThreadPoolExecutor(max_workers=args.workers) as executor:
-            futures = {}
-            for symbol in stock_list:
-                future = executor.submit(
-                    download_one,
-                    symbol, args.start, args.end, args.period,
-                    dtype, opendata_processor, progress, args.force,
+        if args.verify or args.verify_only:
+            if checker:
+                run_verify(
+                    stock_list, args.start, args.end, args.period,
+                    dtype, opendata_processor, checker, args.workers
                 )
-                futures[future] = symbol
+            else:
+                logger.warning(f"跳过 {dtype} 数据校验（无交易日历）")
 
-            for future in as_completed(futures):
-                symbol = futures[future]
-                try:
-                    result = future.result()
-                    status = result.split(':')[0]
-                    
-                    # 每完成一个任务都输出进度
-                    if status == "cached":
-                        logger.info(f"[{progress.completed} / {progress.total}] {symbol} - 缓存命中")
-                    elif status == "ok":
-                        logger.info(f"[{progress.completed} / {progress.total}] {symbol} - 下载成功")
-                    elif status == "empty":
-                        logger.warning(f"[{progress.completed} / {progress.total}] {symbol} - 数据为空")
-                    elif status == "err":
-                        logger.error(f"[{progress.completed} / {progress.total}] {symbol} - 下载失败: {result.split(':', 2)[-1]}")
-                except Exception as e:
-                    logger.error(f"[{progress.completed} / {progress.total}] {symbol} - 异常: {e}")
-
-                # 每5个任务输出一次总体进度报告
-                if progress.completed % 5 == 0 or progress.completed == progress.total:
-                    logger.info(progress.report())
-
-        # 下载完成后统一保存索引（避免多线程文件冲突）
-        logger.info("正在保存索引文件...")
-        cache_manager.index_manager.save_index()
-        logger.info("索引文件保存完成")
-
-        logger.info(f"{'='*60}")
-        logger.info(f"{dtype} 行情数据下载完成: {progress.report()}")
-        logger.info(f"{'='*60}")
-
-    logger.info("全部下载任务完成!")
+    logger.info("全部任务完成!")
 
 
 if __name__ == '__main__':

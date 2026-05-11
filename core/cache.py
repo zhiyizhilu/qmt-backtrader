@@ -97,6 +97,7 @@ class CacheIndexManager:
         self._financial_nodata: Dict[str, Dict[str, str]] = {}
         self._market_raw_nodata: Dict[str, str] = {}
         self._delisted_stocks: Dict[str, str] = {}  # {symbol: delist_date} 永久标记，不过期
+        self._suspended_ranges: Dict[str, List[List[str]]] = {}  # {symbol: [[start, end], ...]}
         self._dirty_flags = {
             'market': False,
             'market_raw': False,
@@ -105,6 +106,7 @@ class CacheIndexManager:
             'financial_nodata': False,
             'market_raw_nodata': False,
             'delisted': False,
+            'suspended': False,
         }
         self.load_index()
 
@@ -136,6 +138,10 @@ class CacheIndexManager:
     def delisted_stocks_path(self) -> Path:
         return self.cache_dir / 'index' / 'delisted_stocks.json'
 
+    @property
+    def suspended_ranges_path(self) -> Path:
+        return self.cache_dir / 'index' / 'suspended_ranges.json'
+
     def load_index(self) -> None:
         for path, attr in [
             (self.market_index_path, '_market_index'),
@@ -145,6 +151,7 @@ class CacheIndexManager:
             (self.financial_nodata_path, '_financial_nodata'),
             (self.market_raw_nodata_path, '_market_raw_nodata'),
             (self.delisted_stocks_path, '_delisted_stocks'),
+            (self.suspended_ranges_path, '_suspended_ranges'),
         ]:
             if path.exists():
                 try:
@@ -173,6 +180,8 @@ class CacheIndexManager:
                 files_to_save.append((self.market_raw_nodata_path, self._market_raw_nodata))
             if self._dirty_flags['delisted']:
                 files_to_save.append((self.delisted_stocks_path, self._delisted_stocks))
+            if self._dirty_flags['suspended']:
+                files_to_save.append((self.suspended_ranges_path, self._suspended_ranges))
 
             for path, data in files_to_save:
                 max_retries = 3
@@ -416,6 +425,23 @@ class CacheIndexManager:
             if date and date != 'unknown':
                 return date
             return None
+
+    def mark_suspended(self, symbol: str, ranges: List[List[str]]) -> None:
+        with self.lock:
+            self._suspended_ranges[symbol] = ranges
+            self._dirty_flags['suspended'] = True
+
+    def get_suspended_ranges(self, symbol: str) -> List[List[str]]:
+        with self.lock:
+            return self._suspended_ranges.get(symbol, [])
+
+    def is_suspended_on(self, symbol: str, date_str: str) -> bool:
+        with self.lock:
+            ranges = self._suspended_ranges.get(symbol, [])
+            for start, end in ranges:
+                if start <= date_str <= end:
+                    return True
+            return False
 
     def get_checked_dividend_stocks(self, max_age_days: int = 30) -> set:
         with self.lock:
