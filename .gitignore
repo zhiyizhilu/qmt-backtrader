@@ -16,3 +16,5 @@ backtest_results
 config/
 
 strategies_for_vip
+
+*.html

@@ -1359,6 +1359,7 @@ class SmartCacheManager:
         period = self._get_param_value(func, args, kwargs, 'period', '1d')
         req_start = self._get_param_value(func, args, kwargs, 'start_date', '')
         req_end = self._get_param_value(func, args, kwargs, 'end_date', '')
+        skip_current_year_refresh = kwargs.pop('skip_current_year_refresh', False)
 
         if not symbol or not req_start or not req_end:
             return func(*args, **kwargs)
@@ -1377,7 +1378,8 @@ class SmartCacheManager:
             return func(*args, **kwargs)
 
         cached_frames, truly_missing = self._check_cache_coverage(
-            namespace, symbol, period, req_years, req_start, req_end, is_raw
+            namespace, symbol, period, req_years, req_start, req_end, is_raw,
+            skip_current_year_refresh
         )
 
         if truly_missing:
@@ -1400,7 +1402,8 @@ class SmartCacheManager:
 
     def _check_cache_coverage(self, namespace: str, symbol: str, period: str,
                                req_years: List[int], req_start: str,
-                               req_end: str, is_raw: bool) -> Tuple[list, set]:
+                               req_end: str, is_raw: bool,
+                               skip_current_year_refresh: bool = False) -> Tuple[list, set]:
         """检查缓存覆盖情况，返回 (cached_frames, truly_missing)
 
         从索引和磁盘判断哪些年份已有缓存，并验证已有缓存是否覆盖请求范围。
@@ -1440,7 +1443,8 @@ class SmartCacheManager:
         if not truly_missing:
             if cached_frames:
                 coverage_missing = self._verify_cache_date_coverage(
-                    namespace, symbol, pd.concat(cached_frames), req_years, req_start, req_end, checked_years
+                    namespace, symbol, pd.concat(cached_frames), req_years, req_start, req_end, checked_years,
+                    skip_current_year_refresh
                 )
                 if coverage_missing == set(req_years):
                     cached_frames = []
@@ -1462,7 +1466,8 @@ class SmartCacheManager:
     def _verify_cache_date_coverage(self, namespace: str, symbol: str,
                                      cached_df: pd.DataFrame, req_years: List[int],
                                      req_start: str, req_end: str,
-                                     checked_years: set) -> set:
+                                     checked_years: set,
+                                     skip_current_year_refresh: bool = False) -> set:
         """验证缓存数据是否覆盖请求的日期范围，返回仍需获取的年份集合
 
         返回空集表示缓存完全覆盖，无需增量获取。
@@ -1496,9 +1501,22 @@ class SmartCacheManager:
                 f"缓存截止={disk_end}, 请求截止={req_end}, 增量获取年份={sorted(end_missing)}"
             )
 
-        gap_missing = self._detect_date_gaps(namespace, symbol, cached_df, req_years, checked_years)
-        if gap_missing:
-            missing |= gap_missing
+        if disk_end >= req_end and not skip_current_year_refresh:
+            current_year = pd.Timestamp.now().year
+            for y in req_years:
+                if y == current_year and y not in missing and y not in checked_years:
+                    today = pd.Timestamp.now().normalize()
+                    if pd.Timestamp(disk_end) < today - pd.Timedelta(days=2):
+                        missing |= {y}
+                        self.logger.info(
+                            f"[{namespace}] {symbol} 当年缓存落后于今天: "
+                            f"缓存截止={disk_end}, 今天={today.strftime('%Y-%m-%d')}, 需刷新{y}年"
+                        )
+
+        if not skip_current_year_refresh:
+            gap_missing = self._detect_date_gaps(namespace, symbol, cached_df, req_years, checked_years)
+            if gap_missing:
+                missing |= gap_missing
 
         return missing
 
@@ -1552,8 +1570,8 @@ class SmartCacheManager:
         min_missing = min(truly_missing)
         max_missing = max(truly_missing)
 
-        inc_start = req_start if min_missing == min(req_years) else f"{min_missing}-01-01"
-        inc_end = req_end if max_missing == max(req_years) else f"{max_missing}-12-31"
+        inc_start = f"{min_missing}-01-01"
+        inc_end = f"{max_missing}-12-31"
 
         inc_args, inc_kwargs = self._build_incremental_args(
             func, args, kwargs,
@@ -1576,6 +1594,12 @@ class SmartCacheManager:
                                            if isinstance(new_data.index, pd.DatetimeIndex)
                                            else set())
                 no_data_years = truly_missing - fetched_years_with_data
+                checked_gap_years = truly_missing & fetched_years_with_data
+                if checked_gap_years:
+                    if is_raw:
+                        idx.update_checked_market_raw_years(symbol, period, sorted(checked_gap_years))
+                    else:
+                        idx.update_checked_market_years(symbol, period, sorted(checked_gap_years))
             else:
                 no_data_years = truly_missing
             if no_data_years:

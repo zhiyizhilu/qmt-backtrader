@@ -483,7 +483,7 @@ class StrategyLogic:
 
             date_str = current_date.strftime('%Y-%m-%d')
             try:
-                raw_df = self._data_processor.get_raw_data(symbol, date_str, date_str, '1d')
+                raw_df = self._data_processor.get_raw_data(symbol, date_str, date_str, '1d', skip_current_year_refresh=True)
                 if raw_df is not None and not raw_df.empty and 'close' in raw_df.columns:
                     price = float(raw_df['close'].iloc[-1])
                     if price > 0:

@@ -267,14 +267,15 @@ class BacktestAPI(BaseAPI):
             except Exception as e:
                 self.logger.warning(f'[add_data] {symbol}: FutuData获取失败({e})')
         else:
-            # 默认数据源：优先 OpenData，降级 QMT
+            # 回测仅使用 OpenData，不降级 QMT（避免混合数据源导致价格不一致）
+            # skip_current_year_refresh=True: 缓存已覆盖回测区间时不重新下载
             try:
-                data = self._opendata_processor.get_data(symbol, start_date, end_date, period)
+                data = self._opendata_processor.get_data(
+                    symbol, start_date, end_date, period,
+                    skip_current_year_refresh=True
+                )
             except Exception as e:
-                self.logger.warning(f'[add_data] {symbol}: OpenData获取失败({e})，降级使用QMT数据')
-
-            if data is None or data.empty:
-                data = self.data_processor.get_data(symbol, start_date, end_date, period)
+                self.logger.warning(f'[add_data] {symbol}: OpenData获取失败({e})')
 
         if not data.empty:
             # 如果数据实际起始日晚于请求的起始日，用 NaN 行补齐前置日期
@@ -705,13 +706,15 @@ class BacktestAPI(BaseAPI):
                     except Exception:
                         pass
                 else:
-                    # 默认数据源：优先 OpenData，降级 QMT
+                    # 回测仅使用 OpenData，不降级 QMT（避免混合数据源导致价格不一致）
+                    # skip_current_year_refresh=True: 缓存已覆盖回测区间时不重新下载
                     try:
-                        data = self._opendata_processor.get_data(symbol, effective_start, effective_end, self._period)
+                        data = self._opendata_processor.get_data(
+                            symbol, effective_start, effective_end, self._period,
+                            skip_current_year_refresh=True
+                        )
                     except Exception:
                         pass
-                    if data is None or (hasattr(data, 'empty') and data.empty):
-                        data = self.data_processor.get_data(symbol, effective_start, effective_end, self._period)
                 return (symbol, data, None)
             except FutuServiceError:
                 # OpenD服务未开启，直接向上抛出以终止回测
@@ -848,7 +851,8 @@ class BacktestAPI(BaseAPI):
                     for i, symbol in enumerate(symbols_to_fetch, 1):
                         try:
                             df = self._opendata_processor.get_raw_data(
-                                symbol, self._data_start_date, self._data_end_date, self._period
+                                symbol, self._data_start_date, self._data_end_date, self._period,
+                                skip_current_year_refresh=True
                             )
                             if df is not None and not df.empty:
                                 raw_loaded += 1
@@ -925,7 +929,8 @@ class BacktestAPI(BaseAPI):
         for i, symbol in enumerate(symbols_to_fetch, 1):
             try:
                 df = self._opendata_processor.get_raw_data(
-                    symbol, self._data_start_date, self._data_end_date, self._period
+                    symbol, self._data_start_date, self._data_end_date, self._period,
+                    skip_current_year_refresh=True
                 )
                 if df is not None and not df.empty:
                     raw_loaded += 1
@@ -1115,6 +1120,7 @@ class BacktestAPI(BaseAPI):
                     self._data_start_date,
                     self._data_end_date,
                     "1d",
+                    skip_current_year_refresh=True,
                 )
                 if benchmark_data is not None and not benchmark_data.empty:
                     self.logger.info(f"基准数据从OpenData获取成功: {self._benchmark}, {len(benchmark_data)}条")
@@ -1122,15 +1128,7 @@ class BacktestAPI(BaseAPI):
                 self.logger.warning(f"基准数据OpenData获取失败: {self._benchmark}, {e}")
 
             if benchmark_data is None or benchmark_data.empty:
-                self.logger.info(f"OpenData无基准数据，尝试QMT: {self._benchmark}")
-                benchmark_data = self.data_processor.get_data(
-                    self._benchmark,
-                    self._data_start_date,
-                    self._data_end_date,
-                    "1d",
-                )
-                if benchmark_data is not None and not benchmark_data.empty:
-                    self.logger.info(f"基准数据从QMT获取: {self._benchmark}, {len(benchmark_data)}条")
+                self.logger.warning(f"基准数据获取失败: {self._benchmark}")
 
             if benchmark_data is not None and not benchmark_data.empty:
                 if not isinstance(benchmark_data.index, pd.DatetimeIndex):
@@ -1163,6 +1161,7 @@ class BacktestAPI(BaseAPI):
                     self._data_start_date,
                     self._data_end_date,
                     "1d",
+                    skip_current_year_refresh=True,
                 )
                 if df is not None and not df.empty:
                     if not isinstance(df.index, pd.DatetimeIndex):
