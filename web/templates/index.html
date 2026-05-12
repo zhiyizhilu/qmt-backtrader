@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>策略回测结果查看器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+    <style>
+        [v-cloak] { display: none; }
+        body { background: #0f172a; color: #e2e8f0; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; }
+        .metric-card { transition: transform 0.2s, box-shadow 0.2s; }
+        .metric-card:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.3); }
+        .strategy-item { transition: all 0.15s; cursor: pointer; }
+        .strategy-item:hover { background: #334155; }
+        .strategy-item.active { background: #1e40af; border-color: #3b82f6; }
+        .run-item { transition: all 0.15s; cursor: pointer; }
+        .run-item:hover { background: #334155; }
+        .run-item.active { background: #065f46; border-color: #10b981; }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .positive { color: #34d399; }
+        .negative { color: #f87171; }
+        .tab-btn { transition: all 0.15s; }
+        .tab-btn.active { background: #3b82f6; color: white; }
+        .pulse { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    </style>
+</head>
+<body>
+<div id="app" v-cloak>
+    <div class="flex h-screen overflow-hidden">
+        <aside class="w-72 flex-shrink-0 flex flex-col border-r border-slate-700 bg-slate-900">
+            <div class="p-4 border-b border-slate-700">
+                <h1 class="text-lg font-bold text-white flex items-center gap-2">
+                    <svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                    </svg>
+                    策略回测查看器
+                </h1>
+            </div>
+            <div class="p-3 border-b border-slate-700">
+                <div class="text-xs text-slate-400 uppercase tracking-wider mb-2">策略列表</div>
+                <div v-if="loading" class="text-center py-4">
+                    <div class="pulse text-slate-400">加载中...</div>
+                </div>
+                <div v-else-if="strategies.length === 0" class="text-center py-4 text-slate-500 text-sm">
+                    未发现回测结果
+                </div>
+                <div v-else class="space-y-1">
+                    <div v-for="s in strategies" :key="s.name"
+                         class="strategy-item rounded-lg px-3 py-2.5 border border-transparent"
+                         :class="{ active: selectedStrategy === s.name }"
+                         @click="selectStrategy(s.name)">
+                        <div class="flex items-center justify-between">
+                            <span class="font-medium text-sm">{{ formatStrategyName(s.name) }}</span>
+                            <span class="text-xs px-2 py-0.5 rounded-full"
+                                  :class="s.source === 'strategies_for_vip' ? 'bg-amber-900/50 text-amber-300' : 'bg-slate-700 text-slate-300'">
+                                {{ s.source === 'strategies_for_vip' ? 'VIP' : '标准' }}
+                            </span>
+                        </div>
+                        <div class="text-xs text-slate-400 mt-1">{{ s.run_count }} 次回测</div>
+                    </div>
+                </div>
+            </div>
+            <div class="flex-1 overflow-y-auto p-3" v-if="selectedStrategy">
+                <div class="text-xs text-slate-400 uppercase tracking-wider mb-2">回测记录</div>
+                <div class="space-y-1">
+                    <div v-for="run in runs" :key="run.run_id"
+                         class="run-item rounded-lg px-3 py-2 border border-transparent"
+                         :class="{ active: selectedRunId === run.run_id }"
+                         @click="selectRun(run.run_id)">
+                        <div class="text-xs text-slate-400">{{ formatTimestamp(run.timestamp) }}</div>
+                        <div class="flex items-center justify-between mt-1">
+                            <span class="text-sm font-mono"
+                                  :class="run.total_return_pct >= 0 ? 'positive' : 'negative'">
+                                {{ formatPercent(run.total_return_pct) }}
+                            </span>
+                            <span class="text-xs text-slate-400">SR: {{ formatNum(run.sharpe_ratio) }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <main class="flex-1 overflow-y-auto">
+            <div v-if="!selectedStrategy" class="flex items-center justify-center h-full">
+                <div class="text-center">
+                    <svg class="w-16 h-16 text-slate-600 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                    </svg>
+                    <p class="text-slate-500 text-lg">请从左侧选择一个策略</p>
+                    <p class="text-slate-600 text-sm mt-2">查看回测结果与可视化分析</p>
+                </div>
+            </div>
+
+            <div v-else class="p-6 fade-in" :key="selectedRunId">
+                <div class="flex items-center justify-between mb-6">
+                    <div>
+                        <h2 class="text-2xl font-bold text-white">{{ formatStrategyName(selectedStrategy) }}</h2>
+                        <p class="text-slate-400 text-sm mt-1" v-if="currentRun">
+                            回测周期: {{ currentRun.config?.start_date || '-' }} ~ {{ currentRun.config?.end_date || '-' }}
+                        </p>
+                    </div>
+                    <div class="flex gap-2">
+                        <button @click="activeTab = 'detail'" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
+                                :class="activeTab === 'detail' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
+                            详情
+                        </button>
+                        <button @click="activeTab = 'compare'" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
+                                :class="activeTab === 'compare' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
+                            对比
+                        </button>
+                    </div>
+                </div>
+
+                <div v-if="activeTab === 'detail' && currentRun">
+                    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+                        <div class="card metric-card p-4">
+                            <div class="text-xs text-slate-400 mb-1">总收益率</div>
+                            <div class="text-xl font-bold" :class="currentRun.metrics.total_return_pct >= 0 ? 'positive' : 'negative'">
+                                {{ formatPercent(currentRun.metrics.total_return_pct) }}
+                            </div>
+                        </div>
+                        <div class="card metric-card p-4">
+                            <div class="text-xs text-slate-400 mb-1">年化收益率</div>
+                            <div class="text-xl font-bold" :class="currentRun.metrics.annual_return_pct >= 0 ? 'positive' : 'negative'">
+                                {{ formatPercent(currentRun.metrics.annual_return_pct) }}
+                            </div>
+                        </div>
+                        <div class="card metric-card p-4">
+                            <div class="text-xs text-slate-400 mb-1">夏普比率</div>
+                            <div class="text-xl font-bold" :class="currentRun.metrics.sharpe_ratio >= 0 ? 'positive' : 'negative'">
+                                {{ formatNum(currentRun.metrics.sharpe_ratio) }}
+                            </div>
+                        </div>
+                        <div class="card metric-card p-4">
+                            <div class="text-xs text-slate-400 mb-1">最大回撤</div>
+                            <div class="text-xl font-bold negative">{{ formatPercent(currentRun.metrics.max_drawdown_pct) }}</div>
+                        </div>
+                        <div class="card metric-card p-4">
+                            <div class="text-xs text-slate-400 mb-1">胜率</div>
+                            <div class="text-xl font-bold text-white">
+                                {{ calcWinRate(currentRun.metrics) }}
+                            </div>
+                        </div>
+                        <div class="card metric-card p-4">
+                            <div class="text-xs text-slate-400 mb-1">交易天数</div>
+                            <div class="text-xl font-bold text-white">{{ currentRun.metrics.total_trading_days }}</div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                        <div class="card p-3">
+                            <div class="text-xs text-slate-400 mb-1">初始资金</div>
+                            <div class="text-sm font-medium text-white">{{ formatMoney(currentRun.metrics.initial_capital) }}</div>
+                        </div>
+                        <div class="card p-3">
+                            <div class="text-xs text-slate-400 mb-1">最终净值</div>
+                            <div class="text-sm font-medium text-white">{{ formatMoney(currentRun.metrics.final_value) }}</div>
+                        </div>
+                        <div class="card p-3">
+                            <div class="text-xs text-slate-400 mb-1">总手续费</div>
+                            <div class="text-sm font-medium text-white">{{ formatMoney(currentRun.metrics.fee) }}</div>
+                        </div>
+                        <div class="card p-3">
+                            <div class="text-xs text-slate-400 mb-1">总成交额</div>
+                            <div class="text-sm font-medium text-white">{{ formatMoney(currentRun.metrics.turnover) }}</div>
+                        </div>
+                    </div>
+
+                    <div class="card p-4 mb-6">
+                        <h3 class="text-sm font-semibold text-slate-300 mb-3">权益曲线 vs 基准</h3>
+                        <div id="equity-chart" style="height: 420px;"></div>
+                    </div>
+
+                    <div class="card p-4 mb-6">
+                        <h3 class="text-sm font-semibold text-slate-300 mb-3">回撤曲线</h3>
+                        <div id="drawdown-chart" style="height: 250px;"></div>
+                    </div>
+
+                    <div class="card p-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <h3 class="text-sm font-semibold text-slate-300">交易日志</h3>
+                            <span class="text-xs text-slate-500">共 {{ currentRun.trade_log?.length || 0 }} 条记录</span>
+                        </div>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="text-left text-slate-400 border-b border-slate-700">
+                                        <th class="pb-2 pr-4">#</th>
+                                        <th class="pb-2 pr-4">代码</th>
+                                        <th class="pb-2 pr-4">方向</th>
+                                        <th class="pb-2 pr-4">开平</th>
+                                        <th class="pb-2 pr-4 text-right">数量</th>
+                                        <th class="pb-2 pr-4 text-right">委托价</th>
+                                        <th class="pb-2 pr-4 text-right">成交价</th>
+                                        <th class="pb-2 pr-4 text-right">手续费</th>
+                                        <th class="pb-2 pr-4 text-right">盈亏</th>
+                                        <th class="pb-2 pr-4">备注</th>
+                                        <th class="pb-2">时间</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="(trade, idx) in paginatedTrades" :key="idx"
+                                        class="border-b border-slate-800 hover:bg-slate-800/50">
+                                        <td class="py-2 pr-4 text-slate-500">{{ trade.order_id }}</td>
+                                        <td class="py-2 pr-4 font-mono text-blue-300">{{ trade.instrument_id }}</td>
+                                        <td class="py-2 pr-4">
+                                            <span :class="trade.direction === '0' ? 'text-red-400' : 'text-green-400'">
+                                                {{ trade.direction === '0' ? '买' : '卖' }}
+                                            </span>
+                                        </td>
+                                        <td class="py-2 pr-4 text-slate-300">
+                                            {{ trade.offset === '0' ? '开' : '平' }}
+                                        </td>
+                                        <td class="py-2 pr-4 text-right font-mono">{{ trade.volume }}</td>
+                                        <td class="py-2 pr-4 text-right font-mono">{{ formatNum(trade.order_price) }}</td>
+                                        <td class="py-2 pr-4 text-right font-mono">{{ formatNum(trade.trade_price) }}</td>
+                                        <td class="py-2 pr-4 text-right font-mono text-slate-400">{{ formatNum(trade.fee) }}</td>
+                                        <td class="py-2 pr-4 text-right font-mono"
+                                            :class="trade.pnl > 0 ? 'positive' : trade.pnl < 0 ? 'negative' : 'text-slate-400'">
+                                            {{ formatNum(trade.pnl) }}
+                                        </td>
+                                        <td class="py-2 pr-4 text-slate-400">{{ trade.memo || '-' }}</td>
+                                        <td class="py-2 text-slate-500 text-xs">{{ trade.trade_time || '-' }}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="flex items-center justify-between mt-4" v-if="currentRun.trade_log && currentRun.trade_log.length > tradePageSize">
+                            <span class="text-xs text-slate-500">
+                                显示 {{ (tradePage - 1) * tradePageSize + 1 }} - {{ Math.min(tradePage * tradePageSize, currentRun.trade_log.length) }} / {{ currentRun.trade_log.length }}
+                            </span>
+                            <div class="flex gap-2">
+                                <button @click="tradePage = Math.max(1, tradePage - 1)"
+                                        :disabled="tradePage <= 1"
+                                        class="px-3 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-50">
+                                    上一页
+                                </button>
+                                <button @click="tradePage = Math.min(totalTradePages, tradePage + 1)"
+                                        :disabled="tradePage >= totalTradePages"
+                                        class="px-3 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-50">
+                                    下一页
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="activeTab === 'compare'">
+                    <div class="card p-4 mb-6">
+                        <h3 class="text-sm font-semibold text-slate-300 mb-3">多次回测指标对比</h3>
+                        <div id="compare-chart" style="height: 400px;"></div>
+                    </div>
+                    <div class="card p-4">
+                        <h3 class="text-sm font-semibold text-slate-300 mb-3">回测记录汇总</h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="text-left text-slate-400 border-b border-slate-700">
+                                        <th class="pb-2 pr-4">时间</th>
+                                        <th class="pb-2 pr-4 text-right">总收益率</th>
+                                        <th class="pb-2 pr-4 text-right">年化收益率</th>
+                                        <th class="pb-2 pr-4 text-right">夏普比率</th>
+                                        <th class="pb-2 pr-4 text-right">最大回撤</th>
+                                        <th class="pb-2 pr-4 text-right">交易天数</th>
+                                        <th class="pb-2 text-right">初始资金</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="run in runs" :key="run.run_id"
+                                        class="border-b border-slate-800 hover:bg-slate-800/50 cursor-pointer"
+                                        @click="selectRun(run.run_id); activeTab = 'detail'">
+                                        <td class="py-2 pr-4 text-slate-300">{{ formatTimestamp(run.timestamp) }}</td>
+                                        <td class="py-2 pr-4 text-right font-mono"
+                                            :class="run.total_return_pct >= 0 ? 'positive' : 'negative'">
+                                            {{ formatPercent(run.total_return_pct) }}
+                                        </td>
+                                        <td class="py-2 pr-4 text-right font-mono"
+                                            :class="run.annual_return_pct >= 0 ? 'positive' : 'negative'">
+                                            {{ formatPercent(run.annual_return_pct) }}
+                                        </td>
+                                        <td class="py-2 pr-4 text-right font-mono"
+                                            :class="run.sharpe_ratio >= 0 ? 'positive' : 'negative'">
+                                            {{ formatNum(run.sharpe_ratio) }}
+                                        </td>
+                                        <td class="py-2 pr-4 text-right font-mono negative">{{ formatPercent(run.max_drawdown_pct) }}</td>
+                                        <td class="py-2 pr-4 text-right font-mono text-slate-300">{{ run.total_trading_days }}</td>
+                                        <td class="py-2 text-right font-mono text-slate-300">{{ formatMoney(run.initial_capital) }}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<script>
+const { createApp, ref, computed, watch, onMounted, nextTick } = Vue;
+
+createApp({
+    setup() {
+        const strategies = ref([]);
+        const selectedStrategy = ref(null);
+        const runs = ref([]);
+        const selectedRunId = ref(null);
+        const currentRun = ref(null);
+        const loading = ref(true);
+        const activeTab = ref('detail');
+        const tradePage = ref(1);
+        const tradePageSize = 50;
+
+        let equityChart = null;
+        let drawdownChart = null;
+        let compareChart = null;
+
+        const totalTradePages = computed(() => {
+            if (!currentRun.value?.trade_log) return 1;
+            return Math.ceil(currentRun.value.trade_log.length / tradePageSize);
+        });
+
+        const paginatedTrades = computed(() => {
+            if (!currentRun.value?.trade_log) return [];
+            const start = (tradePage.value - 1) * tradePageSize;
+            return currentRun.value.trade_log.slice(start, start + tradePageSize);
+        });
+
+        function formatStrategyName(name) {
+            return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        }
+
+        function formatTimestamp(ts) {
+            if (!ts) return '-';
+            return ts.replace('T', ' ').substring(0, 19);
+        }
+
+        function formatPercent(val) {
+            if (val == null) return '-';
+            return (val >= 0 ? '+' : '') + val.toFixed(2) + '%';
+        }
+
+        function formatNum(val) {
+            if (val == null) return '-';
+            return Number(val).toFixed(4);
+        }
+
+        function formatMoney(val) {
+            if (val == null) return '-';
+            if (val >= 1e8) return (val / 1e8).toFixed(2) + '亿';
+            if (val >= 1e4) return (val / 1e4).toFixed(2) + '万';
+            return val.toFixed(2);
+        }
+
+        function calcWinRate(metrics) {
+            if (!metrics || metrics.total_trading_days === 0) return '-';
+            const rate = (metrics.win_days / metrics.total_trading_days * 100).toFixed(1);
+            return rate + '%';
+        }
+
+        async function fetchStrategies() {
+            loading.value = true;
+            try {
+                const res = await fetch('/api/strategies');
+                strategies.value = await res.json();
+                if (strategies.value.length > 0 && !selectedStrategy.value) {
+                    selectStrategy(strategies.value[0].name);
+                }
+            } catch (e) {
+                console.error('Failed to fetch strategies:', e);
+            } finally {
+                loading.value = false;
+            }
+        }
+
+        async function selectStrategy(name) {
+            selectedStrategy.value = name;
+            selectedRunId.value = null;
+            currentRun.value = null;
+            try {
+                const res = await fetch(`/api/strategies/${name}/runs`);
+                runs.value = await res.json();
+                if (runs.value.length > 0) {
+                    selectRun(runs.value[0].run_id);
+                }
+            } catch (e) {
+                console.error('Failed to fetch runs:', e);
+                runs.value = [];
+            }
+        }
+
+        async function selectRun(runId) {
+            selectedRunId.value = runId;
+            tradePage.value = 1;
+            try {
+                const res = await fetch(`/api/strategies/${selectedStrategy.value}/runs/${runId}`);
+                currentRun.value = await res.json();
+                await nextTick();
+                renderEquityChart();
+                renderDrawdownChart();
+            } catch (e) {
+                console.error('Failed to fetch run detail:', e);
+                currentRun.value = null;
+            }
+        }
+
+        function renderEquityChart() {
+            if (!currentRun.value) return;
+            const el = document.getElementById('equity-chart');
+            if (!el) return;
+            if (equityChart && equityChart.getDom() !== el) {
+                equityChart.dispose();
+                equityChart = null;
+            }
+            if (!equityChart) {
+                equityChart = echarts.init(el, 'dark');
+            }
+            const ec = currentRun.value.equity_curve || [];
+            const bc = currentRun.value.benchmark_curve || [];
+
+            const dates = ec.map(d => d.date);
+            const portfolioValues = ec.map(d => d.portfolio_value);
+            const pnlValues = ec.map(d => d.pnl);
+
+            const initialCapital = currentRun.value.metrics?.initial_capital || 1;
+            const portfolioNorm = portfolioValues.map(v => (v / initialCapital * 1000).toFixed(2));
+
+            let benchmarkNorm = [];
+            if (bc.length > 0) {
+                const baseClose = bc[0].close || 1;
+                benchmarkNorm = bc.map(d => (d.close / baseClose * 1000).toFixed(2));
+            }
+
+            const series = [
+                {
+                    name: '策略净值',
+                    type: 'line',
+                    data: portfolioNorm,
+                    smooth: true,
+                    lineStyle: { width: 2, color: '#3b82f6' },
+                    itemStyle: { color: '#3b82f6' },
+                    areaStyle: {
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            { offset: 0, color: 'rgba(59,130,246,0.3)' },
+                            { offset: 1, color: 'rgba(59,130,246,0.02)' },
+                        ])
+                    },
+                },
+            ];
+
+            const xData = dates;
+            if (benchmarkNorm.length > 0) {
+                const bDates = bc.map(d => d.date);
+                series.push({
+                    name: '基准净值',
+                    type: 'line',
+                    data: benchmarkNorm,
+                    smooth: true,
+                    lineStyle: { width: 2, color: '#f59e0b', type: 'dashed' },
+                    itemStyle: { color: '#f59e0b' },
+                });
+            }
+
+            equityChart.setOption({
+                backgroundColor: 'transparent',
+                tooltip: {
+                    trigger: 'axis',
+                    backgroundColor: '#1e293b',
+                    borderColor: '#334155',
+                    textStyle: { color: '#e2e8f0', fontSize: 12 },
+                    formatter: function(params) {
+                        let html = `<div style="font-weight:600;margin-bottom:4px">${params[0].axisValue}</div>`;
+                        params.forEach(p => {
+                            html += `<div>${p.marker} ${p.seriesName}: <b>${Number(p.value).toFixed(2)}</b></div>`;
+                        });
+                        return html;
+                    }
+                },
+                legend: {
+                    data: ['策略净值', '基准净值'],
+                    top: 0,
+                    textStyle: { color: '#94a3b8' },
+                },
+                grid: { left: 60, right: 30, top: 40, bottom: 30 },
+                xAxis: {
+                    type: 'category',
+                    data: xData,
+                    axisLine: { lineStyle: { color: '#334155' } },
+                    axisLabel: { color: '#64748b', fontSize: 10, rotate: 0, formatter: v => v.substring(0, 7) },
+                    splitLine: { show: false },
+                },
+                yAxis: {
+                    type: 'value',
+                    scale: true,
+                    axisLine: { lineStyle: { color: '#334155' } },
+                    axisLabel: { color: '#64748b', fontSize: 10 },
+                    splitLine: { lineStyle: { color: '#1e293b' } },
+                },
+                series: series,
+                dataZoom: [
+                    { type: 'inside', start: 0, end: 100 },
+                ],
+            }, true);
+        }
+
+        function renderDrawdownChart() {
+            if (!currentRun.value) return;
+            const el = document.getElementById('drawdown-chart');
+            if (!el) return;
+            if (drawdownChart && drawdownChart.getDom() !== el) {
+                drawdownChart.dispose();
+                drawdownChart = null;
+            }
+            if (!drawdownChart) {
+                drawdownChart = echarts.init(el, 'dark');
+            }
+            const ec = currentRun.value.equity_curve || [];
+            if (ec.length === 0) return;
+
+            const dates = ec.map(d => d.date);
+            const values = ec.map(d => d.portfolio_value);
+            const drawdowns = [];
+            let peak = values[0];
+            for (let i = 0; i < values.length; i++) {
+                if (values[i] > peak) peak = values[i];
+                drawdowns.push(((values[i] - peak) / peak * 100).toFixed(2));
+            }
+
+            drawdownChart.setOption({
+                backgroundColor: 'transparent',
+                tooltip: {
+                    trigger: 'axis',
+                    backgroundColor: '#1e293b',
+                    borderColor: '#334155',
+                    textStyle: { color: '#e2e8f0', fontSize: 12 },
+                    formatter: function(params) {
+                        return `<div style="font-weight:600;margin-bottom:4px">${params[0].axisValue}</div>
+                                <div>${params[0].marker} 回撤: <b style="color:#f87171">${params[0].value}%</b></div>`;
+                    }
+                },
+                grid: { left: 60, right: 30, top: 20, bottom: 30 },
+                xAxis: {
+                    type: 'category',
+                    data: dates,
+                    axisLine: { lineStyle: { color: '#334155' } },
+                    axisLabel: { color: '#64748b', fontSize: 10, formatter: v => v.substring(0, 7) },
+                    splitLine: { show: false },
+                },
+                yAxis: {
+                    type: 'value',
+                    axisLine: { lineStyle: { color: '#334155' } },
+                    axisLabel: { color: '#64748b', fontSize: 10, formatter: v => v + '%' },
+                    splitLine: { lineStyle: { color: '#1e293b' } },
+                },
+                series: [{
+                    type: 'line',
+                    data: drawdowns,
+                    lineStyle: { width: 1.5, color: '#f87171' },
+                    itemStyle: { color: '#f87171' },
+                    areaStyle: {
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            { offset: 0, color: 'rgba(248,113,113,0.02)' },
+                            { offset: 1, color: 'rgba(248,113,113,0.3)' },
+                        ])
+                    },
+                    symbol: 'none',
+                }],
+                dataZoom: [{ type: 'inside', start: 0, end: 100 }],
+            }, true);
+        }
+
+        function renderCompareChart() {
+            if (!runs.value || runs.value.length === 0) return;
+            const el = document.getElementById('compare-chart');
+            if (!el) return;
+            if (compareChart && compareChart.getDom() !== el) {
+                compareChart.dispose();
+                compareChart = null;
+            }
+            if (!compareChart) {
+                compareChart = echarts.init(el, 'dark');
+            }
+
+            const labels = runs.value.map(r => formatTimestamp(r.timestamp).substring(0, 10));
+            const sharpeData = runs.value.map(r => r.sharpe_ratio);
+            const returnData = runs.value.map(r => r.total_return_pct);
+            const drawdownData = runs.value.map(r => r.max_drawdown_pct);
+
+            compareChart.setOption({
+                backgroundColor: 'transparent',
+                tooltip: {
+                    trigger: 'axis',
+                    backgroundColor: '#1e293b',
+                    borderColor: '#334155',
+                    textStyle: { color: '#e2e8f0', fontSize: 12 },
+                },
+                legend: {
+                    data: ['夏普比率', '总收益率(%)', '最大回撤(%)'],
+                    top: 0,
+                    textStyle: { color: '#94a3b8' },
+                },
+                grid: { left: 60, right: 60, top: 40, bottom: 30 },
+                xAxis: {
+                    type: 'category',
+                    data: labels,
+                    axisLine: { lineStyle: { color: '#334155' } },
+                    axisLabel: { color: '#64748b', fontSize: 10, rotate: 30 },
+                },
+                yAxis: [
+                    {
+                        type: 'value',
+                        name: '夏普比率',
+                        axisLine: { lineStyle: { color: '#334155' } },
+                        axisLabel: { color: '#64748b', fontSize: 10 },
+                        splitLine: { lineStyle: { color: '#1e293b' } },
+                    },
+                    {
+                        type: 'value',
+                        name: '%',
+                        axisLine: { lineStyle: { color: '#334155' } },
+                        axisLabel: { color: '#64748b', fontSize: 10 },
+                        splitLine: { show: false },
+                    },
+                ],
+                series: [
+                    {
+                        name: '夏普比率',
+                        type: 'bar',
+                        data: sharpeData,
+                        itemStyle: { color: '#3b82f6', borderRadius: [4, 4, 0, 0] },
+                    },
+                    {
+                        name: '总收益率(%)',
+                        type: 'bar',
+                        yAxisIndex: 1,
+                        data: returnData,
+                        itemStyle: { color: '#34d399', borderRadius: [4, 4, 0, 0] },
+                    },
+                    {
+                        name: '最大回撤(%)',
+                        type: 'bar',
+                        yAxisIndex: 1,
+                        data: drawdownData,
+                        itemStyle: { color: '#f87171', borderRadius: [4, 4, 0, 0] },
+                    },
+                ],
+            }, true);
+        }
+
+        watch(activeTab, async (tab) => {
+            if (tab === 'compare') {
+                await nextTick();
+                renderCompareChart();
+            }
+        });
+
+        onMounted(() => {
+            fetchStrategies();
+            window.addEventListener('resize', () => {
+                equityChart?.resize();
+                drawdownChart?.resize();
+                compareChart?.resize();
+            });
+        });
+
+        return {
+            strategies, selectedStrategy, runs, selectedRunId, currentRun,
+            loading, activeTab, tradePage, tradePageSize, totalTradePages, paginatedTrades,
+            formatStrategyName, formatTimestamp, formatPercent, formatNum, formatMoney,
+            calcWinRate, selectStrategy, selectRun,
+        };
+    }
+}).mount('#app');
+</script>
+</body>
+</html>
