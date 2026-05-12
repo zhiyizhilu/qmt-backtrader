@@ -247,17 +247,25 @@
                             <span class="text-xs text-slate-500">
                                 显示 {{ (tradePage - 1) * tradePageSize + 1 }} - {{ Math.min(tradePage * tradePageSize, currentRun.trade_log.length) }} / {{ currentRun.trade_log.length }}
                             </span>
-                            <div class="flex gap-2">
+                            <div class="flex items-center gap-1.5">
                                 <button @click="tradePage = Math.max(1, tradePage - 1)"
                                         :disabled="tradePage <= 1"
-                                        class="px-3 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-50">
+                                        class="px-2.5 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-50">
                                     上一页
+                                </button>
+                                <button v-for="p in visibleTradePages" :key="p"
+                                        @click="typeof p === 'number' && (tradePage = p)"
+                                        :disabled="p === '...'"
+                                        class="min-w-[28px] px-1.5 py-1 rounded text-xs text-center disabled:opacity-100"
+                                        :class="p === tradePage ? 'bg-blue-600 text-white' : p === '...' ? 'bg-transparent text-slate-500 cursor-default' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
+                                    {{ p }}
                                 </button>
                                 <button @click="tradePage = Math.min(totalTradePages, tradePage + 1)"
                                         :disabled="tradePage >= totalTradePages"
-                                        class="px-3 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-50">
+                                        class="px-2.5 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-50">
                                     下一页
                                 </button>
+                                <span class="text-xs text-slate-500 ml-1">共 {{ totalTradePages }} 页</span>
                             </div>
                         </div>
                     </div>
@@ -344,6 +352,21 @@ createApp({
             return currentRun.value.trade_log.slice(start, start + tradePageSize);
         });
 
+        const visibleTradePages = computed(() => {
+            const total = totalTradePages.value;
+            const current = tradePage.value;
+            if (total <= 7) {
+                return Array.from({ length: total }, (_, i) => i + 1);
+            }
+            if (current <= 4) {
+                return [1, 2, 3, 4, 5, '...', total];
+            }
+            if (current >= total - 3) {
+                return [1, '...', total - 4, total - 3, total - 2, total - 1, total];
+            }
+            return [1, '...', current - 1, current, current + 1, '...', total];
+        });
+
         function formatStrategyName(name) {
             return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
         }
@@ -363,21 +386,25 @@ createApp({
             return y + '-' + m + '-' + day;
         }
 
-        function adaptiveTimeLabel(val) {
-            const d = new Date(val);
-            if (isNaN(d.getTime())) return '';
-            const y = d.getFullYear();
-            const m = String(d.getMonth() + 1).padStart(2, '0');
-            const day = String(d.getDate()).padStart(2, '0');
-            const chart = this.chart || {};
-            const opt = chart.getOption ? chart.getOption() : {};
-            const dz = (opt.dataZoom && opt.dataZoom[0]) || {};
-            const startPct = dz.start != null ? dz.start : 0;
-            const endPct = dz.end != null ? dz.end : 100;
-            const rangeRatio = (endPct - startPct) / 100;
-            if (rangeRatio > 0.5) return String(y);
-            if (rangeRatio > 0.1) return y + '-' + m;
-            return y + '-' + m + '-' + day;
+        function makeTimeLabelFormatter(chartInstance) {
+            return function(val) {
+                const d = new Date(val);
+                if (isNaN(d.getTime())) return '';
+                const y = d.getFullYear();
+                const m = String(d.getMonth() + 1).padStart(2, '0');
+                const day = String(d.getDate()).padStart(2, '0');
+                let rangeRatio = 1;
+                try {
+                    const opt = chartInstance.getOption();
+                    const dz = (opt.dataZoom && opt.dataZoom[0]) || {};
+                    const startPct = dz.start != null ? dz.start : 0;
+                    const endPct = dz.end != null ? dz.end : 100;
+                    rangeRatio = Math.max(0.001, (endPct - startPct) / 100);
+                } catch (e) {}
+                if (rangeRatio > 0.5) return String(y);
+                if (rangeRatio > 0.15) return y + '-' + m;
+                return y + '-' + m + '-' + day;
+            };
         }
 
         function formatPercent(val) {
@@ -567,7 +594,7 @@ createApp({
                     min: ecStartDate,
                     max: ecEndDate,
                     axisLine: { lineStyle: { color: '#334155' } },
-                    axisLabel: { color: '#64748b', fontSize: 10, formatter: adaptiveTimeLabel },
+                    axisLabel: { color: '#64748b', fontSize: 10, formatter: makeTimeLabelFormatter(equityChart) },
                     splitLine: { show: false },
                 },
                 yAxis: {
@@ -623,7 +650,7 @@ createApp({
                 xAxis: {
                     type: 'time',
                     axisLine: { lineStyle: { color: '#334155' } },
-                    axisLabel: { color: '#64748b', fontSize: 10, formatter: adaptiveTimeLabel },
+                    axisLabel: { color: '#64748b', fontSize: 10, formatter: makeTimeLabelFormatter(drawdownChart) },
                     splitLine: { show: false },
                 },
                 yAxis: {
@@ -788,7 +815,7 @@ createApp({
 
         return {
             strategies, selectedStrategy, runs, selectedRunId, currentRun,
-            loading, activeTab, tradePage, tradePageSize, totalTradePages, paginatedTrades,
+            loading, activeTab, tradePage, tradePageSize, totalTradePages, paginatedTrades, visibleTradePages,
             formatStrategyName, formatTimestamp, formatPercent, formatNum, formatMoney,
             calcWinRate, selectStrategy, selectRun, deleteRun,
         };
