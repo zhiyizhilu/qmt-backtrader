@@ -239,15 +239,30 @@ class BacktraderDataAdapter(MarketDataAdapter):
         return prices
 
     def get_current_date(self) -> Optional[datetime.date]:
+        best_date = None
         for symbol, data in self._symbol_data_map.items():
-            return data.datetime.date(0)
-        return None
+            try:
+                if len(data) > 0:
+                    d = data.datetime.date(0)
+                    if best_date is None or d > best_date:
+                        best_date = d
+            except Exception:
+                continue
+        return best_date
 
     def get_current_datetime(self) -> Optional[datetime.datetime]:
-        """获取当前完整的日期时间（含时分秒），分钟线/tick数据时有效"""
+        best_dt = None
         for symbol, data in self._symbol_data_map.items():
-            return data.datetime.datetime(0)
-        return None
+            try:
+                if len(data) > 0:
+                    d = data.datetime.datetime(0)
+                    if best_dt is None or d > best_dt:
+                        best_dt = d
+            except Exception:
+                continue
+        if best_dt is not None and isinstance(best_dt, datetime.datetime) and best_dt.hour == 0 and best_dt.minute == 0:
+            best_dt = best_dt.replace(hour=15, minute=0)
+        return best_dt
 
     def get_symbols(self) -> List[str]:
         return list(self._symbol_data_map.keys())

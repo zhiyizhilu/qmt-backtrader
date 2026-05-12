@@ -61,6 +61,44 @@ class BaseStrategy(bt.Strategy):
         """
         return list(self._trade_records)
 
+    def _get_current_date(self):
+        """获取当前回测日期 - 从所有数据源中找到最新的日期
+
+        在多标的策略中，datas[0] 可能在回测期间被退市或停牌，导致其 datetime 冻结。
+        此方法遍历所有数据源，返回最新的日期。
+        """
+        best_date = None
+        for data in self.datas:
+            try:
+                if len(data) > 0:
+                    d = data.datetime.date(0)
+                    if best_date is None or d > best_date:
+                        best_date = d
+            except Exception:
+                continue
+        return best_date or self.datas[0].datetime.date(0)
+
+    def _get_current_datetime(self):
+        """获取当前回测时间 - 从所有数据源中找到最新的时间
+
+        与 _get_current_date() 类似，但返回 datetime 对象。
+        自动将 00:00 时间调整为 15:00（收盘时间）。
+        """
+        best_dt = None
+        for data in self.datas:
+            try:
+                if len(data) > 0:
+                    d = data.datetime.datetime(0)
+                    if best_dt is None or d > best_dt:
+                        best_dt = d
+            except Exception:
+                continue
+        if best_dt is None:
+            best_dt = self.datas[0].datetime.datetime(0)
+        if isinstance(best_dt, dt_module.datetime) and best_dt.hour == 0 and best_dt.minute == 0:
+            best_dt = best_dt.replace(hour=15, minute=0)
+        return best_dt
+
     def _init_progress_bar(self):
         """初始化进度条 - 根据数据长度估算总bar数"""
         if not self.datas:
@@ -81,7 +119,7 @@ class BaseStrategy(bt.Strategy):
         if self._strategy_logic:
             self._strategy_logic.update_data()
 
-        dt = self.datas[0].datetime.date(0)
+        dt = self._get_current_date()
         value = self.broker.getvalue()
         if self._last_equity_date != dt:
             self._equity_history.append((dt, value))
@@ -171,9 +209,7 @@ class BaseStrategy(bt.Strategy):
 
         trade_info = self._convert_trade(trade)
 
-        dt = self.datas[0].datetime.datetime(0) if self.datas else None
-        if isinstance(dt, dt_module.datetime) and dt.hour == 0 and dt.minute == 0:
-            dt = dt.replace(hour=15, minute=0)
+        dt = self._get_current_datetime() if self.datas else None
         symbol = getattr(trade.data, '_name', '') if hasattr(trade, 'data') else ''
         self._trade_records.append({
             "datetime": dt,
@@ -206,10 +242,8 @@ class BaseStrategy(bt.Strategy):
 
         # 获取订单时间
         order_datetime = None
-        if hasattr(self, 'datas') and self.datas and self.datas[0].datetime:
-            order_datetime = self.datas[0].datetime.datetime(0)
-            if isinstance(order_datetime, dt_module.datetime) and order_datetime.hour == 0 and order_datetime.minute == 0:
-                order_datetime = order_datetime.replace(hour=15, minute=0)
+        if hasattr(self, 'datas') and self.datas:
+            order_datetime = self._get_current_datetime()
 
         return OrderInfo(
             order_id=str(id(order)),
@@ -225,8 +259,22 @@ class BaseStrategy(bt.Strategy):
         )
 
     def _convert_trade(self, trade) -> TradeInfo:
-        """将backtrader交易转换为统一的TradeInfo"""
-        direction = 'buy' if trade.size > 0 else 'sell'
+        """将backtrader交易转换为统一的TradeInfo
+
+        backtrader的Trade对象：
+        - trade.size: 平仓后变为0，不能直接使用
+        - 需从 trade.history[0]（开仓记录）中获取原始开仓数量
+        - trade.history 格式: (status, dt, barlen, size, price, value, pnl, pnlcomm)
+        """
+        raw_size = 0
+        if hasattr(trade, 'history') and len(trade.history) > 0:
+            hist = trade.history[0]
+            raw_size = hist.get('size', 0) if isinstance(hist, dict) else getattr(hist, 'size', 0)
+        if raw_size == 0:
+            raw_size = trade.size if hasattr(trade, 'size') else 0
+
+        abs_size = abs(int(raw_size))
+        direction = 'buy' if raw_size > 0 else 'sell'
 
         return TradeInfo(
             trade_id=str(id(trade)),
@@ -234,7 +282,7 @@ class BaseStrategy(bt.Strategy):
             symbol=trade.data._name if hasattr(trade.data, '_name') else '',
             direction=direction,
             price=trade.price,
-            volume=int(trade.size),
+            volume=abs_size,
             commission=trade.commission,
             pnl=trade.pnl,
         )
