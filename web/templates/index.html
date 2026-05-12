@@ -353,6 +353,33 @@ createApp({
             return ts.replace('T', ' ').substring(0, 19);
         }
 
+        function formatDateFromValue(val) {
+            if (val == null) return '-';
+            const d = new Date(val);
+            if (isNaN(d.getTime())) return String(val);
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return y + '-' + m + '-' + day;
+        }
+
+        function adaptiveTimeLabel(val) {
+            const d = new Date(val);
+            if (isNaN(d.getTime())) return '';
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            const chart = this.chart || {};
+            const opt = chart.getOption ? chart.getOption() : {};
+            const dz = (opt.dataZoom && opt.dataZoom[0]) || {};
+            const startPct = dz.start != null ? dz.start : 0;
+            const endPct = dz.end != null ? dz.end : 100;
+            const rangeRatio = (endPct - startPct) / 100;
+            if (rangeRatio > 0.5) return String(y);
+            if (rangeRatio > 0.1) return y + '-' + m;
+            return y + '-' + m + '-' + day;
+        }
+
         function formatPercent(val) {
             if (val == null) return '-';
             return (val >= 0 ? '+' : '') + val.toFixed(2) + '%';
@@ -521,7 +548,7 @@ createApp({
                     borderColor: '#334155',
                     textStyle: { color: '#e2e8f0', fontSize: 12 },
                     formatter: function(params) {
-                        const dateStr = params[0].axisValue;
+                        const dateStr = formatDateFromValue(params[0].value[0]);
                         let html = '<div style="font-weight:600;margin-bottom:4px">' + dateStr + '</div>';
                         params.forEach(p => {
                             html += '<div>' + p.marker + ' ' + p.seriesName + ': <b>' + Number(p.value[1]).toFixed(2) + '</b></div>';
@@ -540,7 +567,7 @@ createApp({
                     min: ecStartDate,
                     max: ecEndDate,
                     axisLine: { lineStyle: { color: '#334155' } },
-                    axisLabel: { color: '#64748b', fontSize: 10, formatter: '{yyyy}-{MM}' },
+                    axisLabel: { color: '#64748b', fontSize: 10, formatter: adaptiveTimeLabel },
                     splitLine: { show: false },
                 },
                 yAxis: {
@@ -587,7 +614,7 @@ createApp({
                     borderColor: '#334155',
                     textStyle: { color: '#e2e8f0', fontSize: 12 },
                     formatter: function(params) {
-                        const dateStr = params[0].axisValue;
+                        const dateStr = formatDateFromValue(params[0].value[0]);
                         return '<div style="font-weight:600;margin-bottom:4px">' + dateStr + '</div>' +
                                '<div>' + params[0].marker + ' 回撤: <b style="color:#f87171">' + params[0].value[1] + '%</b></div>';
                     }
@@ -596,7 +623,7 @@ createApp({
                 xAxis: {
                     type: 'time',
                     axisLine: { lineStyle: { color: '#334155' } },
-                    axisLabel: { color: '#64748b', fontSize: 10, formatter: '{yyyy}-{MM}' },
+                    axisLabel: { color: '#64748b', fontSize: 10, formatter: adaptiveTimeLabel },
                     splitLine: { show: false },
                 },
                 yAxis: {
