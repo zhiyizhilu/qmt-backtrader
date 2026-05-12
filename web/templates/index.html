@@ -73,10 +73,19 @@
                 <div class="text-xs text-slate-400 uppercase tracking-wider mb-2">回测记录</div>
                 <div class="space-y-1">
                     <div v-for="run in runs" :key="run.run_id"
-                         class="run-item rounded-lg px-3 py-2 border border-transparent"
+                         class="run-item rounded-lg px-3 py-2 border border-transparent group relative"
                          :class="{ active: selectedRunId === run.run_id }"
                          @click="selectRun(run.run_id)">
-                        <div class="text-xs text-slate-400">{{ formatTimestamp(run.timestamp) }}</div>
+                        <div class="flex items-center justify-between">
+                            <div class="text-xs text-slate-400">{{ formatTimestamp(run.timestamp) }}</div>
+                            <button @click.stop="deleteRun(run.run_id)"
+                                    class="opacity-0 group-hover:opacity-100 transition-opacity text-red-400 hover:text-red-300"
+                                    title="删除此回测记录">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                </svg>
+                            </button>
+                        </div>
                         <div class="flex items-center justify-between mt-1">
                             <span class="text-sm font-mono"
                                   :class="run.total_return_pct >= 0 ? 'positive' : 'negative'">
@@ -405,11 +414,46 @@ createApp({
                 const res = await fetch(`/api/strategies/${selectedStrategy.value}/runs/${runId}`);
                 currentRun.value = await res.json();
                 await nextTick();
-                renderEquityChart();
-                renderDrawdownChart();
+                if (activeTab.value === 'detail') {
+                    renderEquityChart();
+                    renderDrawdownChart();
+                } else if (activeTab.value === 'compare') {
+                    renderCompareChart();
+                }
             } catch (e) {
                 console.error('Failed to fetch run detail:', e);
                 currentRun.value = null;
+            }
+        }
+
+        async function deleteRun(runId) {
+            if (!confirm('确定要删除这条回测记录吗？\n删除后无法恢复。')) return;
+            try {
+                const res = await fetch(`/api/strategies/${selectedStrategy.value}/runs/${runId}`, {
+                    method: 'DELETE',
+                });
+                const data = await res.json();
+                if (data.success) {
+                    runs.value = runs.value.filter(r => r.run_id !== runId);
+                    if (selectedRunId.value === runId) {
+                        selectedRunId.value = null;
+                        currentRun.value = null;
+                        if (runs.value.length > 0) {
+                            selectRun(runs.value[0].run_id);
+                        }
+                    }
+                    if (activeTab.value === 'compare') {
+                        await nextTick();
+                        renderCompareChart();
+                    }
+                    const strategy = strategies.value.find(s => s.name === selectedStrategy.value);
+                    if (strategy) strategy.run_count = runs.value.length;
+                } else {
+                    alert('删除失败: ' + (data.error || '未知错误'));
+                }
+            } catch (e) {
+                console.error('Failed to delete run:', e);
+                alert('删除失败');
             }
         }
 
@@ -719,7 +763,7 @@ createApp({
             strategies, selectedStrategy, runs, selectedRunId, currentRun,
             loading, activeTab, tradePage, tradePageSize, totalTradePages, paginatedTrades,
             formatStrategyName, formatTimestamp, formatPercent, formatNum, formatMoney,
-            calcWinRate, selectStrategy, selectRun,
+            calcWinRate, selectStrategy, selectRun, deleteRun,
         };
     }
 }).mount('#app');

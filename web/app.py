@@ -2,7 +2,7 @@ import json
 import os
 import glob
 
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify, send_from_directory, request
 
 app = Flask(__name__)
 
@@ -132,6 +132,34 @@ def api_strategy_run_detail(strategy_name, run_id):
             data = json.load(f)
         return jsonify(data)
     except (json.JSONDecodeError, IOError) as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/strategies/<strategy_name>/runs/<run_id>', methods=['DELETE'])
+def api_delete_run(strategy_name, run_id):
+    strategy_path = _find_strategy_dir(strategy_name)
+    if not strategy_path:
+        return jsonify({'error': f'Strategy "{strategy_name}" not found'}), 404
+    bt_dir = os.path.join(strategy_path, 'backtest_results')
+    if not os.path.isdir(bt_dir):
+        return jsonify({'error': 'No backtest results found'}), 404
+    file_path = os.path.join(bt_dir, f'{run_id}.json')
+    if not os.path.exists(file_path):
+        for json_file in glob.glob(os.path.join(bt_dir, '*.json')):
+            try:
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if data.get('meta', {}).get('run_id') == run_id:
+                    file_path = json_file
+                    break
+            except (json.JSONDecodeError, IOError):
+                continue
+    if not os.path.exists(file_path):
+        return jsonify({'error': f'Run "{run_id}" not found'}), 404
+    try:
+        os.remove(file_path)
+        return jsonify({'success': True, 'run_id': run_id})
+    except OSError as e:
         return jsonify({'error': str(e)}), 500
 
 
