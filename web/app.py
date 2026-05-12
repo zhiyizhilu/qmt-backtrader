@@ -1,6 +1,7 @@
 import json
 import os
 import glob
+import re
 
 from flask import Flask, jsonify, send_from_directory, request
 
@@ -12,8 +13,51 @@ STRATEGY_DIRS = [
     os.path.join(PROJECT_ROOT, 'strategies_for_vip'),
 ]
 
+# 策略显示名称映射文件路径
+_DISPLAY_NAMES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'strategy_display_names.json')
+
+
+def _load_display_names():
+    """加载策略显示名称映射"""
+    if os.path.exists(_DISPLAY_NAMES_FILE):
+        try:
+            with open(_DISPLAY_NAMES_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return {}
+    return {}
+
+
+def _save_display_names(names):
+    """保存策略显示名称映射"""
+    with open(_DISPLAY_NAMES_FILE, 'w', encoding='utf-8') as f:
+        json.dump(names, f, indent=2, ensure_ascii=False)
+
+
+def _extract_readme_title(strategy_path):
+    """从 readme.md 第一行提取策略中文标题"""
+    for fname in ['readme.md', 'README.md', 'Readme.md']:
+        readme_path = os.path.join(strategy_path, fname)
+        if os.path.exists(readme_path):
+            try:
+                with open(readme_path, 'r', encoding='utf-8') as f:
+                    first_line = f.readline().strip()
+                    # 提取 # 后面的标题文字，去掉括号内的英文部分
+                    match = re.match(r'^#+\s+(.+)', first_line)
+                    if match:
+                        title = match.group(1).strip()
+                        # 去掉括号内的英文部分，如 "(Bank Rotation Strategy)"
+                        title = re.sub(r'\s*[\(（][^\)）]+[\)）]\s*', '', title).strip()
+                        # 去掉破折号后面的副标题，如 " — 降低回撤、提升收益"
+                        title = re.sub(r'\s*[—\-–]\s+.*$', '', title).strip()
+                        return title
+            except (IOError, UnicodeDecodeError):
+                pass
+    return None
+
 
 def _discover_strategies():
+    display_names = _load_display_names()
     strategies = {}
     for base_dir in STRATEGY_DIRS:
         if not os.path.isdir(base_dir):
@@ -25,6 +69,9 @@ def _discover_strategies():
             if os.path.isdir(strategy_path) and os.path.isdir(bt_dir):
                 json_files = glob.glob(os.path.join(bt_dir, '*.json'))
                 if json_files:
+                    # 优先使用用户自定义名称，其次从readme提取
+                    custom_name = display_names.get(entry)
+                    readme_title = _extract_readme_title(strategy_path)
                     strategies.setdefault(entry, {
                         'name': entry,
                         'source': source,
@@ -32,6 +79,7 @@ def _discover_strategies():
                         'backtest_dir': bt_dir,
                         'run_count': 0,
                         'runs': [],
+                        'display_name': custom_name or readme_title or '',
                     })
                     runs = _load_run_summaries(bt_dir)
                     strategies[entry]['run_count'] = len(runs)
@@ -94,6 +142,7 @@ def api_strategies():
             'source': info['source'],
             'run_count': info['run_count'],
             'latest_run': info['runs'][0] if info['runs'] else None,
+            'display_name': info.get('display_name', ''),
         })
     return jsonify(result)
 
@@ -178,6 +227,18 @@ def api_strategy_readme(strategy_name):
             except (IOError, UnicodeDecodeError) as e:
                 return jsonify({'error': str(e)}), 500
     return jsonify({'content': ''})
+
+
+@app.route('/api/strategies/<strategy_name>/display_name', methods=['PUT'])
+def api_update_display_name(strategy_name):
+    """更新策略的显示名称"""
+    data = request.get_json()
+    if not data or 'display_name' not in data:
+        return jsonify({'error': 'display_name is required'}), 400
+    display_names = _load_display_names()
+    display_names[strategy_name] = data['display_name']
+    _save_display_names(display_names)
+    return jsonify({'success': True, 'display_name': data['display_name']})
 
 
 @app.route('/api/strategies/<strategy_name>/compare')

@@ -17,4 +17,6 @@ config/
 
 strategies_for_vip
 
+web/strategy_display_names.json
+
 *days_report.html

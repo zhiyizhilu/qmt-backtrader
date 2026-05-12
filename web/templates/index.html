@@ -20,6 +20,7 @@
         .metric-card:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.3); }
         .strategy-item { transition: all 0.15s; cursor: pointer; }
         .strategy-item:hover { background: #334155; }
+        .strategy-item:hover .edit-name-btn { opacity: 1; }
         .strategy-item.active { background: #1e40af; border-color: #3b82f6; }
         .run-item { transition: all 0.15s; cursor: pointer; }
         .run-item:hover { background: #334155; }
@@ -62,7 +63,7 @@
                     策略回测查看器
                 </h1>
             </div>
-            <div class="p-3 border-b border-slate-700">
+            <div class="p-3 border-b border-slate-700 flex-shrink-0">
                 <div class="text-xs text-slate-400 uppercase tracking-wider mb-2">策略列表</div>
                 <div v-if="loading" class="text-center py-4">
                     <div class="pulse text-slate-400">加载中...</div>
@@ -70,19 +71,76 @@
                 <div v-else-if="strategies.length === 0" class="text-center py-4 text-slate-500 text-sm">
                     未发现回测结果
                 </div>
-                <div v-else class="space-y-1">
-                    <div v-for="s in strategies" :key="s.name"
-                         class="strategy-item rounded-lg px-3 py-2.5 border border-transparent"
-                         :class="{ active: selectedStrategy === s.name }"
-                         @click="selectStrategy(s.name)">
-                        <div class="flex items-center justify-between">
-                            <span class="font-medium text-sm">{{ formatStrategyName(s.name) }}</span>
-                            <span class="text-xs px-2 py-0.5 rounded-full"
-                                  :class="s.source === 'strategies_for_vip' ? 'bg-amber-900/50 text-amber-300' : 'bg-slate-700 text-slate-300'">
-                                {{ s.source === 'strategies_for_vip' ? 'VIP' : '标准' }}
-                            </span>
+                <div v-else class="space-y-3">
+                    <!-- 标准策略 -->
+                    <div v-if="standardStrategies.length > 0">
+                        <div class="text-xs text-slate-500 font-medium mb-1.5 flex items-center gap-1.5">
+                            <span class="w-2 h-2 rounded-full bg-slate-500"></span>
+                            标准策略
                         </div>
-                        <div class="text-xs text-slate-400 mt-1">{{ s.run_count }} 次回测</div>
+                        <div class="space-y-1">
+                            <div v-for="s in standardStrategies" :key="s.name"
+                                 class="strategy-item rounded-lg px-3 py-2.5 border border-transparent group"
+                                 :class="{ active: selectedStrategy === s.name }"
+                                 @click="selectStrategy(s.name)">
+                                <div class="flex items-center justify-between">
+                                    <div class="flex items-center gap-1.5 min-w-0 flex-1" @dblclick.stop="startEditName(s)">
+                                        <span v-if="editingName !== s.name" class="font-medium text-sm truncate cursor-default">{{ s.display_name || formatStrategyName(s.name) }}</span>
+                                        <input v-else
+                                               v-model="editNameValue"
+                                               @blur="saveEditName(s)"
+                                               @keydown.enter="saveEditName(s)"
+                                               @keydown.escape="cancelEditName"
+                                               @click.stop
+                                               class="bg-slate-700 text-white text-sm px-1.5 py-0.5 rounded border border-blue-500 outline-none w-full"
+                                               ref="editNameInput" />
+                                        <button v-if="editingName !== s.name" @click.stop="startEditName(s)"
+                                                class="opacity-0 group-hover:opacity-100 transition-opacity text-slate-500 hover:text-slate-300 flex-shrink-0"
+                                                title="编辑名称">
+                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="text-xs text-slate-400 mt-1">{{ s.run_count }} 次回测</div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- VIP策略 -->
+                    <div v-if="vipStrategies.length > 0">
+                        <div class="text-xs text-amber-500/70 font-medium mb-1.5 flex items-center gap-1.5">
+                            <span class="w-2 h-2 rounded-full bg-amber-500"></span>
+                            VIP 策略
+                        </div>
+                        <div class="space-y-1">
+                            <div v-for="s in vipStrategies" :key="s.name"
+                                 class="strategy-item rounded-lg px-3 py-2.5 border border-transparent group"
+                                 :class="{ active: selectedStrategy === s.name }"
+                                 @click="selectStrategy(s.name)">
+                                <div class="flex items-center justify-between">
+                                    <div class="flex items-center gap-1.5 min-w-0 flex-1" @dblclick.stop="startEditName(s)">
+                                        <span v-if="editingName !== s.name" class="font-medium text-sm truncate cursor-default">{{ s.display_name || formatStrategyName(s.name) }}</span>
+                                        <input v-else
+                                               v-model="editNameValue"
+                                               @blur="saveEditName(s)"
+                                               @keydown.enter="saveEditName(s)"
+                                               @keydown.escape="cancelEditName"
+                                               @click.stop
+                                               class="bg-slate-700 text-white text-sm px-1.5 py-0.5 rounded border border-blue-500 outline-none w-full"
+                                               ref="editNameInput" />
+                                        <button v-if="editingName !== s.name" @click.stop="startEditName(s)"
+                                                class="opacity-0 group-hover:opacity-100 transition-opacity text-slate-500 hover:text-slate-300 flex-shrink-0"
+                                                title="编辑名称">
+                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="text-xs text-slate-400 mt-1">{{ s.run_count }} 次回测</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -130,7 +188,7 @@
                 <div class="flex-shrink-0 p-6 pb-0">
                     <div class="flex items-center justify-between mb-6">
                         <div>
-                            <h2 class="text-2xl font-bold text-white">{{ formatStrategyName(selectedStrategy) }}</h2>
+                            <h2 class="text-2xl font-bold text-white">{{ currentStrategyDisplayName }}</h2>
                             <p class="text-slate-400 text-sm mt-1" v-if="currentRun">
                                 回测周期: {{ currentRun.config?.start_date || '-' }} ~ {{ currentRun.config?.end_date || '-' }}
                             </p>
@@ -163,11 +221,14 @@
 
                 <div v-if="activeTab === 'code'" class="card p-6 mb-6 fade-in">
                     <div v-if="strategyCode" class="relative">
-                        <button @click="copyCode" class="absolute top-2 right-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                                :class="codeCopied ? 'bg-green-600 text-white' : 'bg-slate-600 text-slate-300 hover:bg-slate-500'"
-                                title="复制代码">
-                            {{ codeCopied ? '已复制' : '复制' }}
-                        </button>
+                        <div class="absolute top-2 right-2 flex items-center gap-2">
+                            <span class="text-xs text-slate-500 italic">此代码仅供备份参考，不可编辑</span>
+                            <button @click="copyCode" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                                    :class="codeCopied ? 'bg-green-600 text-white' : 'bg-slate-600 text-slate-300 hover:bg-slate-500'"
+                                    title="复制代码">
+                                {{ codeCopied ? '已复制' : '复制' }}
+                            </button>
+                        </div>
                         <div id="strategy-code-content">{{ strategyCode }}</div>
                     </div>
                     <div v-else class="text-center py-8 text-slate-500">
@@ -386,6 +447,8 @@ createApp({
         const strategyReadme = ref('');
         const strategyCode = ref('');
         const codeCopied = ref(false);
+        const editingName = ref(null);
+        const editNameValue = ref('');
 
         let equityChart = null;
         let drawdownChart = null;
@@ -415,6 +478,19 @@ createApp({
                 return [1, '...', total - 4, total - 3, total - 2, total - 1, total];
             }
             return [1, '...', current - 1, current, current + 1, '...', total];
+        });
+
+        const standardStrategies = computed(() =>
+            strategies.value.filter(s => s.source !== 'strategies_for_vip')
+        );
+
+        const vipStrategies = computed(() =>
+            strategies.value.filter(s => s.source === 'strategies_for_vip')
+        );
+
+        const currentStrategyDisplayName = computed(() => {
+            const s = strategies.value.find(s => s.name === selectedStrategy.value);
+            return s?.display_name || formatStrategyName(selectedStrategy.value);
         });
 
         function formatStrategyName(name) {
@@ -531,6 +607,38 @@ createApp({
             } catch (e) {
                 console.error('Failed to copy code:', e);
             }
+        }
+
+        async function startEditName(strategy) {
+            editingName.value = strategy.name;
+            editNameValue.value = strategy.display_name || formatStrategyName(strategy.name);
+            await nextTick();
+            const inputs = document.querySelectorAll('input[ref="editNameInput"]');
+            // Find the visible input
+            const input = document.querySelector('.strategy-item input.border-blue-500');
+            if (input) input.focus();
+        }
+
+        async function saveEditName(strategy) {
+            if (editingName.value !== strategy.name) return;
+            const newName = editNameValue.value.trim();
+            if (newName && newName !== strategy.display_name) {
+                try {
+                    await fetch(`/api/strategies/${strategy.name}/display_name`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ display_name: newName }),
+                    });
+                    strategy.display_name = newName;
+                } catch (e) {
+                    console.error('Failed to update display name:', e);
+                }
+            }
+            editingName.value = null;
+        }
+
+        function cancelEditName() {
+            editingName.value = null;
         }
 
         async function selectStrategy(name) {
@@ -916,8 +1024,11 @@ createApp({
             loading, activeTab, tradePage, tradePageSize, totalTradePages, paginatedTrades, visibleTradePages,
             strategyReadme,
             strategyCode, codeCopied,
+            standardStrategies, vipStrategies, currentStrategyDisplayName,
+            editingName, editNameValue,
             formatStrategyName, formatTimestamp, formatPercent, formatNum, formatMoney,
             calcWinRate, selectStrategy, selectRun, deleteRun, switchTab, copyCode,
+            startEditName, saveEditName, cancelEditName,
         };
     }
 }).mount('#app');
