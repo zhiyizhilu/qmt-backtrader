@@ -7,6 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
     <style>
         [v-cloak] { display: none; }
         body { background: #0f172a; color: #e2e8f0; }
@@ -31,6 +32,21 @@
         .tab-btn.active { background: #3b82f6; color: white; }
         .pulse { animation: pulse 2s infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        #readme-content h1 { font-size: 1.5rem; font-weight: 700; margin: 1.5rem 0 0.75rem; color: #f8fafc; }
+        #readme-content h2 { font-size: 1.25rem; font-weight: 600; margin: 1.25rem 0 0.5rem; color: #e2e8f0; border-bottom: 1px solid #334155; padding-bottom: 0.25rem; }
+        #readme-content h3 { font-size: 1.1rem; font-weight: 600; margin: 1rem 0 0.5rem; color: #cbd5e1; }
+        #readme-content p { margin: 0.5rem 0; line-height: 1.6; }
+        #readme-content ul, #readme-content ol { margin: 0.5rem 0; padding-left: 1.5rem; }
+        #readme-content li { margin: 0.25rem 0; }
+        #readme-content code { background: #0f172a; padding: 0.15rem 0.35rem; border-radius: 4px; font-size: 0.85em; color: #f472b6; }
+        #readme-content pre { background: #0f172a; padding: 0.75rem; border-radius: 8px; overflow-x: auto; margin: 0.75rem 0; }
+        #readme-content pre code { background: transparent; padding: 0; color: #e2e8f0; }
+        #readme-content table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.85rem; }
+        #readme-content th, #readme-content td { border: 1px solid #334155; padding: 0.4rem 0.6rem; text-align: left; }
+        #readme-content th { background: #1e293b; font-weight: 600; color: #94a3b8; }
+        #readme-content tr:nth-child(even) { background: #1e293b; }
+        #readme-content blockquote { border-left: 3px solid #3b82f6; padding-left: 0.75rem; margin: 0.75rem 0; color: #94a3b8; }
+        #readme-content a { color: #60a5fa; text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -126,7 +142,23 @@
                                 :class="activeTab === 'compare' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
                             对比
                         </button>
+                        <button @click="toggleReadme()" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
+                                :class="showReadme ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
+                            策略逻辑
+                        </button>
                     </div>
+                </div>
+
+                <div v-if="showReadme && strategyReadme" class="card p-6 mb-6 fade-in">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-lg font-semibold text-white">策略逻辑</h3>
+                        <button @click="showReadme = false" class="text-slate-400 hover:text-white">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div id="readme-content" class="prose prose-invert prose-sm max-w-none text-slate-300"></div>
                 </div>
 
                 <div v-if="activeTab === 'detail' && currentRun">
@@ -336,6 +368,8 @@ createApp({
         const activeTab = ref('detail');
         const tradePage = ref(1);
         const tradePageSize = 50;
+        const strategyReadme = ref('');
+        const showReadme = ref(false);
 
         let equityChart = null;
         let drawdownChart = null;
@@ -445,10 +479,38 @@ createApp({
             }
         }
 
+        async function loadReadme(name) {
+            try {
+                const res = await fetch(`/api/strategies/${name}/readme`);
+                const data = await res.json();
+                strategyReadme.value = data.content || '';
+                if (showReadme.value && strategyReadme.value) {
+                    await nextTick();
+                    const el = document.getElementById('readme-content');
+                    if (el) el.innerHTML = marked.parse(strategyReadme.value);
+                }
+            } catch (e) {
+                console.error('Failed to fetch readme:', e);
+                strategyReadme.value = '';
+            }
+        }
+
+        function toggleReadme() {
+            showReadme.value = !showReadme.value;
+            if (showReadme.value && strategyReadme.value) {
+                nextTick(() => {
+                    const el = document.getElementById('readme-content');
+                    if (el) el.innerHTML = marked.parse(strategyReadme.value);
+                });
+            }
+        }
+
         async function selectStrategy(name) {
             selectedStrategy.value = name;
             selectedRunId.value = null;
             currentRun.value = null;
+            showReadme.value = false;
+            strategyReadme.value = '';
             try {
                 const res = await fetch(`/api/strategies/${name}/runs`);
                 runs.value = await res.json();
@@ -459,6 +521,7 @@ createApp({
                 console.error('Failed to fetch runs:', e);
                 runs.value = [];
             }
+            loadReadme(name);
         }
 
         async function selectRun(runId) {
@@ -816,8 +879,9 @@ createApp({
         return {
             strategies, selectedStrategy, runs, selectedRunId, currentRun,
             loading, activeTab, tradePage, tradePageSize, totalTradePages, paginatedTrades, visibleTradePages,
+            strategyReadme, showReadme,
             formatStrategyName, formatTimestamp, formatPercent, formatNum, formatMoney,
-            calcWinRate, selectStrategy, selectRun, deleteRun,
+            calcWinRate, selectStrategy, selectRun, deleteRun, toggleReadme,
         };
     }
 }).mount('#app');

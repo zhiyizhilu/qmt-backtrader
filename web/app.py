@@ -163,6 +163,23 @@ def api_delete_run(strategy_name, run_id):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/strategies/<strategy_name>/readme')
+def api_strategy_readme(strategy_name):
+    strategy_path = _find_strategy_dir(strategy_name)
+    if not strategy_path:
+        return jsonify({'error': f'Strategy "{strategy_name}" not found'}), 404
+    for fname in ['readme.md', 'README.md', 'Readme.md']:
+        readme_path = os.path.join(strategy_path, fname)
+        if os.path.exists(readme_path):
+            try:
+                with open(readme_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                return jsonify({'content': content})
+            except (IOError, UnicodeDecodeError) as e:
+                return jsonify({'error': str(e)}), 500
+    return jsonify({'content': ''})
+
+
 @app.route('/api/strategies/<strategy_name>/compare')
 def api_strategy_compare(strategy_name):
     strategy_path = _find_strategy_dir(strategy_name)
