@@ -471,24 +471,23 @@ createApp({
             const ec = currentRun.value.equity_curve || [];
             const bc = currentRun.value.benchmark_curve || [];
 
-            const dates = ec.map(d => d.date);
-            const portfolioValues = ec.map(d => d.portfolio_value);
-            const pnlValues = ec.map(d => d.pnl);
-
             const initialCapital = currentRun.value.metrics?.initial_capital || 1;
-            const portfolioNorm = portfolioValues.map(v => (v / initialCapital * 1000).toFixed(2));
 
-            let benchmarkNorm = [];
-            if (bc.length > 0) {
-                const baseClose = bc[0].close || 1;
-                benchmarkNorm = bc.map(d => (d.close / baseClose * 1000).toFixed(2));
-            }
+            const ecStartDate = ec.length > 0 ? ec[0].date : null;
+            const ecEndDate = ec.length > 0 ? ec[ec.length - 1].date : null;
+
+            const bcFiltered = ecStartDate ? bc.filter(d => d.date >= ecStartDate) : bc;
+            const bcDateSet = new Set(bcFiltered.map(d => d.date));
+
+            const portfolioData = ec
+                .filter(d => bcDateSet.has(d.date))
+                .map(d => [d.date, +(d.portfolio_value / initialCapital * 1000).toFixed(2)]);
 
             const series = [
                 {
                     name: '策略净值',
                     type: 'line',
-                    data: portfolioNorm,
+                    data: portfolioData,
                     smooth: true,
                     lineStyle: { width: 2, color: '#3b82f6' },
                     itemStyle: { color: '#3b82f6' },
@@ -501,13 +500,13 @@ createApp({
                 },
             ];
 
-            const xData = dates;
-            if (benchmarkNorm.length > 0) {
-                const bDates = bc.map(d => d.date);
+            if (bcFiltered.length > 0) {
+                const baseClose = bcFiltered[0].close || 1;
+                const benchmarkData = bcFiltered.map(d => [d.date, +(d.close / baseClose * 1000).toFixed(2)]);
                 series.push({
                     name: '基准净值',
                     type: 'line',
-                    data: benchmarkNorm,
+                    data: benchmarkData,
                     smooth: true,
                     lineStyle: { width: 2, color: '#f59e0b', type: 'dashed' },
                     itemStyle: { color: '#f59e0b' },
@@ -522,9 +521,10 @@ createApp({
                     borderColor: '#334155',
                     textStyle: { color: '#e2e8f0', fontSize: 12 },
                     formatter: function(params) {
-                        let html = `<div style="font-weight:600;margin-bottom:4px">${params[0].axisValue}</div>`;
+                        const dateStr = params[0].axisValue;
+                        let html = '<div style="font-weight:600;margin-bottom:4px">' + dateStr + '</div>';
                         params.forEach(p => {
-                            html += `<div>${p.marker} ${p.seriesName}: <b>${Number(p.value).toFixed(2)}</b></div>`;
+                            html += '<div>' + p.marker + ' ' + p.seriesName + ': <b>' + Number(p.value[1]).toFixed(2) + '</b></div>';
                         });
                         return html;
                     }
@@ -536,10 +536,11 @@ createApp({
                 },
                 grid: { left: 60, right: 30, top: 40, bottom: 30 },
                 xAxis: {
-                    type: 'category',
-                    data: xData,
+                    type: 'time',
+                    min: ecStartDate,
+                    max: ecEndDate,
                     axisLine: { lineStyle: { color: '#334155' } },
-                    axisLabel: { color: '#64748b', fontSize: 10, rotate: 0, formatter: v => v.substring(0, 7) },
+                    axisLabel: { color: '#64748b', fontSize: 10, formatter: '{yyyy}-{MM}' },
                     splitLine: { show: false },
                 },
                 yAxis: {
@@ -570,13 +571,12 @@ createApp({
             const ec = currentRun.value.equity_curve || [];
             if (ec.length === 0) return;
 
-            const dates = ec.map(d => d.date);
             const values = ec.map(d => d.portfolio_value);
-            const drawdowns = [];
+            const drawdownData = [];
             let peak = values[0];
             for (let i = 0; i < values.length; i++) {
                 if (values[i] > peak) peak = values[i];
-                drawdowns.push(((values[i] - peak) / peak * 100).toFixed(2));
+                drawdownData.push([ec[i].date, +((values[i] - peak) / peak * 100).toFixed(2)]);
             }
 
             drawdownChart.setOption({
@@ -587,16 +587,16 @@ createApp({
                     borderColor: '#334155',
                     textStyle: { color: '#e2e8f0', fontSize: 12 },
                     formatter: function(params) {
-                        return `<div style="font-weight:600;margin-bottom:4px">${params[0].axisValue}</div>
-                                <div>${params[0].marker} 回撤: <b style="color:#f87171">${params[0].value}%</b></div>`;
+                        const dateStr = params[0].axisValue;
+                        return '<div style="font-weight:600;margin-bottom:4px">' + dateStr + '</div>' +
+                               '<div>' + params[0].marker + ' 回撤: <b style="color:#f87171">' + params[0].value[1] + '%</b></div>';
                     }
                 },
                 grid: { left: 60, right: 30, top: 20, bottom: 30 },
                 xAxis: {
-                    type: 'category',
-                    data: dates,
+                    type: 'time',
                     axisLine: { lineStyle: { color: '#334155' } },
-                    axisLabel: { color: '#64748b', fontSize: 10, formatter: v => v.substring(0, 7) },
+                    axisLabel: { color: '#64748b', fontSize: 10, formatter: '{yyyy}-{MM}' },
                     splitLine: { show: false },
                 },
                 yAxis: {
@@ -607,7 +607,7 @@ createApp({
                 },
                 series: [{
                     type: 'line',
-                    data: drawdowns,
+                    data: drawdownData,
                     lineStyle: { width: 1.5, color: '#f87171' },
                     itemStyle: { color: '#f87171' },
                     areaStyle: {
