@@ -590,7 +590,7 @@ createApp({
                 compareChart = echarts.init(el, 'dark');
             }
 
-            const labels = runs.value.map(r => formatTimestamp(r.timestamp).substring(0, 10));
+            const labels = runs.value.map((r, i) => `${formatTimestamp(r.timestamp).substring(0, 19)}`);
             const sharpeData = runs.value.map(r => r.sharpe_ratio);
             const returnData = runs.value.map(r => r.total_return_pct);
             const drawdownData = runs.value.map(r => r.max_drawdown_pct);
@@ -602,6 +602,16 @@ createApp({
                     backgroundColor: '#1e293b',
                     borderColor: '#334155',
                     textStyle: { color: '#e2e8f0', fontSize: 12 },
+                    formatter: function(params) {
+                        const idx = params[0].dataIndex;
+                        const run = runs.value[idx];
+                        let html = `<div style="font-weight:600;margin-bottom:4px">${formatTimestamp(run.timestamp)}</div>`;
+                        params.forEach(p => {
+                            const val = Number(p.value).toFixed(4);
+                            html += `<div>${p.marker} ${p.seriesName}: <b>${val}</b></div>`;
+                        });
+                        return html;
+                    }
                 },
                 legend: {
                     data: ['夏普比率', '总收益率(%)', '最大回撤(%)'],
@@ -635,6 +645,7 @@ createApp({
                     {
                         name: '夏普比率',
                         type: 'bar',
+                        yAxisIndex: 1,
                         data: sharpeData,
                         itemStyle: { color: '#3b82f6', borderRadius: [4, 4, 0, 0] },
                     },
@@ -660,6 +671,10 @@ createApp({
             if (tab === 'compare') {
                 await nextTick();
                 renderCompareChart();
+            } else if (tab === 'detail') {
+                await nextTick();
+                renderEquityChart();
+                renderDrawdownChart();
             }
         });
 
