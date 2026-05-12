@@ -146,6 +146,9 @@ class BacktestRecorder:
         equity_curve = _serialize_equity_curve(result.df)
         benchmark_curve = _serialize_benchmark_curve(result.benchmark_df)
 
+        # 读取策略代码
+        strategy_code = _read_strategy_code(strategy_name)
+
         data = {
             'meta': {
                 'run_id': run_id,
@@ -155,6 +158,7 @@ class BacktestRecorder:
             },
             'config': config or {},
             'strategy_params': _make_json_safe(result.strategy_params),
+            'strategy_code': strategy_code,
             'metrics': metrics,
             'trade_log': trade_log,
             'equity_curve': equity_curve,
@@ -298,3 +302,31 @@ def _make_json_safe(obj: Any) -> Any:
     if isinstance(obj, set):
         return list(obj)
     return str(obj)
+
+
+def _read_strategy_code(strategy_name: str) -> str:
+    """读取策略目录下的策略代码文件内容"""
+    try:
+        from strategies import get_strategy_dir
+        strategy_dir = get_strategy_dir(strategy_name)
+        if not strategy_dir:
+            return ''
+        # 在策略目录下查找同名的 .py 文件
+        for fname in os.listdir(strategy_dir):
+            if fname.endswith('.py') and not fname.startswith('_'):
+                # 优先匹配与策略名相关的文件
+                normalized = fname.replace('_', '').lower()
+                name_normalized = strategy_name.replace('_', '').lower()
+                if name_normalized in normalized:
+                    fpath = os.path.join(strategy_dir, fname)
+                    with open(fpath, 'r', encoding='utf-8') as f:
+                        return f.read()
+        # 回退：返回目录下第一个非 __init__.py 的 .py 文件
+        for fname in sorted(os.listdir(strategy_dir)):
+            if fname.endswith('.py') and fname != '__init__.py' and not fname.startswith('_'):
+                fpath = os.path.join(strategy_dir, fname)
+                with open(fpath, 'r', encoding='utf-8') as f:
+                    return f.read()
+    except Exception:
+        pass
+    return ''

@@ -47,6 +47,7 @@
         #readme-content tr:nth-child(even) { background: #1e293b; }
         #readme-content blockquote { border-left: 3px solid #3b82f6; padding-left: 0.75rem; margin: 0.75rem 0; color: #94a3b8; }
         #readme-content a { color: #60a5fa; text-decoration: underline; }
+        #strategy-code-content { font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 0.82rem; line-height: 1.55; tab-size: 4; white-space: pre; overflow-x: auto; color: #e2e8f0; }
     </style>
 </head>
 <body>
@@ -147,6 +148,10 @@
                                     :class="activeTab === 'readme' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
                                 策略逻辑
                             </button>
+                            <button @click="switchTab('code')" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
+                                    :class="activeTab === 'code' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
+                                策略代码
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -154,6 +159,21 @@
 
                 <div v-if="activeTab === 'readme' && strategyReadme" class="card p-6 mb-6 fade-in">
                     <div id="readme-content" class="prose prose-invert prose-sm max-w-none text-slate-300"></div>
+                </div>
+
+                <div v-if="activeTab === 'code'" class="card p-6 mb-6 fade-in">
+                    <div v-if="strategyCode" class="relative">
+                        <button @click="copyCode" class="absolute top-2 right-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                                :class="codeCopied ? 'bg-green-600 text-white' : 'bg-slate-600 text-slate-300 hover:bg-slate-500'"
+                                title="复制代码">
+                            {{ codeCopied ? '已复制' : '复制' }}
+                        </button>
+                        <div id="strategy-code-content">{{ strategyCode }}</div>
+                    </div>
+                    <div v-else class="text-center py-8 text-slate-500">
+                        <p>该回测记录未包含策略代码</p>
+                        <p class="text-xs mt-1">仅新版回测结果包含策略代码信息</p>
+                    </div>
                 </div>
 
                 <div v-if="activeTab === 'detail' && currentRun">
@@ -364,6 +384,8 @@ createApp({
         const tradePage = ref(1);
         const tradePageSize = 50;
         const strategyReadme = ref('');
+        const strategyCode = ref('');
+        const codeCopied = ref(false);
 
         let equityChart = null;
         let drawdownChart = null;
@@ -495,6 +517,19 @@ createApp({
                 await nextTick();
                 const el = document.getElementById('readme-content');
                 if (el) el.innerHTML = marked.parse(strategyReadme.value);
+            } else if (tab === 'code') {
+                strategyCode.value = currentRun.value?.strategy_code || '';
+            }
+        }
+
+        async function copyCode() {
+            if (!strategyCode.value) return;
+            try {
+                await navigator.clipboard.writeText(strategyCode.value);
+                codeCopied.value = true;
+                setTimeout(() => { codeCopied.value = false; }, 2000);
+            } catch (e) {
+                console.error('Failed to copy code:', e);
             }
         }
 
@@ -504,6 +539,7 @@ createApp({
             currentRun.value = null;
             activeTab.value = 'detail';
             strategyReadme.value = '';
+            strategyCode.value = '';
             try {
                 const res = await fetch(`/api/strategies/${name}/runs`);
                 runs.value = await res.json();
@@ -861,6 +897,8 @@ createApp({
                 await nextTick();
                 const el = document.getElementById('readme-content');
                 if (el) el.innerHTML = marked.parse(strategyReadme.value);
+            } else if (tab === 'code') {
+                strategyCode.value = currentRun.value?.strategy_code || '';
             }
         });
 
@@ -877,8 +915,9 @@ createApp({
             strategies, selectedStrategy, runs, selectedRunId, currentRun,
             loading, activeTab, tradePage, tradePageSize, totalTradePages, paginatedTrades, visibleTradePages,
             strategyReadme,
+            strategyCode, codeCopied,
             formatStrategyName, formatTimestamp, formatPercent, formatNum, formatMoney,
-            calcWinRate, selectStrategy, selectRun, deleteRun, switchTab,
+            calcWinRate, selectStrategy, selectRun, deleteRun, switchTab, copyCode,
         };
     }
 }).mount('#app');
