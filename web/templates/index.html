@@ -595,6 +595,30 @@ createApp({
             const returnData = runs.value.map(r => r.total_return_pct);
             const drawdownData = runs.value.map(r => r.max_drawdown_pct);
 
+            const sharpeMin = Math.min(...sharpeData, 0);
+            const sharpeMax = Math.max(...sharpeData, 0);
+            const pctValues = [...returnData, ...drawdownData];
+            const pctMin = Math.min(...pctValues, 0);
+            const pctMax = Math.max(...pctValues, 0);
+
+            const sharpeRange = sharpeMax - sharpeMin;
+            const pctRange = pctMax - pctMin;
+            let sharpeMinAlign = sharpeMin;
+            let sharpeMaxAlign = sharpeMax;
+            let pctMinAlign = pctMin;
+            let pctMaxAlign = pctMax;
+            if (sharpeRange > 0 && pctRange > 0) {
+                const sharpeZeroRatio = (0 - sharpeMin) / sharpeRange;
+                const pctZeroRatio = (0 - pctMin) / pctRange;
+                if (sharpeZeroRatio > pctZeroRatio) {
+                    const targetPctMin = 0 - pctMax * sharpeZeroRatio / (1 - sharpeZeroRatio);
+                    pctMinAlign = Math.min(pctMin, targetPctMin);
+                } else if (pctZeroRatio > sharpeZeroRatio) {
+                    const targetSharpeMin = 0 - sharpeMax * pctZeroRatio / (1 - pctZeroRatio);
+                    sharpeMinAlign = Math.min(sharpeMin, targetSharpeMin);
+                }
+            }
+
             compareChart.setOption({
                 backgroundColor: 'transparent',
                 tooltip: {
@@ -629,6 +653,8 @@ createApp({
                     {
                         type: 'value',
                         name: '夏普比率',
+                        min: sharpeMinAlign,
+                        max: sharpeMaxAlign,
                         axisLine: { lineStyle: { color: '#334155' } },
                         axisLabel: { color: '#64748b', fontSize: 10 },
                         splitLine: { lineStyle: { color: '#1e293b' } },
@@ -636,6 +662,8 @@ createApp({
                     {
                         type: 'value',
                         name: '%',
+                        min: pctMinAlign,
+                        max: pctMaxAlign,
                         axisLine: { lineStyle: { color: '#334155' } },
                         axisLabel: { color: '#64748b', fontSize: 10 },
                         splitLine: { show: false },
@@ -645,7 +673,7 @@ createApp({
                     {
                         name: '夏普比率',
                         type: 'bar',
-                        yAxisIndex: 1,
+                        yAxisIndex: 0,
                         data: sharpeData,
                         itemStyle: { color: '#3b82f6', borderRadius: [4, 4, 0, 0] },
                     },
