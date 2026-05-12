@@ -114,8 +114,8 @@
             </div>
         </aside>
 
-        <main class="flex-1 overflow-y-auto">
-            <div v-if="!selectedStrategy" class="flex items-center justify-center h-full">
+        <main class="flex-1 flex flex-col overflow-hidden">
+            <div v-if="!selectedStrategy" class="flex-1 overflow-y-auto flex items-center justify-center">
                 <div class="text-center">
                     <svg class="w-16 h-16 text-slate-600 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
@@ -125,29 +125,32 @@
                 </div>
             </div>
 
-            <div v-else class="p-6 fade-in" :key="selectedRunId">
-                <div class="flex items-center justify-between mb-6">
-                    <div>
-                        <h2 class="text-2xl font-bold text-white">{{ formatStrategyName(selectedStrategy) }}</h2>
-                        <p class="text-slate-400 text-sm mt-1" v-if="currentRun">
-                            回测周期: {{ currentRun.config?.start_date || '-' }} ~ {{ currentRun.config?.end_date || '-' }}
-                        </p>
-                    </div>
-                    <div class="flex gap-2">
-                        <button @click="activeTab = 'detail'" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
-                                :class="activeTab === 'detail' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
-                            详情
-                        </button>
-                        <button @click="activeTab = 'compare'" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
-                                :class="activeTab === 'compare' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
-                            对比
-                        </button>
-                        <button @click="toggleReadme()" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
-                                :class="showReadme ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
-                            策略逻辑
-                        </button>
+            <div v-else class="flex flex-col h-full">
+                <div class="flex-shrink-0 p-6 pb-0">
+                    <div class="flex items-center justify-between mb-6">
+                        <div>
+                            <h2 class="text-2xl font-bold text-white">{{ formatStrategyName(selectedStrategy) }}</h2>
+                            <p class="text-slate-400 text-sm mt-1" v-if="currentRun">
+                                回测周期: {{ currentRun.config?.start_date || '-' }} ~ {{ currentRun.config?.end_date || '-' }}
+                            </p>
+                        </div>
+                        <div class="flex gap-2">
+                            <button @click="activeTab = 'detail'" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
+                                    :class="activeTab === 'detail' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
+                                详情
+                            </button>
+                            <button @click="activeTab = 'compare'" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
+                                    :class="activeTab === 'compare' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
+                                对比
+                            </button>
+                            <button @click="toggleReadme()" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
+                                    :class="showReadme ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
+                                策略逻辑
+                            </button>
+                        </div>
                     </div>
                 </div>
+                <div class="flex-1 overflow-y-auto px-6 pb-6 fade-in" :key="selectedRunId">
 
                 <div v-if="showReadme && strategyReadme" class="card p-6 mb-6 fade-in">
                     <div class="flex items-center justify-between mb-4">
