@@ -14,6 +14,7 @@
 - **策略模板**：内置高股息策略、小市值策略等
 - **参数优化**：支持网格搜索 + 策略优化工作流（自动提出优化建议、独立回测、筛选有效改进）
 - **可视化**：提供基于 PyQt5 的回测结果展示、基于 Plotly 的 HTML 可视化报告、基于 Dash 的实时监控
+- **Web 查看器**：基于 Flask + Vue3 + ECharts 的策略回测结果 Web 查看器，支持策略浏览、回测对比、权益曲线/回撤曲线可视化、策略逻辑与代码查看
 - **选股策略**：支持基于基本面的股票选择策略，行业分散配置
 - **防未来数据**：财务数据按公告日期索引，回测时只使用已披露数据
 - **自动对账**：每日开盘前自动校验虚拟簿记与账户实际状态的一致性，偏差自动校准
@@ -32,6 +33,7 @@ qmt_backtrader/
 ├── download_financial_data.py   # 财务数据预下载脚本（批量下载 + 缓存预热）
 ├── read_parquet.py              # Parquet 缓存文件查看工具
 ├── clean_old_logs.bat           # 清理过期日志文件脚本
+├── start_web.bat                # 启动 Web 回测查看器脚本
 ├── 码上生财.jpg                  # 作者微信二维码
 ├── .cache/                      # 数据缓存目录（自动创建）
 │   └── JQData/                  # 聚宽下载的历史数据
@@ -104,15 +106,19 @@ qmt_backtrader/
 │           └── optimization_results/   # 优化回测结果
 ├── backtest_results/            # 全局回测结果目录
 │   └── index.json               # 回测结果索引
-└── utils/                       # 工具函数
-    ├── __init__.py
-    ├── backtest_recorder.py     # 回测结果记录与管理（JSON + HTML 报告）
-    ├── logger.py                # 日志管理（支持策略实例隔离）
-    ├── parameter_optimizer.py   # 参数优化工具（网格搜索）
-    ├── plotly_templates.py      # Plotly 图表模板（净值曲线、回撤、指标对比）
-    ├── report.py                # 报告生成（PyQt5 可视化）
-    ├── report_generator.py      # HTML 报告生成（Plotly 可视化）
-    └── visualization.py         # 可视化工具（Matplotlib/Plotly）
+├── utils/                       # 工具函数
+│   ├── __init__.py
+│   ├── backtest_recorder.py     # 回测结果记录与管理（JSON + HTML 报告）
+│   ├── logger.py                # 日志管理（支持策略实例隔离）
+│   ├── parameter_optimizer.py   # 参数优化工具（网格搜索）
+│   ├── plotly_templates.py      # Plotly 图表模板（净值曲线、回撤、指标对比）
+│   ├── report.py                # 报告生成（PyQt5 可视化）
+│   ├── report_generator.py      # HTML 报告生成（Plotly 可视化）
+│   └── visualization.py         # 可视化工具（Matplotlib/Plotly）
+└── web/                         # Web 回测查看器
+    ├── app.py                   # Flask 后端（策略发现、回测数据 API）
+    └── templates/
+        └── index.html           # Vue3 + ECharts 前端单页应用
 ```
 
 ## 环境搭建
@@ -249,6 +255,38 @@ python read_parquet.py
 ```bash
 clean_old_logs.bat
 ```
+
+### 6. Web 回测查看器
+
+框架提供了基于 Flask + Vue3 + ECharts 的 Web 界面，用于浏览和对比策略回测结果。
+
+**启动方式：**
+
+方式一：双击批处理文件
+```bash
+start_web.bat
+```
+
+方式二：命令行启动
+```bash
+cd web
+python app.py
+```
+
+启动后浏览器访问 **http://localhost:5000** 即可使用。
+
+**功能说明：**
+
+| 功能 | 说明 |
+|------|------|
+| 策略列表 | 自动发现 `strategies/` 和 `strategies_for_vip/` 下含回测结果的策略，按标准/VIP 分组显示 |
+| 回测记录 | 按时间倒序列出同一策略的所有回测记录，显示收益率和夏普比率 |
+| 详情查看 | 查看单次回测的核心指标（总收益率、年化收益率、夏普比率、最大回撤、胜率等）、权益曲线、回撤曲线、交易日志 |
+| 多次对比 | 对比同一策略多次回测的夏普比率、收益率、最大回撤柱状图 |
+| 策略逻辑 | 查看策略的 README 文档（Markdown 渲染） |
+| 策略代码 | 查看回测时保存的策略源代码（仅新版回测结果包含） |
+| 自定义名称 | 双击策略名或点击编辑按钮可修改策略显示名称 |
+| 删除记录 | 鼠标悬停回测记录可删除指定回测结果 |
 
 ## 架构设计
 
@@ -949,7 +987,7 @@ python read_parquet.py
 - [x] 数据预下载脚本（行情 + 财务）
 - [ ] 支持更多交易接口（如 tushare、yahoo 等）
 - [ ] 增加深度学习模型集成
-- [ ] 开发 Web 界面
+- [x] Web 回测查看器（Flask + Vue3 + ECharts）
 - [ ] 实现分布式回测和交易
 - [ ] 增加更多因子和策略模板
 - [ ] 优化回测性能
