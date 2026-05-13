@@ -55,6 +55,7 @@ class StockSelectionStrategy(StrategyLogic):
     REBALANCE_FREQ_BIWEEKLY = 'biweekly'
     REBALANCE_FREQ_MONTHLY = 'monthly'
     REBALANCE_FREQ_QUARTERLY = 'quarterly'
+    REBALANCE_FREQ_DAILY = 'daily'
 
     PHASE_IDLE = 0
     PHASE_SELLING = 1
@@ -157,6 +158,8 @@ class StockSelectionStrategy(StrategyLogic):
                 quarter_last = (self._last_rebalance_date.month - 1) // 3
                 return quarter_current != quarter_last
             return False
+        elif freq == self.REBALANCE_FREQ_DAILY:
+            return current_date > self._last_rebalance_date
 
         return False
 

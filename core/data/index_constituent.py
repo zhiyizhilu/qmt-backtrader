@@ -35,6 +35,7 @@ class IndexConstituentManager:
         '中证500': '000905.SH',
         '中证1000': '000852.SH',
         '上证50': '000016.SH',
+        '中小综指': '399101.SZ',
     }
 
     INDEX_TO_SECTOR = {v: k for k, v in SECTOR_TO_INDEX.items()}

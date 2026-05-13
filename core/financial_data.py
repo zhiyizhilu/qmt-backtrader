@@ -100,8 +100,6 @@ class FinancialDataCache:
             end_time: 加载结束时间（空则使用默认 self._end_time）
         """
         if (stock_code, table_name) in self._loaded_tables:
-            loaded_status = self._loaded_tables[(stock_code, table_name)]
-            self.logger.debug(f"[加载跳过] {stock_code}.{table_name} 已尝试加载，状态: {loaded_status}")
             return
 
         with self._lock:
@@ -126,7 +124,6 @@ class FinancialDataCache:
             self._loaded_tables[(stock_code, table_name)] = False
             if stock_code not in self._data:
                 self._data[stock_code] = {}
-            self.logger.debug(f"[加载跳过] {stock_code}.{table_name} 已标记为无数据(黑名单)")
             return
 
         effective_start_time = start_time if start_time else self._start_time
