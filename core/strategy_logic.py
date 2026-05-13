@@ -203,6 +203,8 @@ class StrategyLogic:
         self._today_buys: Dict[str, int] = {}
         self._current_trade_date = None
         self._t_plus_1_overrides: Dict[str, bool] = {}
+        self._unadjusted_price_cache: Dict[str, float] = {}
+        self._unadjusted_price_cache_date: Optional[dt_module.date] = None
 
     def set_data_adapter(self, adapter: MarketDataAdapter) -> None:
         """设置数据适配器"""
@@ -473,11 +475,30 @@ class StrategyLogic:
         回测模式下通过 data_processor 获取不复权行情数据，
         实盘模式下与 get_current_price 一致（实盘价格本身就是实际价格）。
 
+        同一天同一股票的结果会被缓存，避免重复磁盘IO。
+
         Returns:
             不复权价格，无法获取时返回 None
         """
+        current_date = self.get_current_date()
+
+        if current_date != self._unadjusted_price_cache_date:
+            self._unadjusted_price_cache.clear()
+            self._unadjusted_price_cache_date = current_date
+
+        if symbol in self._unadjusted_price_cache:
+            return self._unadjusted_price_cache[symbol]
+
+        result = self._get_unadjusted_price_uncached(symbol, current_date)
+
+        if result is not None and result > 0:
+            self._unadjusted_price_cache[symbol] = result
+
+        return result
+
+    def _get_unadjusted_price_uncached(self, symbol: str, current_date) -> Optional[float]:
+        """获取不复权价格的底层实现（无缓存）"""
         if self._data_processor is not None and hasattr(self._data_processor, 'get_raw_data'):
-            current_date = self.get_current_date()
             if current_date is None:
                 return self.get_current_price(symbol)
 
@@ -489,7 +510,6 @@ class StrategyLogic:
                     if price > 0:
                         return price
             except Exception as e:
-                # FutuServiceError 需要向上传播以终止回测
                 from core.data.futu import FutuServiceError
                 if isinstance(e, FutuServiceError):
                     raise

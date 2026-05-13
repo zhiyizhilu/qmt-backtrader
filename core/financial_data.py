@@ -439,7 +439,7 @@ class FinancialDataCache:
                 )
                 return None
 
-        mask = table_df.index.date < date
+        mask = table_df.index < pd.Timestamp(date)
         available = table_df[mask]
 
         if available.empty:
@@ -597,7 +597,7 @@ class FinancialDataCache:
             self.preload_stock(stock_code, tables, extended_start_time, extended_end_time)
             return stock_code
 
-        max_workers = min(2, len(stock_list))
+        max_workers = min(8, len(stock_list))
         if max_workers <= 1 or len(stock_list) <= 10:
             for stock_code in stock_list:
                 self.preload_stock(stock_code, tables, extended_start_time, extended_end_time)
