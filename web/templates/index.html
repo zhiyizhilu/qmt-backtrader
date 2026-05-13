@@ -756,7 +756,7 @@ createApp({
 
             const portfolioData = ec
                 .filter(d => bcDateSet.has(d.date))
-                .map(d => [d.date, +(d.portfolio_value / initialCapital * 1000).toFixed(2)]);
+                .map(d => [d.date, +(d.portfolio_value / initialCapital).toFixed(4)]);
 
             const series = [
                 {
@@ -777,7 +777,7 @@ createApp({
 
             if (bcFiltered.length > 0) {
                 const baseClose = bcFiltered[0].close || 1;
-                const benchmarkData = bcFiltered.map(d => [d.date, +(d.close / baseClose * 1000).toFixed(2)]);
+                const benchmarkData = bcFiltered.map(d => [d.date, +(d.close / baseClose).toFixed(4)]);
                 series.push({
                     name: '基准净值',
                     type: 'line',
