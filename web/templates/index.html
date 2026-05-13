@@ -18,6 +18,10 @@
         .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; }
         .metric-card { transition: transform 0.2s, box-shadow 0.2s; }
         .metric-card:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.3); }
+        .collapse-toggle { cursor: pointer; user-select: none; transition: transform 0.2s; display: inline-block; }
+        .collapse-toggle.collapsed { transform: rotate(-90deg); }
+        .collapse-content { overflow: hidden; transition: max-height 0.25s ease, opacity 0.2s ease; }
+        .collapse-content.collapsed { max-height: 0 !important; opacity: 0; }
         .strategy-item { transition: all 0.15s; cursor: pointer; }
         .strategy-item:hover { background: #334155; }
         .strategy-item:hover .edit-name-btn { opacity: 1; }
@@ -64,7 +68,12 @@
                 </h1>
             </div>
             <div class="p-3 border-b border-slate-700 flex-shrink-0">
-                <div class="text-xs text-slate-400 uppercase tracking-wider mb-2">策略列表</div>
+                <div class="text-xs text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5 cursor-pointer select-none"
+                     @click="collapsedAll = !collapsedAll">
+                    <span class="collapse-toggle" :class="{ collapsed: collapsedAll }">▼</span>
+                    策略列表
+                </div>
+                <div class="collapse-content" :class="{ collapsed: collapsedAll }" :style="{ maxHeight: collapsedAll ? '0' : '2000px' }">
                 <div v-if="loading" class="text-center py-4">
                     <div class="pulse text-slate-400">加载中...</div>
                 </div>
@@ -74,10 +83,13 @@
                 <div v-else class="space-y-3">
                     <!-- 标准策略 -->
                     <div v-if="standardStrategies.length > 0">
-                        <div class="text-xs text-slate-500 font-medium mb-1.5 flex items-center gap-1.5">
+                        <div class="text-xs text-slate-500 font-medium mb-1.5 flex items-center gap-1.5 cursor-pointer select-none"
+                             @click="collapsedStandard = !collapsedStandard">
+                            <span class="collapse-toggle" :class="{ collapsed: collapsedStandard }">▼</span>
                             <span class="w-2 h-2 rounded-full bg-slate-500"></span>
                             标准策略
                         </div>
+                        <div class="collapse-content" :class="{ collapsed: collapsedStandard }" :style="{ maxHeight: collapsedStandard ? '0' : '2000px' }">
                         <div class="space-y-1">
                             <div v-for="s in standardStrategies" :key="s.name"
                                  class="strategy-item rounded-lg px-3 py-2.5 border border-transparent group"
@@ -106,13 +118,17 @@
                                 <div class="text-xs text-slate-400 mt-1">{{ s.run_count }} 次回测</div>
                             </div>
                         </div>
+                        </div>
                     </div>
                     <!-- VIP策略 -->
                     <div v-if="vipStrategies.length > 0">
-                        <div class="text-xs text-amber-500/70 font-medium mb-1.5 flex items-center gap-1.5">
+                        <div class="text-xs text-amber-500/70 font-medium mb-1.5 flex items-center gap-1.5 cursor-pointer select-none"
+                             @click="collapsedVip = !collapsedVip">
+                            <span class="collapse-toggle" :class="{ collapsed: collapsedVip }">▼</span>
                             <span class="w-2 h-2 rounded-full bg-amber-500"></span>
                             VIP 策略
                         </div>
+                        <div class="collapse-content" :class="{ collapsed: collapsedVip }" :style="{ maxHeight: collapsedVip ? '0' : '2000px' }">
                         <div class="space-y-1">
                             <div v-for="s in vipStrategies" :key="s.name"
                                  class="strategy-item rounded-lg px-3 py-2.5 border border-transparent group"
@@ -141,7 +157,9 @@
                                 <div class="text-xs text-slate-400 mt-1">{{ s.run_count }} 次回测</div>
                             </div>
                         </div>
+                        </div>
                     </div>
+                </div>
                 </div>
             </div>
             <div class="flex-1 overflow-y-auto p-3" v-if="selectedStrategy">
@@ -449,6 +467,9 @@ createApp({
         const codeCopied = ref(false);
         const editingName = ref(null);
         const editNameValue = ref('');
+        const collapsedAll = ref(false);
+        const collapsedStandard = ref(false);
+        const collapsedVip = ref(false);
 
         let equityChart = null;
         let drawdownChart = null;
@@ -1026,6 +1047,7 @@ createApp({
             strategyCode, codeCopied,
             standardStrategies, vipStrategies, currentStrategyDisplayName,
             editingName, editNameValue,
+            collapsedAll, collapsedStandard, collapsedVip,
             formatStrategyName, formatTimestamp, formatPercent, formatNum, formatMoney,
             calcWinRate, selectStrategy, selectRun, deleteRun, switchTab, copyCode,
             startEditName, saveEditName, cancelEditName,
