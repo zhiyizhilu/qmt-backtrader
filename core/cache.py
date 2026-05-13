@@ -607,22 +607,21 @@ class DiskCache:
 
     def get(self, namespace: str, key: str, format_type: str) -> Optional[Any]:
         file_path = self._get_file_path(namespace, key, format_type)
-        with self.lock:
-            if not file_path.exists():
-                return None
+        if not file_path.exists():
+            return None
+        try:
+            if format_type == 'parquet' and HAS_PYARROW:
+                return pd.read_parquet(file_path)
+            else:
+                with open(file_path, 'rb') as f:
+                    return _safe_pickle_load(f)
+        except Exception as e:
+            self.logger.warning(f"读取磁盘缓存失败 (文件可能损坏)，自动删除: {file_path}, 错误: {e}")
             try:
-                if format_type == 'parquet' and HAS_PYARROW:
-                    return pd.read_parquet(file_path)
-                else:
-                    with open(file_path, 'rb') as f:
-                        return _safe_pickle_load(f)
-            except Exception as e:
-                self.logger.warning(f"读取磁盘缓存失败 (文件可能损坏)，自动删除: {file_path}, 错误: {e}")
-                try:
-                    file_path.unlink(missing_ok=True)
-                except:
-                    pass
-                return None
+                file_path.unlink(missing_ok=True)
+            except:
+                pass
+            return None
 
     def get_yearly(self, namespace: str, symbol: str, year: int,
                     suffix: str, format_type: str = 'parquet') -> Optional[pd.DataFrame]:
@@ -636,22 +635,21 @@ class DiskCache:
             format_type: 文件格式
         """
         file_path = self._get_yearly_file_path(namespace, symbol, year, suffix, format_type)
-        with self.lock:
-            if not file_path.exists():
-                return None
+        if not file_path.exists():
+            return None
+        try:
+            if format_type == 'parquet' and HAS_PYARROW:
+                return pd.read_parquet(file_path)
+            else:
+                with open(file_path, 'rb') as f:
+                    return _safe_pickle_load(f)
+        except Exception as e:
+            self.logger.warning(f"读取年份缓存失败: {file_path}, 错误: {e}")
             try:
-                if format_type == 'parquet' and HAS_PYARROW:
-                    return pd.read_parquet(file_path)
-                else:
-                    with open(file_path, 'rb') as f:
-                        return _safe_pickle_load(f)
-            except Exception as e:
-                self.logger.warning(f"读取年份缓存失败: {file_path}, 错误: {e}")
-                try:
-                    file_path.unlink(missing_ok=True)
-                except:
-                    pass
-                return None
+                file_path.unlink(missing_ok=True)
+            except:
+                pass
+            return None
 
     def get_yearly_range(self, namespace: str, symbol: str, years: List[int],
                           suffix: str, format_type: str = 'parquet') -> Optional[pd.DataFrame]:

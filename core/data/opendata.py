@@ -190,7 +190,7 @@ class OpenDataProcessor(DataProcessor):
             keep_cols = ['open', 'high', 'low', 'close', 'volume']
         df = df[keep_cols]
 
-        time.sleep(0.5)  # 减少延迟
+        time.sleep(0.1)
         return self.preprocess_data(df)
 
     def get_stock_list(self, sector: str = '沪深A股') -> List[str]:
