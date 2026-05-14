@@ -135,6 +135,8 @@ class EngineDataAdapter(MarketDataAdapter):
     def get_next_datetime(self) -> Optional[datetime.datetime]:
         next_idx = self._current_global_idx + 1
         dt = self._timeline.get_datetime(next_idx)
+        if dt is None:
+            dt = self._timeline.get_datetime(self._current_global_idx)
         if dt is not None and self._is_daily() and dt.hour == 0 and dt.minute == 0:
             dt = dt.replace(hour=15, minute=0)
         return dt
