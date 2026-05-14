@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>策略回测结果查看器</title>
+    <title>策略回测结果</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
@@ -53,6 +53,22 @@
         #readme-content blockquote { border-left: 3px solid #3b82f6; padding-left: 0.75rem; margin: 0.75rem 0; color: #94a3b8; }
         #readme-content a { color: #60a5fa; text-decoration: underline; }
         #strategy-code-content { font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 0.82rem; line-height: 1.55; tab-size: 4; white-space: pre; overflow-x: auto; color: #e2e8f0; }
+        .log-content { font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 0.78rem; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 600px; overflow-y: auto; background: #0f172a; padding: 1rem; border-radius: 8px; }
+        .log-content .log-info { color: #94a3b8; }
+        .log-content .log-warning { color: #fbbf24; }
+        .log-content .log-error { color: #f87171; }
+        .log-content .log-debug { color: #64748b; }
+        .cache-entry { transition: all 0.1s; cursor: pointer; }
+        .cache-entry:hover { background: #334155; }
+        .cache-file:hover { background: #334155; }
+        .data-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+        .data-table th, .data-table td { border: 1px solid #334155; padding: 0.3rem 0.5rem; text-align: left; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .data-table th { background: #1e293b; color: #94a3b8; font-weight: 600; position: sticky; top: 0; }
+        .data-table tr:nth-child(even) { background: #1e293b; }
+        .batch-bar { background: #1e293b; border: 1px solid #334155; border-radius: 8px; }
+        .checkbox-custom { appearance: none; width: 16px; height: 16px; border: 2px solid #475569; border-radius: 3px; background: transparent; cursor: pointer; position: relative; flex-shrink: 0; }
+        .checkbox-custom:checked { background: #3b82f6; border-color: #3b82f6; }
+        .checkbox-custom:checked::after { content: '✓'; position: absolute; top: -2px; left: 2px; color: white; font-size: 11px; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -64,10 +80,22 @@
                     <svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
                     </svg>
-                    策略回测查看器
+                    策略回测结果
                 </h1>
             </div>
-            <div class="p-3 border-b border-slate-700 flex-shrink-0">
+            <div class="flex border-b border-slate-700">
+                <button @click="sidebarView = 'strategy'"
+                        class="flex-1 py-2.5 text-xs font-medium text-center transition-colors"
+                        :class="sidebarView === 'strategy' ? 'text-blue-400 border-b-2 border-blue-400 bg-slate-800' : 'text-slate-400 hover:text-slate-300'">
+                    策略回测
+                </button>
+                <button @click="sidebarView = 'cache'; browseCache('')"
+                        class="flex-1 py-2.5 text-xs font-medium text-center transition-colors"
+                        :class="sidebarView === 'cache' ? 'text-blue-400 border-b-2 border-blue-400 bg-slate-800' : 'text-slate-400 hover:text-slate-300'">
+                    数据缓存
+                </button>
+            </div>
+            <div v-if="sidebarView === 'strategy'" class="p-3 border-b border-slate-700 flex-shrink-0">
                 <div class="text-xs text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5 cursor-pointer select-none"
                      @click="collapsedAll = !collapsedAll">
                     <span class="collapse-toggle" :class="{ collapsed: collapsedAll }">▼</span>
@@ -162,15 +190,35 @@
                 </div>
                 </div>
             </div>
-            <div class="flex-1 overflow-y-auto p-3" v-if="selectedStrategy">
-                <div class="text-xs text-slate-400 uppercase tracking-wider mb-2">回测记录</div>
+            <div v-if="sidebarView === 'strategy'" class="flex-1 overflow-y-auto p-3" v-show="selectedStrategy">
+                <div class="flex items-center justify-between mb-2">
+                    <div class="text-xs text-slate-400 uppercase tracking-wider">回测记录</div>
+                    <div v-if="runs.length > 0" class="flex items-center gap-2">
+                        <label class="flex items-center gap-1 cursor-pointer text-xs text-slate-400 hover:text-slate-300">
+                            <input type="checkbox" class="checkbox-custom"
+                                   :checked="selectedRuns.length === runs.length && runs.length > 0"
+                                   @change="toggleSelectAllRuns" />
+                            全选
+                        </label>
+                        <button v-if="selectedRuns.length > 0"
+                                @click="batchDeleteRuns"
+                                class="px-2 py-0.5 rounded text-xs bg-red-600/80 text-white hover:bg-red-500 transition-colors">
+                            删除({{ selectedRuns.length }})
+                        </button>
+                    </div>
+                </div>
                 <div class="space-y-1">
                     <div v-for="run in runs" :key="run.run_id"
                          class="run-item rounded-lg px-3 py-2 border border-transparent group relative"
                          :class="{ active: selectedRunId === run.run_id }"
                          @click="selectRun(run.run_id)">
                         <div class="flex items-center justify-between">
-                            <div class="text-xs text-slate-400">{{ formatTimestamp(run.timestamp) }}</div>
+                            <div class="flex items-center gap-2">
+                                <input type="checkbox" class="checkbox-custom"
+                                       :checked="selectedRuns.includes(run.run_id)"
+                                       @click.stop="toggleRunSelection(run.run_id)" />
+                                <div class="text-xs text-slate-400">{{ formatTimestamp(run.timestamp) }}</div>
+                            </div>
                             <button @click.stop="deleteRun(run.run_id)"
                                     class="opacity-0 group-hover:opacity-100 transition-opacity text-red-400 hover:text-red-300"
                                     title="删除此回测记录">
@@ -179,7 +227,7 @@
                                 </svg>
                             </button>
                         </div>
-                        <div class="flex items-center justify-between mt-1">
+                        <div class="flex items-center justify-between mt-1 ml-6">
                             <span class="text-sm font-mono"
                                   :class="run.total_return_pct >= 0 ? 'positive' : 'negative'">
                                 {{ formatPercent(run.total_return_pct) }}
@@ -189,9 +237,177 @@
                     </div>
                 </div>
             </div>
+            <div v-if="sidebarView === 'cache'" class="flex-1 overflow-y-auto p-3">
+                <div class="flex items-center gap-1 text-xs text-slate-400 mb-3 flex-wrap">
+                    <span class="cursor-pointer hover:text-blue-400" @click="browseCache('')">.cache</span>
+                    <template v-for="(seg, i) in cachePath.split('/').filter(Boolean)" :key="i">
+                        <span>/</span>
+                        <span class="cursor-pointer hover:text-blue-400"
+                              @click="browseCache(cachePath.split('/').filter(Boolean).slice(0, i+1).join('/'))">
+                            {{ seg }}
+                        </span>
+                    </template>
+                </div>
+                <div v-if="cacheLoading" class="text-center py-6">
+                    <div class="pulse text-slate-400">加载中...</div>
+                </div>
+                <div v-else-if="cacheEntries.length === 0" class="text-center py-6 text-slate-500 text-sm">
+                    此目录为空
+                </div>
+                <div v-else class="space-y-0.5">
+                    <div v-for="entry in cacheEntries" :key="entry.path"
+                         class="flex items-center justify-between px-3 py-2 rounded-lg"
+                         :class="entry.type === 'dir' ? 'cache-entry' : 'cache-file'"
+                         @click="entry.type === 'dir' ? browseCache(entry.path) : viewCacheFile(entry.path)">
+                        <div class="flex items-center gap-2 min-w-0">
+                            <svg v-if="entry.type === 'dir'" class="w-4 h-4 text-amber-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
+                            </svg>
+                            <svg v-else class="w-4 h-4 text-blue-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                            </svg>
+                            <span class="text-sm text-slate-300 truncate">{{ entry.name }}</span>
+                            <span v-if="entry.ext" class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 flex-shrink-0">{{ entry.ext }}</span>
+                        </div>
+                        <div class="flex items-center gap-2 flex-shrink-0">
+                            <span v-if="entry.size" class="text-xs text-slate-500">{{ formatFileSize(entry.size) }}</span>
+                            <svg v-if="entry.type === 'dir'" class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </aside>
 
         <main class="flex-1 flex flex-col overflow-hidden">
+            <div v-if="sidebarView === 'cache'" class="flex-1 overflow-y-auto p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-2xl font-bold text-white">数据缓存浏览器</h2>
+                    <div class="flex items-center gap-2">
+                        <button @click="browseCache('')"
+                                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">
+                            根目录
+                        </button>
+                        <button v-if="cachePath" @click="browseCache(cacheParent)"
+                                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">
+                            上级目录
+                        </button>
+                    </div>
+                </div>
+
+                <div v-if="cacheViewData" class="card p-4 mb-4 fade-in">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="text-sm font-semibold text-slate-300">
+                            {{ cacheViewData.path }}
+                            <span class="text-xs text-slate-500 ml-2">{{ cacheViewData.format }}</span>
+                        </h3>
+                        <button @click="cacheViewData = null"
+                                class="text-slate-400 hover:text-slate-300 text-xs">关闭</button>
+                    </div>
+
+                    <div v-if="cacheViewData.error" class="text-red-400 text-sm py-2">
+                        读取失败: {{ cacheViewData.error }}
+                    </div>
+
+                    <div v-else-if="cacheViewData.format === 'json'" class="overflow-auto max-h-[500px]">
+                        <pre class="text-xs text-slate-300 whitespace-pre-wrap" style="font-family: Consolas, Monaco, monospace;">{{ JSON.stringify(cacheViewData.data, null, 2) }}</pre>
+                    </div>
+
+                    <div v-else-if="cacheViewData.format === 'parquet' || cacheViewData.format === 'pkl_dataframe'">
+                        <div class="flex items-center gap-4 mb-3 text-xs text-slate-400">
+                            <span>行数: {{ cacheViewData.total?.toLocaleString() || cacheViewData.shape?.[0]?.toLocaleString() || 0 }}</span>
+                            <span>列数: {{ cacheViewData.shape?.[1] }}</span>
+                            <span v-if="cacheViewData.offset !== undefined">
+                                ({{ (cacheViewData.offset || 0).toLocaleString() }} ~ {{ Math.min((cacheViewData.offset || 0) + cacheViewData.head?.length, cacheViewData.total || 0).toLocaleString() }})
+                            </span>
+                            <span v-if="cacheViewData.date_filter" class="text-green-400">
+                                当前筛选: {{ cacheViewData.date_filter }}
+                            </span>
+                        </div>
+                        <div v-if="cacheDateHierarchy" class="mb-3 p-2 bg-slate-800 rounded flex items-center gap-2 flex-wrap">
+                            <span class="text-xs text-slate-400">日期筛选:</span>
+                            <select v-model="selectedYear" @change="selectedMonth = ''; selectedDay = ''; applyDateFilter()"
+                                    class="bg-slate-700 text-xs text-slate-200 px-2 py-1 rounded border border-slate-600">
+                                <option value="">-- 年份 --</option>
+                                <option v-for="y in cacheDateHierarchy.years" :key="y" :value="y">{{ y }}年</option>
+                            </select>
+                            <select v-if="selectedYear && cacheDateHierarchy.year_months[selectedYear]" v-model="selectedMonth"
+                                    @change="selectedDay = ''; applyDateFilter()"
+                                    class="bg-slate-700 text-xs text-slate-200 px-2 py-1 rounded border border-slate-600">
+                                <option value="">-- 月份 --</option>
+                                <option v-for="m in cacheDateHierarchy.year_months[selectedYear]" :key="m" :value="m">{{ m }}月</option>
+                            </select>
+                            <select v-if="selectedYear && selectedMonth && cacheDateHierarchy.year_month_days[selectedYear]?.[selectedMonth]"
+                                    v-model="selectedDay" @change="applyDateFilter()"
+                                    class="bg-slate-700 text-xs text-slate-200 px-2 py-1 rounded border border-slate-600">
+                                <option value="">-- 日期 --</option>
+                                <option v-for="d in cacheDateHierarchy.year_month_days[selectedYear][selectedMonth]" :key="d" :value="String(d).padStart(2, '0')">{{ d }}日</option>
+                            </select>
+                            <button v-if="selectedYear || selectedMonth || selectedDay" @click="selectedYear = ''; selectedMonth = ''; selectedDay = ''; applyDateFilter()"
+                                    class="text-xs text-red-400 hover:text-red-300 px-2 py-1">
+                                清除筛选
+                            </button>
+                        </div>
+                        <div class="mb-3 flex flex-wrap gap-2 max-h-24 overflow-y-auto">
+                            <span v-for="col in cacheViewData.all_columns || cacheViewData.columns" :key="col"
+                                  class="text-xs px-2 py-0.5 rounded bg-slate-700"
+                                  :class="cacheViewData.has_index && col === cacheViewData.index_name ? 'text-amber-300' : 'text-blue-300'">
+                                {{ col }}
+                                <span class="text-slate-500 ml-1">{{ cacheViewData.dtypes?.[col] || '' }}</span>
+                            </span>
+                        </div>
+                        <div class="overflow-auto max-h-[500px]" id="cache-table-body">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th v-for="col in (cacheViewData.all_columns || cacheViewData.columns)" :key="col"
+                                            :class="cacheViewData.has_index && col === cacheViewData.index_name ? 'text-amber-400' : ''">
+                                            {{ col }}
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="(row, i) in cacheAllRows" :key="i">
+                                        <td v-for="col in (cacheViewData.all_columns || cacheViewData.columns)" :key="col"
+                                            :title="String(row[col] ?? '')"
+                                            :class="cacheViewData.has_index && col === cacheViewData.index_name ? 'text-amber-300/80' : ''">
+                                            {{ row[col] != null ? (typeof row[col] === 'number' ? (Number.isInteger(row[col]) ? row[col] : row[col].toFixed(4)) : String(row[col]).substring(0, 50)) : '' }}
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div v-if="cacheLoading" class="text-center py-2 text-xs text-slate-500">
+                            <div class="pulse">加载中...</div>
+                        </div>
+                    </div>
+
+                    <div v-else-if="cacheViewData.format === 'text'" class="overflow-auto max-h-[500px]">
+                        <pre class="text-xs text-slate-300 whitespace-pre-wrap" style="font-family: Consolas, Monaco, monospace;">{{ cacheViewData.content }}</pre>
+                    </div>
+
+                    <div v-else-if="cacheViewData.format === 'pkl_other'" class="overflow-auto max-h-[500px]">
+                        <div class="text-xs text-slate-400 mb-2">类型: {{ cacheViewData.type }}</div>
+                        <pre class="text-xs text-slate-300 whitespace-pre-wrap" style="font-family: Consolas, Monaco, monospace;">{{ cacheViewData.repr }}</pre>
+                    </div>
+
+                    <div v-else class="text-center py-4 text-slate-500 text-sm">
+                        {{ cacheViewData.message || '此格式暂不支持在线预览' }}
+                    </div>
+                </div>
+
+                <div v-else class="flex items-center justify-center" style="min-height: 400px;">
+                    <div class="text-center text-slate-500">
+                        <svg class="w-12 h-12 mx-auto mb-3 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                        </svg>
+                        <p>请从左侧选择文件查看</p>
+                    </div>
+                </div>
+            </div>
+
+            <template v-else>
             <div v-if="!selectedStrategy" class="flex-1 overflow-y-auto flex items-center justify-center">
                 <div class="text-center">
                     <svg class="w-16 h-16 text-slate-600 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -227,6 +443,10 @@
                             <button @click="switchTab('code')" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
                                     :class="activeTab === 'code' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
                                 策略代码
+                            </button>
+                            <button @click="switchTab('log')" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
+                                    :class="activeTab === 'log' ? 'active' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'">
+                                运行日志
                             </button>
                         </div>
                     </div>
@@ -443,7 +663,37 @@
                         </div>
                     </div>
                 </div>
+
+                <div v-if="activeTab === 'log'" class="card p-6 mb-6 fade-in">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-sm font-semibold text-slate-300">运行日志</h3>
+                        <div class="flex items-center gap-3">
+                            <span v-if="logFile" class="text-xs text-slate-500">{{ logFile }}</span>
+                            <button v-if="logContent" @click="copyLog"
+                                    class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                                    :class="logCopied ? 'bg-green-600 text-white' : 'bg-slate-600 text-slate-300 hover:bg-slate-500'">
+                                {{ logCopied ? '已复制' : '复制日志' }}
+                            </button>
+                        </div>
+                    </div>
+                    <div v-if="logLoading" class="text-center py-8">
+                        <div class="pulse text-slate-400">加载日志中...</div>
+                    </div>
+                    <div v-else-if="logContent" class="log-content">
+                        <span v-for="(line, i) in logLines" :key="i"
+                              :style="{ color: logLineColor(line) }">{{ line + '\n' }}</span>
+                    </div>
+                    <div v-else class="text-center py-8 text-slate-500">
+                        <svg class="w-10 h-10 mx-auto mb-3 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                        </svg>
+                        <p>未找到本次回测的日志文件</p>
+                        <p class="text-xs mt-1">日志文件可能与回测记录不在同一时间</p>
+                    </div>
+                </div>
+
             </div>
+            </template>
         </main>
     </div>
 </div>
@@ -470,6 +720,28 @@ createApp({
         const collapsedAll = ref(false);
         const collapsedStandard = ref(false);
         const collapsedVip = ref(false);
+        const sidebarView = ref('strategy');
+        const selectedRuns = ref([]);
+        const logContent = ref('');
+        const logFile = ref('');
+        const logLoading = ref(false);
+        const logCopied = ref(false);
+        const cachePath = ref('');
+        const cacheParent = ref('');
+        const cacheEntries = ref([]);
+        const cacheLoading = ref(false);
+        const cacheViewData = ref(null);
+        const cacheOffset = ref(0);
+        const cacheAllRows = ref([]);
+        const CACHE_BATCH = 200;
+        const MAX_KEEP_ROWS = 500;
+        const CLEANUP_THRESHOLD = 300;
+        const ROW_HEIGHT = 28;
+        const cacheDateHierarchy = ref(null);
+        const selectedYear = ref('');
+        const selectedMonth = ref('');
+        const selectedDay = ref('');
+        const selectedDateFilter = ref('');
 
         let equityChart = null;
         let drawdownChart = null;
@@ -513,6 +785,34 @@ createApp({
             const s = strategies.value.find(s => s.name === selectedStrategy.value);
             return s?.display_name || formatStrategyName(selectedStrategy.value);
         });
+
+        const highlightedLog = computed(() => {
+            if (!logContent.value) return '';
+            return logContent.value
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .split('\n')
+                .map(line => {
+                    if (/ERROR/i.test(line)) return '<span style="color:#f87171">' + line + '</span>';
+                    if (/WARNING/i.test(line)) return '<span style="color:#fbbf24">' + line + '</span>';
+                    if (/DEBUG/i.test(line)) return '<span style="color:#64748b">' + line + '</span>';
+                    if (/INFO/i.test(line)) return '<span style="color:#94a3b8">' + line + '</span>';
+                    return '<span>' + line + '</span>';
+                })
+                .join('\n');
+        });
+
+        const logLines = computed(() => {
+            if (!logContent.value) return [];
+            return logContent.value.split('\n');
+        });
+
+        function logLineColor(line) {
+            if (line.includes('ERROR')) return '#f87171';
+            if (line.includes('WARNING')) return '#fbbf24';
+            if (line.includes('DEBUG')) return '#64748b';
+            if (line.includes('INFO')) return '#94a3b8';
+            return '#cbd5e1';
+        }
 
         function formatStrategyName(name) {
             return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -571,6 +871,14 @@ createApp({
             return val.toFixed(2);
         }
 
+        function formatFileSize(bytes) {
+            if (bytes == null) return '-';
+            if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB';
+            if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+            if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return bytes + ' B';
+        }
+
         function calcWinRate(metrics) {
             if (!metrics || metrics.total_trading_days === 0) return '-';
             const rate = (metrics.win_days / metrics.total_trading_days * 100).toFixed(1);
@@ -616,6 +924,8 @@ createApp({
                 if (el) el.innerHTML = marked.parse(strategyReadme.value);
             } else if (tab === 'code') {
                 strategyCode.value = currentRun.value?.strategy_code || '';
+            } else if (tab === 'log') {
+                loadLog();
             }
         }
 
@@ -669,6 +979,9 @@ createApp({
             activeTab.value = 'detail';
             strategyReadme.value = '';
             strategyCode.value = '';
+            selectedRuns.value = [];
+            logContent.value = '';
+            logFile.value = '';
             try {
                 const res = await fetch(`/api/strategies/${name}/runs`);
                 runs.value = await res.json();
@@ -710,6 +1023,7 @@ createApp({
                 const data = await res.json();
                 if (data.success) {
                     runs.value = runs.value.filter(r => r.run_id !== runId);
+                    selectedRuns.value = selectedRuns.value.filter(id => id !== runId);
                     if (selectedRunId.value === runId) {
                         selectedRunId.value = null;
                         currentRun.value = null;
@@ -729,6 +1043,232 @@ createApp({
             } catch (e) {
                 console.error('Failed to delete run:', e);
                 alert('删除失败');
+            }
+        }
+
+        function toggleRunSelection(runId) {
+            const idx = selectedRuns.value.indexOf(runId);
+            if (idx >= 0) {
+                selectedRuns.value.splice(idx, 1);
+            } else {
+                selectedRuns.value.push(runId);
+            }
+        }
+
+        function toggleSelectAllRuns() {
+            if (selectedRuns.value.length === runs.value.length) {
+                selectedRuns.value = [];
+            } else {
+                selectedRuns.value = runs.value.map(r => r.run_id);
+            }
+        }
+
+        async function batchDeleteRuns() {
+            if (selectedRuns.value.length === 0) return;
+            if (!confirm(`确定要删除选中的 ${selectedRuns.value.length} 条回测记录吗？\n将同时删除对应的日志文件，删除后无法恢复。`)) return;
+            try {
+                const res = await fetch(`/api/strategies/${selectedStrategy.value}/runs/batch_delete`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ run_ids: selectedRuns.value }),
+                });
+                const data = await res.json();
+                const deletedSet = new Set(data.deleted || []);
+                runs.value = runs.value.filter(r => !deletedSet.has(r.run_id));
+                selectedRuns.value = [];
+                if (deletedSet.has(selectedRunId.value)) {
+                    selectedRunId.value = null;
+                    currentRun.value = null;
+                    if (runs.value.length > 0) {
+                        selectRun(runs.value[0].run_id);
+                    }
+                }
+                if (activeTab.value === 'compare') {
+                    await nextTick();
+                    renderCompareChart();
+                }
+                const strategy = strategies.value.find(s => s.name === selectedStrategy.value);
+                if (strategy) strategy.run_count = runs.value.length;
+                if (data.errors && data.errors.length > 0) {
+                    alert(`部分删除失败: ${data.errors.map(e => e.run_id).join(', ')}`);
+                }
+            } catch (e) {
+                console.error('Failed to batch delete runs:', e);
+                alert('批量删除失败');
+            }
+        }
+
+        async function loadLog() {
+            if (!selectedRunId.value || !selectedStrategy.value) return;
+            logLoading.value = true;
+            logContent.value = '';
+            logFile.value = '';
+            try {
+                const res = await fetch(`/api/logs/${encodeURIComponent(selectedStrategy.value)}/${encodeURIComponent(selectedRunId.value)}`);
+                const data = await res.json();
+                logContent.value = data.content || '';
+                logFile.value = data.file || '';
+            } catch (e) {
+                console.error('Failed to load log:', e);
+                logContent.value = '';
+            } finally {
+                logLoading.value = false;
+            }
+        }
+
+        async function copyLog() {
+            if (!logContent.value) return;
+            try {
+                await navigator.clipboard.writeText(logContent.value);
+                logCopied.value = true;
+                setTimeout(() => { logCopied.value = false; }, 2000);
+            } catch (e) {
+                console.error('Failed to copy log:', e);
+            }
+        }
+
+        async function browseCache(path) {
+            cacheLoading.value = true;
+            cacheViewData.value = null;
+            try {
+                const res = await fetch(`/api/cache/browse?path=${encodeURIComponent(path)}`);
+                const data = await res.json();
+                if (data.error) {
+                    alert(data.error);
+                    cacheLoading.value = false;
+                    return;
+                }
+                cachePath.value = data.path || '';
+                cacheParent.value = data.parent || '';
+                cacheEntries.value = data.entries || [];
+            } catch (e) {
+                console.error('Failed to browse cache:', e);
+            } finally {
+                cacheLoading.value = false;
+            }
+        }
+
+        async function viewCacheFile(path) {
+            cacheOffset.value = 0;
+            cacheAllRows.value = [];
+            cacheLoading.value = true;
+            selectedYear.value = '';
+            selectedMonth.value = '';
+            selectedDay.value = '';
+            selectedDateFilter.value = '';
+            try {
+                const res = await fetch(`/api/cache/view?path=${encodeURIComponent(path)}&offset=0&limit=${CACHE_BATCH}`);
+                const data = await res.json();
+                if (data.error) {
+                    alert('读取失败: ' + data.error);
+                    cacheLoading.value = false;
+                    return;
+                }
+                cacheViewData.value = data;
+                cacheOffset.value = (data.head || []).length;
+                cacheAllRows.value = data.head || [];
+                fetchCacheDates(path);
+                cacheLoading.value = false;
+                await nextTick();
+                const el = document.getElementById('cache-table-body');
+                if (el) {
+                    el.onscroll = handleCacheScroll;
+                }
+            } catch (e) {
+                console.error('Failed to view cache file:', e);
+                alert('读取失败');
+                cacheLoading.value = false;
+            }
+        }
+
+        async function fetchCacheDates(path) {
+            try {
+                const res = await fetch(`/api/cache/dates?path=${encodeURIComponent(path)}`);
+                const data = await res.json();
+                if (!data.error) {
+                    cacheDateHierarchy.value = data;
+                } else {
+                    cacheDateHierarchy.value = null;
+                }
+            } catch (e) {
+                cacheDateHierarchy.value = null;
+            }
+        }
+
+        async function loadMoreCacheData() {
+            if (!cacheViewData.value) return;
+            const total = cacheViewData.value.total || 0;
+            if (cacheOffset.value >= total) return;
+            cacheLoading.value = true;
+            try {
+                let url = `/api/cache/view?path=${encodeURIComponent(cacheViewData.value.path)}&offset=${cacheOffset.value}&limit=${CACHE_BATCH}`;
+                if (selectedDateFilter.value) {
+                    url += `&date=${selectedDateFilter.value}`;
+                }
+                const res = await fetch(url);
+                const data = await res.json();
+                if (data.error || !data.head) {
+                    cacheLoading.value = false;
+                    return;
+                }
+                cacheAllRows.value = [...cacheAllRows.value, ...data.head];
+                cacheOffset.value += data.head.length;
+                if (cacheAllRows.value.length > MAX_KEEP_ROWS) {
+                    const removed = cacheAllRows.value.splice(0, CLEANUP_THRESHOLD);
+                    cacheOffset.value -= removed.length;
+                    const el = document.getElementById('cache-table-body');
+                    if (el) {
+                        el.scrollTop -= CLEANUP_THRESHOLD * ROW_HEIGHT;
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to load more data:', e);
+            } finally {
+                cacheLoading.value = false;
+            }
+        }
+
+        function applyDateFilter() {
+            if (!cacheViewData.value) return;
+            if (selectedDay.value) {
+                selectedDateFilter.value = `${selectedYear.value}-${selectedMonth.value}-${selectedDay.value}`;
+            } else if (selectedMonth.value) {
+                selectedDateFilter.value = `${selectedYear.value}-${selectedMonth.value}`;
+            } else if (selectedYear.value) {
+                selectedDateFilter.value = selectedYear.value;
+            } else {
+                selectedDateFilter.value = '';
+            }
+            cacheOffset.value = 0;
+            cacheAllRows.value = [];
+            cacheLoading.value = true;
+            fetch(`/api/cache/view?path=${encodeURIComponent(cacheViewData.value.path)}&offset=0&limit=${CACHE_BATCH}${selectedDateFilter.value ? '&date=' + selectedDateFilter.value : ''}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('筛选失败: ' + data.error);
+                    } else {
+                        cacheViewData.value = data;
+                        cacheOffset.value = (data.head || []).length;
+                        cacheAllRows.value = data.head || [];
+                        nextTick(() => {
+                            const el = document.getElementById('cache-table-body');
+                            if (el) el.scrollTop = 0;
+                        });
+                    }
+                })
+                .catch(e => console.error('Failed to apply date filter:', e))
+                .finally(() => { cacheLoading.value = false; });
+        }
+
+        function handleCacheScroll() {
+            const el = document.getElementById('cache-table-body');
+            if (!el || cacheLoading.value) return;
+            const total = cacheViewData.value?.total || 0;
+            if (cacheOffset.value >= total) return;
+            const scrollBottom = el.scrollTop + el.clientHeight;
+            if (scrollBottom >= el.scrollHeight - 100) {
+                loadMoreCacheData();
             }
         }
 
@@ -1028,6 +1568,8 @@ createApp({
                 if (el) el.innerHTML = marked.parse(strategyReadme.value);
             } else if (tab === 'code') {
                 strategyCode.value = currentRun.value?.strategy_code || '';
+            } else if (tab === 'log') {
+                loadLog();
             }
         });
 
@@ -1047,10 +1589,17 @@ createApp({
             strategyCode, codeCopied,
             standardStrategies, vipStrategies, currentStrategyDisplayName,
             editingName, editNameValue,
-            collapsedAll, collapsedStandard, collapsedVip,
-            formatStrategyName, formatTimestamp, formatPercent, formatNum, formatMoney,
+            collapsedAll, collapsedStandard, collapsedVip, sidebarView,
+            selectedRuns,
+            logContent, logFile, logLoading, logCopied, highlightedLog, logLines, logLineColor,
+            cachePath, cacheParent, cacheEntries, cacheLoading, cacheViewData, cacheAllRows,
+            cacheDateHierarchy, selectedYear, selectedMonth, selectedDay, selectedDateFilter,
+            formatStrategyName, formatTimestamp, formatPercent, formatNum, formatMoney, formatFileSize,
             calcWinRate, selectStrategy, selectRun, deleteRun, switchTab, copyCode,
             startEditName, saveEditName, cancelEditName,
+            toggleRunSelection, toggleSelectAllRuns, batchDeleteRuns,
+            loadLog, copyLog,
+            browseCache, viewCacheFile, loadMoreCacheData, handleCacheScroll, fetchCacheDates, applyDateFilter,
         };
     }
 }).mount('#app');

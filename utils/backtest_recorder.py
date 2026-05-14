@@ -118,6 +118,7 @@ class BacktestRecorder:
         result: BacktestingResult,
         strategy_name: str,
         config: Optional[Dict[str, Any]] = None,
+        log_file: str = '',
     ) -> str:
         """记录单次回测结果，返回 run_id"""
         now = datetime.datetime.now()
@@ -155,6 +156,7 @@ class BacktestRecorder:
                 'strategy_name': strategy_name,
                 'timestamp': now.isoformat(),
                 'framework_version': _FRAMEWORK_VERSION,
+                'log_file': os.path.abspath(log_file) if log_file else '',
             },
             'config': config or {},
             'strategy_params': _make_json_safe(result.strategy_params),

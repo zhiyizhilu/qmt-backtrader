@@ -77,6 +77,7 @@ class BacktestAPI(BaseAPI):
         self._ai_mode: bool = False
         self._no_record: bool = False
         self._strategy_name: str = ''
+        self._log_file: str = ''
         self._backtest_config: Dict[str, Any] = {}
         self._lifecycle_manager = None
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
@@ -895,6 +896,9 @@ class BacktestAPI(BaseAPI):
     def set_strategy_name(self, name: str):
         self._strategy_name = name
 
+    def set_log_file(self, log_file: str):
+        self._log_file = log_file
+
     def set_backtest_config(self, config: Dict[str, Any]):
         self._backtest_config = config
 
@@ -915,7 +919,7 @@ class BacktestAPI(BaseAPI):
                 config.setdefault('data_end_date', self._data_end_date)
             if self._trade_start_date:
                 config.setdefault('trade_start_date', self._trade_start_date)
-            run_id = recorder.record(self._backtest_result, strategy_name, config)
+            run_id = recorder.record(self._backtest_result, strategy_name, config, log_file=self._log_file)
             self.logger.info(f'[run] 回测结果已自动记录: {run_id}')
         except Exception as e:
             self.logger.warning(f'[run] 回测结果自动记录失败: {e}')

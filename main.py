@@ -109,6 +109,7 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
     config.setdefault('benchmark', benchmark)
 
     try:
+        import time as _time
         api = BacktestAPI(proxy=proxy, data_source=data_source)
         if ai_mode:
             api.set_ai_mode(True)
@@ -116,6 +117,7 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
             api.set_no_record(True)
 
         api.set_strategy_name(strategy_name)
+        api.set_log_file(log_file)
         api.set_backtest_config(config)
 
         if issubclass(strategy_class, StockSelectionStrategy):
@@ -126,9 +128,12 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
             api.configure(**config)
             api.add_strategy(strategy_class, **default_kwargs)
 
+        bt_start = _time.time()
         results = api.run()
+        bt_elapsed = _time.time() - bt_start
 
         if results:
+            logger.info(f"回测耗时: {bt_elapsed:.2f}秒")
             api.show_report()
         else:
             logger.info("回测未产生结果，可能是因为没有数据")

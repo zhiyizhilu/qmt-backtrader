@@ -2,12 +2,14 @@ import json
 import os
 import glob
 import re
+import pickle
 
 from flask import Flask, jsonify, send_from_directory, request
 
 app = Flask(__name__)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CACHE_DIR = os.path.join(PROJECT_ROOT, '.cache')
 STRATEGY_DIRS = [
     os.path.join(PROJECT_ROOT, 'strategies'),
     os.path.join(PROJECT_ROOT, 'strategies_for_vip'),
@@ -206,7 +208,10 @@ def api_delete_run(strategy_name, run_id):
     if not os.path.exists(file_path):
         return jsonify({'error': f'Run "{run_id}" not found'}), 404
     try:
+        log_path = _find_log_for_run(strategy_name, run_id)
         os.remove(file_path)
+        if log_path and os.path.exists(log_path):
+            os.remove(log_path)
         return jsonify({'success': True, 'run_id': run_id})
     except OSError as e:
         return jsonify({'error': str(e)}), 500
@@ -258,6 +263,370 @@ def api_strategy_compare(strategy_name):
         'lowest_drawdown': max(runs, key=lambda x: x.get('max_drawdown_pct') or -999) if runs else None,
     }
     return jsonify(comparison)
+
+
+def _find_log_for_run(strategy_name, run_id):
+    strategy_path = _find_strategy_dir(strategy_name)
+    if not strategy_path:
+        return None
+    bt_dir = os.path.join(strategy_path, 'backtest_results')
+    if not os.path.isdir(bt_dir):
+        return None
+    json_path = os.path.join(bt_dir, f'{run_id}.json')
+    if not os.path.exists(json_path):
+        for jf in glob.glob(os.path.join(bt_dir, '*.json')):
+            try:
+                with open(jf, 'r', encoding='utf-8') as f:
+                    d = json.load(f)
+                if d.get('meta', {}).get('run_id') == run_id:
+                    json_path = jf
+                    break
+            except (json.JSONDecodeError, IOError):
+                continue
+    if not os.path.exists(json_path):
+        return None
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        log_file = data.get('meta', {}).get('log_file', '')
+        if log_file and os.path.isfile(log_file):
+            return log_file
+    except (json.JSONDecodeError, IOError):
+        pass
+    logs_dir = os.path.join(PROJECT_ROOT, 'logs')
+    if os.path.isdir(logs_dir):
+        ts_part = run_id.split('_')[0] if '_' in run_id else run_id
+        strat_part = strategy_name.replace('_strategy', '').replace('_', '')
+        for fname in os.listdir(logs_dir):
+            if fname.startswith(ts_part) and fname.endswith('.log'):
+                return os.path.join(logs_dir, fname)
+    return None
+
+
+@app.route('/api/logs/<strategy_name>/<run_id>')
+def api_log_content(strategy_name, run_id):
+    log_path = _find_log_for_run(strategy_name, run_id)
+    if not log_path:
+        return jsonify({'content': '', 'found': False})
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read()
+        return jsonify({'content': content, 'found': True, 'file': os.path.basename(log_path)})
+    except IOError as e:
+        return jsonify({'content': '', 'found': False, 'error': str(e)})
+
+
+@app.route('/api/strategies/<strategy_name>/runs/batch_delete', methods=['POST'])
+def api_batch_delete_runs(strategy_name):
+    strategy_path = _find_strategy_dir(strategy_name)
+    if not strategy_path:
+        return jsonify({'error': f'Strategy "{strategy_name}" not found'}), 404
+    bt_dir = os.path.join(strategy_path, 'backtest_results')
+    if not os.path.isdir(bt_dir):
+        return jsonify({'error': 'No backtest results found'}), 404
+
+    data = request.get_json()
+    if not data or 'run_ids' not in data:
+        return jsonify({'error': 'run_ids is required'}), 400
+
+    run_ids = data['run_ids']
+    deleted = []
+    errors = []
+
+    for run_id in run_ids:
+        file_path = os.path.join(bt_dir, f'{run_id}.json')
+        if not os.path.exists(file_path):
+            for json_file in glob.glob(os.path.join(bt_dir, '*.json')):
+                try:
+                    with open(json_file, 'r', encoding='utf-8') as f:
+                        jdata = json.load(f)
+                    if jdata.get('meta', {}).get('run_id') == run_id:
+                        file_path = json_file
+                        break
+                except (json.JSONDecodeError, IOError):
+                    continue
+
+        if os.path.exists(file_path):
+            try:
+                log_path = _find_log_for_run(strategy_name, run_id)
+                os.remove(file_path)
+                if log_path and os.path.exists(log_path):
+                    os.remove(log_path)
+                deleted.append(run_id)
+            except OSError as e:
+                errors.append({'run_id': run_id, 'error': str(e)})
+        else:
+            errors.append({'run_id': run_id, 'error': 'not found'})
+
+    return jsonify({'deleted': deleted, 'errors': errors, 'deleted_count': len(deleted)})
+
+
+@app.route('/api/cache/browse')
+def api_cache_browse():
+    rel_path = request.args.get('path', '')
+    abs_path = os.path.normpath(os.path.join(CACHE_DIR, rel_path))
+    if not abs_path.startswith(os.path.normpath(CACHE_DIR)):
+        return jsonify({'error': 'Invalid path'}), 400
+    if not os.path.isdir(abs_path):
+        return jsonify({'error': 'Directory not found'}), 404
+
+    entries = []
+    try:
+        for entry in sorted(os.listdir(abs_path)):
+            full = os.path.join(abs_path, entry)
+            entry_rel = os.path.relpath(full, CACHE_DIR).replace('\\', '/')
+            if os.path.isdir(full):
+                entries.append({'name': entry, 'type': 'dir', 'path': entry_rel})
+            else:
+                size = os.path.getsize(full)
+                entries.append({
+                    'name': entry,
+                    'type': 'file',
+                    'path': entry_rel,
+                    'size': size,
+                    'ext': os.path.splitext(entry)[1].lower(),
+                })
+    except OSError as e:
+        return jsonify({'error': str(e)}), 500
+
+    parent = os.path.relpath(os.path.dirname(abs_path), CACHE_DIR).replace('\\', '/') if rel_path else ''
+    return jsonify({
+        'path': rel_path,
+        'parent': parent if parent != '.' else '',
+        'entries': entries,
+    })
+
+
+@app.route('/api/cache/dates')
+def api_cache_dates():
+    rel_path = request.args.get('path', '')
+    abs_path = os.path.normpath(os.path.join(CACHE_DIR, rel_path))
+    if not abs_path.startswith(os.path.normpath(CACHE_DIR)):
+        return jsonify({'error': 'Invalid path'}), 400
+    if not os.path.isfile(abs_path):
+        return jsonify({'error': 'File not found'}), 404
+
+    ext = os.path.splitext(abs_path)[1].lower()
+    if ext not in ('.parquet', '.pkl'):
+        return jsonify({'error': 'Not supported for this format'}), 400
+
+    try:
+        import pandas as pd
+        if ext == '.parquet':
+            df = pd.read_parquet(abs_path)
+        else:
+            with open(abs_path, 'rb') as f:
+                data = pickle.load(f)
+            if not isinstance(data, pd.DataFrame):
+                return jsonify({'error': 'Not a DataFrame'}), 400
+            df = data
+
+        has_index = not isinstance(df.index, pd.RangeIndex)
+        date_col = None
+        if has_index and pd.api.types.is_datetime64_any_dtype(df.index):
+            date_col = df.index.name or 'index'
+            dates = df.index.to_series()
+        else:
+            for col in df.columns:
+                if pd.api.types.is_datetime64_any_dtype(df[col]):
+                    date_col = col
+                    dates = df[col]
+                    break
+
+        if date_col is None:
+            return jsonify({'error': 'No datetime column found'}), 400
+
+        years = sorted(dates.dt.year.dropna().unique().astype(int).tolist())
+        year_months = {}
+        year_month_days = {}
+        for y in years:
+            mask = dates.dt.year == y
+            months = sorted(dates.loc[mask].dt.month.dropna().unique().astype(int).tolist())
+            year_months[str(y)] = months
+            year_month_days[str(y)] = {}
+            for m in months:
+                mask2 = (dates.dt.year == y) & (dates.dt.month == m)
+                days = sorted(dates.loc[mask2].dt.day.dropna().unique().astype(int).tolist())
+                year_month_days[str(y)][str(m).zfill(2)] = days
+
+        return jsonify({
+            'path': rel_path,
+            'date_column': date_col,
+            'years': [str(y) for y in years],
+            'year_months': {str(k): [str(m).zfill(2) for m in v] for k, v in year_months.items()},
+            'year_month_days': {str(k): {str(k2).zfill(2): v for k2, v in v2.items()} for k, v2 in year_month_days.items()},
+            'total_rows': len(df),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+def _filter_by_date(df, date_filter):
+    import pandas as pd
+    import re
+    has_index = not isinstance(df.index, pd.RangeIndex)
+    if has_index and pd.api.types.is_datetime64_any_dtype(df.index):
+        dates = df.index.to_series()
+    else:
+        for col in df.columns:
+            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                dates = df[col]
+                break
+        else:
+            return df
+    m_full = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', date_filter)
+    if m_full:
+        year, month, day = int(m_full.group(1)), int(m_full.group(2)), int(m_full.group(3))
+        mask = (dates.dt.year == year) & (dates.dt.month == month) & (dates.dt.day == day)
+        return df.loc[mask]
+    m_month = re.match(r'^(\d{4})-(\d{2})$', date_filter)
+    if m_month:
+        year, month = int(m_month.group(1)), int(m_month.group(2))
+        mask = (dates.dt.year == year) & (dates.dt.month == month)
+        return df.loc[mask]
+    m_year = re.match(r'^(\d{4})$', date_filter)
+    if m_year:
+        year = int(m_year.group(1))
+        mask = dates.dt.year == year
+        return df.loc[mask]
+    return df
+
+
+@app.route('/api/cache/view')
+def api_cache_view():
+    rel_path = request.args.get('path', '')
+    offset = request.args.get('offset', type=int)
+    limit = request.args.get('limit', type=int)
+    date_filter = request.args.get('date', '')
+
+    abs_path = os.path.normpath(os.path.join(CACHE_DIR, rel_path))
+    if not abs_path.startswith(os.path.normpath(CACHE_DIR)):
+        return jsonify({'error': 'Invalid path'}), 400
+    if not os.path.isfile(abs_path):
+        return jsonify({'error': 'File not found'}), 404
+
+    ext = os.path.splitext(abs_path)[1].lower()
+    try:
+        if ext == '.json':
+            with open(abs_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return jsonify({'format': 'json', 'data': data, 'path': rel_path})
+
+        elif ext == '.parquet':
+            try:
+                import pandas as pd
+                df = pd.read_parquet(abs_path)
+
+                if date_filter:
+                    df = _filter_by_date(df, date_filter)
+
+                has_index = not isinstance(df.index, pd.RangeIndex)
+                index_name = df.index.name or 'index'
+                index_dtype = str(df.index.dtype) if has_index else None
+                columns = list(df.columns)
+                all_columns = ([index_name] + columns) if has_index else columns
+                dtypes = {c: str(dt) for c, dt in df.dtypes.items()}
+                if has_index:
+                    dtypes[index_name] = index_dtype
+
+                if offset is None:
+                    offset = 0
+                if limit is None:
+                    limit = 50
+
+                slice_df = df.iloc[offset:offset + limit]
+                slice_df = slice_df.reset_index() if has_index else slice_df.copy()
+
+                for col in slice_df.columns:
+                    if pd.api.types.is_datetime64_any_dtype(slice_df[col]):
+                        s = slice_df[col]
+                        has_time = (s.dt.hour != 0).any() or (s.dt.minute != 0).any() or (s.dt.second != 0).any()
+                        slice_df[col] = s.dt.strftime('%Y-%m-%d %H:%M:%S' if has_time else '%Y-%m-%d')
+
+                return jsonify({
+                    'format': 'parquet',
+                    'path': rel_path,
+                    'columns': columns,
+                    'all_columns': all_columns,
+                    'dtypes': dtypes,
+                    'has_index': has_index,
+                    'index_name': index_name if has_index else None,
+                    'shape': list(df.shape),
+                    'offset': offset,
+                    'limit': limit,
+                    'total': len(df),
+                    'date_filter': date_filter,
+                    'head': slice_df.to_dict(orient='records'),
+                })
+            except Exception as e:
+                return jsonify({'format': 'parquet', 'error': str(e), 'path': rel_path})
+
+        elif ext == '.pkl':
+            try:
+                import pandas as pd
+                with open(abs_path, 'rb') as f:
+                    data = pickle.load(f)
+                if isinstance(data, pd.DataFrame):
+                    if date_filter:
+                        data = _filter_by_date(data, date_filter)
+                    has_index = not isinstance(data.index, pd.RangeIndex)
+                    index_name = data.index.name or 'index'
+                    index_dtype = str(data.index.dtype) if has_index else None
+                    columns = list(data.columns)
+                    all_columns = ([index_name] + columns) if has_index else columns
+                    dtypes = {c: str(dt) for c, dt in data.dtypes.items()}
+                    if has_index:
+                        dtypes[index_name] = index_dtype
+                    if offset is None:
+                        offset = 0
+                    if limit is None:
+                        limit = 50
+                    slice_df = data.iloc[offset:offset + limit]
+                    slice_df = slice_df.reset_index() if has_index else slice_df.copy()
+                    for col in slice_df.columns:
+                        if pd.api.types.is_datetime64_any_dtype(slice_df[col]):
+                            s = slice_df[col]
+                            has_time = (s.dt.hour != 0).any() or (s.dt.minute != 0).any() or (s.dt.second != 0).any()
+                            slice_df[col] = s.dt.strftime('%Y-%m-%d %H:%M:%S' if has_time else '%Y-%m-%d')
+                    return jsonify({
+                        'format': 'pkl_dataframe',
+                        'path': rel_path,
+                        'columns': columns,
+                        'all_columns': all_columns,
+                        'dtypes': dtypes,
+                        'has_index': has_index,
+                        'index_name': index_name if has_index else None,
+                        'shape': list(data.shape),
+                        'offset': offset,
+                        'limit': limit,
+                        'total': len(data),
+                        'date_filter': date_filter,
+                        'head': slice_df.to_dict(orient='records'),
+                    })
+                else:
+                    return jsonify({
+                        'format': 'pkl_other',
+                        'path': rel_path,
+                        'type': str(type(data)),
+                        'repr': repr(data)[:5000],
+                    })
+            except Exception as e:
+                return jsonify({'format': 'pkl', 'error': str(e), 'path': rel_path})
+
+        else:
+            size = os.path.getsize(abs_path)
+            if size < 50000:
+                try:
+                    with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
+                        content = f.read()
+                    return jsonify({'format': 'text', 'content': content, 'path': rel_path})
+                except Exception:
+                    pass
+            return jsonify({'format': ext or 'unknown', 'path': rel_path, 'size': size,
+                            'message': '此格式暂不支持在线预览'})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':
