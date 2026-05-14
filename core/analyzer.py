@@ -1,8 +1,12 @@
-import backtrader as bt
 import pandas as pd
 import numpy as np
 import datetime as dt_module
 from typing import Dict, List, Optional, Any
+
+try:
+    import backtrader as bt
+except ImportError:
+    bt = None
 
 from core.models import (
     BacktestingResult,
@@ -15,11 +19,11 @@ from core.models import (
 
 class PerformanceAnalyzer:
     def __init__(self):
-        self._cerebro: Optional[bt.Cerebro] = None
+        self._cerebro = None
         self._strategy = None
         self._initial_cash: float = 0.0
 
-    def set_context(self, cerebro: bt.Cerebro, strategy, initial_cash: float = 0.0):
+    def set_context(self, cerebro, strategy, initial_cash: float = 0.0):
         self._cerebro = cerebro
         self._strategy = strategy
         self._initial_cash = initial_cash
@@ -322,7 +326,250 @@ class PerformanceAnalyzer:
                 turnover += price * t.volume
         return turnover
 
-    def calculate_metrics(self, cerebro: bt.Cerebro) -> Dict[str, float]:
+    def build_result_from_engine(
+        self,
+        engine_result,
+        strategy_params: Optional[Dict[str, Any]] = None,
+        show_kline: bool = True,
+        trade_start_date: Optional[str] = None,
+    ) -> BacktestingResult:
+        from engine.result import EngineResult
+
+        account = self._build_account_from_engine(engine_result)
+        df = self._build_equity_dataframe_from_engine(engine_result, trade_start_date)
+        trade_log = self._build_trade_log_from_engine(engine_result)
+        klines = self._build_klines_from_engine(engine_result)
+        instruments_data = self._build_instruments_data_from_engine(engine_result)
+        instrument_close_prices = self._build_instrument_close_prices_from_engine(engine_result)
+
+        result = BacktestingResult(
+            account=account,
+            config=BacktestConfig(show_kline=show_kline),
+            strategy_params=strategy_params or {},
+            klines=klines,
+            trade_log=trade_log,
+            df=df,
+            instruments_data=instruments_data,
+            trade_start_date=trade_start_date,
+            instrument_close_prices=instrument_close_prices,
+        )
+
+        result.turnover = self._calc_turnover(trade_log)
+        result.total_volume = sum(abs(t.volume) for t in trade_log if t.order_id != -1)
+
+        return result
+
+    def _build_account_from_engine(self, engine_result) -> AccountInfo:
+        initial = engine_result.initial_cash
+        final_value = engine_result.final_value
+        total_profit = final_value - initial
+        rate = total_profit / initial if initial > 0 else 0.0
+        fee = sum(getattr(o, 'commission', 0.0) for o in engine_result.orders)
+        return AccountInfo(
+            initial_capital=initial,
+            dynamic_rights=final_value,
+            total_profit=total_profit,
+            rate=rate,
+            fee=fee,
+        )
+
+    def _build_equity_dataframe_from_engine(self, engine_result, trade_start_date=None) -> Optional[pd.DataFrame]:
+        equity_history = engine_result.equity_history
+        if not equity_history:
+            return None
+
+        filtered_history = []
+        for dt, value in equity_history:
+            if trade_start_date and hasattr(dt, 'isoformat'):
+                if dt.isoformat() < trade_start_date:
+                    continue
+            filtered_history.append((dt, value))
+
+        if not filtered_history:
+            return None
+
+        dates = []
+        portfolio_values = []
+        daily_pnls = []
+
+        for i, (dt, value) in enumerate(filtered_history):
+            dates.append(pd.Timestamp(dt))
+            portfolio_values.append(value)
+            if i == 0:
+                daily_pnls.append(0.0)
+            else:
+                daily_pnls.append(value - filtered_history[i - 1][1])
+
+        df = pd.DataFrame({
+            "datetime": dates,
+            "PortfolioValue": portfolio_values,
+            "PnL": daily_pnls,
+        })
+        return df
+
+    def _build_trade_log_from_engine(self, engine_result) -> List[TradeRecord]:
+        trades: List[TradeRecord] = []
+
+        logic = engine_result.strategy_logic
+        logic_orders = logic.get_orders() if logic and hasattr(logic, 'get_orders') else {}
+        if not logic_orders:
+            return trades
+
+        trade_records = engine_result.trade_records or []
+        completed_orders = [
+            o for o in logic_orders.values()
+            if o.is_completed and (o.executed_volume > 0 or o.executed_price > 0)
+        ]
+
+        used_trade_indices = set()
+
+        def _find_matching_trade(symbol: str, direction: str, fallback_idx: int):
+            for i, tr in enumerate(trade_records):
+                if i in used_trade_indices:
+                    continue
+                tr_symbol = tr.get("symbol", "")
+                tr_direction = str(tr.get("direction", ""))
+                if tr_symbol == symbol:
+                    is_buy_trade = tr_direction in ("1", "买", "buy")
+                    is_sell_trade = tr_direction in ("2", "卖", "sell", "-1")
+                    order_is_buy = direction == "0"
+                    if (order_is_buy and is_buy_trade) or (not order_is_buy and is_sell_trade):
+                        used_trade_indices.add(i)
+                        return tr
+            if fallback_idx < len(trade_records) and fallback_idx not in used_trade_indices:
+                used_trade_indices.add(fallback_idx)
+                return trade_records[fallback_idx]
+            return None
+
+        positions = {}
+        trade_rec_idx = 0
+
+        for order_info in completed_orders:
+            direction = "0" if order_info.is_buy else "1"
+            exec_price = order_info.executed_price if order_info.executed_price > 0 else order_info.price
+            exec_vol = order_info.executed_volume if order_info.executed_volume > 0 else order_info.volume
+
+            current_pos = positions.get(order_info.symbol, 0)
+
+            if order_info.is_buy:
+                if current_pos < 0:
+                    close_vol = min(exec_vol, abs(current_pos))
+                    offset = "1" if close_vol > 0 else "0"
+                else:
+                    offset = "0"
+                new_pos = current_pos + exec_vol
+            else:
+                if current_pos > 0:
+                    close_vol = min(exec_vol, current_pos)
+                    offset = "1" if close_vol > 0 else "0"
+                else:
+                    offset = "0"
+                new_pos = current_pos - exec_vol
+
+            positions[order_info.symbol] = new_pos
+
+            memo = ""
+            is_buy = direction == "0"
+            if is_buy:
+                if offset == "0":
+                    memo = "建仓" if current_pos <= 0 else "加仓"
+                else:
+                    memo = "平仓"
+            else:
+                if offset == "1":
+                    memo = "清仓" if new_pos == 0 else "减仓"
+                else:
+                    memo = "空头建仓"
+
+            trade_datetime = getattr(order_info, 'datetime', None)
+            pnl_val = 0.0
+            fee_val = getattr(order_info, 'commission', 0.0)
+
+            if trade_datetime is None:
+                tr = _find_matching_trade(order_info.symbol, direction, trade_rec_idx)
+                if tr is not None:
+                    trade_datetime = tr.get("datetime")
+                    pnl_val = tr.get("pnl_no_commission", 0.0)
+                    fee_val = tr.get("commission", fee_val)
+                trade_rec_idx += 1
+
+            trade = TradeRecord(
+                order_id=len(trades) + 1,
+                trade_time=trade_datetime,
+                instrument_id=order_info.symbol,
+                direction=direction,
+                offset=offset,
+                volume=exec_vol,
+                order_price=order_info.price,
+                trade_price=exec_price,
+                fee=fee_val,
+                pnl=pnl_val,
+                memo=memo,
+            )
+            trades.append(trade)
+
+        return trades
+
+    def _build_klines_from_engine(self, engine_result) -> List[Dict]:
+        data_feeds = engine_result.data_feeds
+        if not data_feeds:
+            return []
+
+        first_symbol = next(iter(data_feeds), None)
+        if not first_symbol:
+            return []
+
+        feed = data_feeds[first_symbol]
+        klines = []
+        for i in range(feed.length):
+            try:
+                bar_dt = feed.get_datetime(i)
+                if bar_dt is None:
+                    continue
+                close = feed.get_close(i)
+                if close != close:
+                    continue
+                kline = {
+                    "datetime": bar_dt,
+                    "open": float(feed.get_open(i)),
+                    "high": float(feed.get_high(i)),
+                    "low": float(feed.get_low(i)),
+                    "close": float(close),
+                    "volume": float(feed.get_volume(i)),
+                }
+                klines.append(kline)
+            except Exception:
+                continue
+
+        return klines
+
+    def _build_instruments_data_from_engine(self, engine_result) -> Dict[str, InstrumentData]:
+        instruments_data: Dict[str, InstrumentData] = {}
+        for symbol in engine_result.data_feeds:
+            instruments_data[symbol] = InstrumentData(volume_multiple=1.0)
+        return instruments_data
+
+    def _build_instrument_close_prices_from_engine(self, engine_result) -> Dict[str, Dict[str, float]]:
+        result = {}
+        for symbol, feed in engine_result.data_feeds.items():
+            close_prices = {}
+            for i in range(feed.length):
+                try:
+                    bar_dt = feed.get_datetime(i)
+                    if bar_dt is None:
+                        continue
+                    close = feed.get_close(i)
+                    if close != close:
+                        continue
+                    date_str = bar_dt.strftime("%Y-%m-%d")
+                    close_prices[date_str] = float(close)
+                except Exception:
+                    continue
+            if close_prices:
+                result[symbol] = close_prices
+        return result
+
+    def calculate_metrics(self, cerebro) -> Dict[str, float]:
         """计算回测指标
 
         .. deprecated::

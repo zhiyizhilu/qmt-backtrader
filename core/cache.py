@@ -605,23 +605,76 @@ class DiskCache:
         ext = '.parquet' if format_type == 'parquet' else '.pkl'
         return year_dir / f"{year}_{suffix}{ext}"
 
-    def get(self, namespace: str, key: str, format_type: str) -> Optional[Any]:
-        file_path = self._get_file_path(namespace, key, format_type)
-        if not file_path.exists():
-            return None
+    def _try_read_cache_file(self, file_path: Path, format_type: str) -> Optional[Any]:
+        """尝试读取缓存文件，支持 parquet → pickle 回退
+
+        处理 .parquet 扩展名文件实际包含 pickle 数据的情况
+        （之前在无 pyarrow 环境下写入的缓存）。
+        """
         try:
             if format_type == 'parquet' and HAS_PYARROW:
                 return pd.read_parquet(file_path)
             else:
                 with open(file_path, 'rb') as f:
                     return _safe_pickle_load(f)
+        except Exception as first_err:
+            if format_type == 'parquet' and HAS_PYARROW:
+                try:
+                    with open(file_path, 'rb') as f:
+                        data = _safe_pickle_load(f)
+                    self.logger.info(f"缓存文件pickle回退读取成功，将重写为parquet: {file_path}")
+                    try:
+                        if isinstance(data, pd.DataFrame) and not data.empty:
+                            self._rewrite_pickle_as_parquet(file_path, data)
+                    except Exception as rewrite_err:
+                        self.logger.debug(f"重写缓存文件跳过: {rewrite_err}")
+                    return data
+                except Exception as pickle_err:
+                    self.logger.warning(f"读取磁盘缓存失败 (parquet和pickle均失败): {file_path}, 错误: {first_err} / {pickle_err}")
+                    try:
+                        file_path.unlink(missing_ok=True)
+                    except:
+                        pass
+                    return None
+            else:
+                self.logger.warning(f"读取磁盘缓存失败 (文件可能损坏)，自动删除: {file_path}, 错误: {first_err}")
+                try:
+                    file_path.unlink(missing_ok=True)
+                except:
+                    pass
+                return None
+
+    def _rewrite_pickle_as_parquet(self, file_path: Path, data: pd.DataFrame) -> bool:
+        """将pickle格式的缓存文件重写为parquet格式"""
+        if not HAS_PYARROW:
+            return False
+        try:
+            save_df = data.copy()
+            cols = list(save_df.columns)
+            seen = {}
+            new_cols = []
+            for c in cols:
+                c_str = str(c)
+                if c_str in seen:
+                    seen[c_str] += 1
+                    new_cols.append(f"{c_str}_{seen[c_str]}")
+                else:
+                    seen[c_str] = 0
+                    new_cols.append(c_str)
+            save_df.columns = new_cols
+            temp_path = file_path.with_suffix(file_path.suffix + '.tmp')
+            save_df.to_parquet(temp_path, engine='pyarrow', compression='snappy')
+            temp_path.replace(file_path)
+            return True
         except Exception as e:
-            self.logger.warning(f"读取磁盘缓存失败 (文件可能损坏)，自动删除: {file_path}, 错误: {e}")
-            try:
-                file_path.unlink(missing_ok=True)
-            except:
-                pass
+            self.logger.debug(f"重写parquet失败: {file_path}, {e}")
+            return False
+
+    def get(self, namespace: str, key: str, format_type: str) -> Optional[Any]:
+        file_path = self._get_file_path(namespace, key, format_type)
+        if not file_path.exists():
             return None
+        return self._try_read_cache_file(file_path, format_type)
 
     def get_yearly(self, namespace: str, symbol: str, year: int,
                     suffix: str, format_type: str = 'parquet') -> Optional[pd.DataFrame]:
@@ -637,19 +690,7 @@ class DiskCache:
         file_path = self._get_yearly_file_path(namespace, symbol, year, suffix, format_type)
         if not file_path.exists():
             return None
-        try:
-            if format_type == 'parquet' and HAS_PYARROW:
-                return pd.read_parquet(file_path)
-            else:
-                with open(file_path, 'rb') as f:
-                    return _safe_pickle_load(f)
-        except Exception as e:
-            self.logger.warning(f"读取年份缓存失败: {file_path}, 错误: {e}")
-            try:
-                file_path.unlink(missing_ok=True)
-            except:
-                pass
-            return None
+        return self._try_read_cache_file(file_path, format_type)
 
     def get_yearly_range(self, namespace: str, symbol: str, years: List[int],
                           suffix: str, format_type: str = 'parquet') -> Optional[pd.DataFrame]:
@@ -796,19 +837,9 @@ class DiskCache:
             for f in ns_dir.iterdir():
                 if f.is_file() and f.suffix == ext and f.stem.startswith(safe_prefix):
                     key = f.stem
-                    try:
-                        if format_type == 'parquet' and HAS_PYARROW:
-                            data = pd.read_parquet(f)
-                        else:
-                            with open(f, 'rb') as fh:
-                                data = _safe_pickle_load(fh)
+                    data = self._try_read_cache_file(f, format_type)
+                    if data is not None:
                         return (key, data)
-                    except Exception as e:
-                        self.logger.warning(f"读取磁盘缓存失败: {f}, 错误: {e}")
-                        try:
-                            f.unlink(missing_ok=True)
-                        except:
-                            pass
             return None
 
     def find_by_pattern(self, namespace: str, pattern: str,
@@ -826,20 +857,9 @@ class DiskCache:
                 if not f.is_file():
                     continue
                 key = f.stem
-                try:
-                    if format_type == 'parquet' and HAS_PYARROW:
-                        data = pd.read_parquet(f)
-                    else:
-                        with open(f, 'rb') as fh:
-                            data = _safe_pickle_load(fh)
-                    if data is not None:
-                        results.append((key, data))
-                except Exception as e:
-                    self.logger.warning(f"读取磁盘缓存失败: {f}, 错误: {e}")
-                    try:
-                        f.unlink(missing_ok=True)
-                    except:
-                        pass
+                data = self._try_read_cache_file(f, format_type)
+                if data is not None:
+                    results.append((key, data))
         results.sort(key=lambda x: x[0])
         return results
 

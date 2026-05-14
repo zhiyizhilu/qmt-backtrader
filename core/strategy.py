@@ -120,6 +120,7 @@ class BaseStrategy(bt.Strategy):
             self._strategy_logic.update_data()
 
         dt = self._get_current_date()
+
         value = self.broker.getvalue()
         if self._last_equity_date != dt:
             self._equity_history.append((dt, value))
@@ -128,19 +129,9 @@ class BaseStrategy(bt.Strategy):
             if self._equity_history:
                 self._equity_history[-1] = (dt, value)
 
-        # 首个bar输出数据状态
-        if self._current_bar == 1:
-            self.log(f'[DEBUG] 首个bar: 日期={dt}, 数据源数量={len(self.datas)}, 资金={value:.2f}')
-            for i, data in enumerate(self.datas):
-                name = data._name if hasattr(data, '_name') else f'data[{i}]'
-                self.log(f'[DEBUG]   数据源[{i}]: {name}, close={data.close[0]:.3f}, volume={data.volume[0]:.0f}')
-
         if self.params.trade_start_date:
             current_date_str = dt.isoformat()
             if current_date_str < self.params.trade_start_date:
-                # 仅前3个bar输出跳过日志，避免刷屏
-                if self._current_bar <= 3:
-                    self.log(f'[DEBUG] 跳过(未到交易起始日): 当前={current_date_str}, 交易起始日={self.params.trade_start_date}')
                 return
 
         if self._strategy_logic:

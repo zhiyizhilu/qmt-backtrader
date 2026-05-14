@@ -1,119 +1,27 @@
 from __future__ import annotations
-import backtrader as bt
 import datetime
 import logging
 import pandas as pd
 from typing import Dict, List, Optional, Any, Type
-from tqdm import tqdm
 from core.data import DataProcessor, QMTDataProcessor, OpenDataProcessor, create_data_processor
 from core.data.futu import FutuServiceError
-from core.executor import BacktestExecutor
-from core.data_adapter import BacktraderDataAdapter
 from core.strategy_logic import StrategyLogic
 from core.stock_selection import StockSelectionStrategy
 from core.financial_data import FinancialDataCache, FinancialDataAdapter
-from core.strategy import BaseStrategy
 from core.analyzer import PerformanceAnalyzer
 from core.stock_lifecycle import get_lifecycle_manager
 from api.base_api import BaseAPI
-
-_ADAPTER_CLASS_CACHE: Dict[str, Type] = {}
-
-
-def _make_adapter_class(
-    strategy_logic_class: Type[StrategyLogic],
-    strategy_kwargs: Dict[str, Any],
-    symbols: List[str],
-    period: str,
-    financial_adapter: Optional[FinancialDataAdapter] = None,
-    data_processor=None,
-) -> Type[BacktestStrategyAdapter]:
-    cache_key = f"{strategy_logic_class.__module__}.{strategy_logic_class.__qualname__}_{period}_{'_'.join(symbols)}"
-    if cache_key in _ADAPTER_CLASS_CACHE:
-        return _ADAPTER_CLASS_CACHE[cache_key]
-
-    params_tuple = tuple(strategy_logic_class.params) if hasattr(strategy_logic_class, 'params') else ()
-
-    class _CachedParamsAdapter(BacktestStrategyAdapter):
-        params = params_tuple
-
-        def __init__(self, **bt_kwargs):
-            super().__init__(
-                strategy_logic_class=strategy_logic_class,
-                strategy_kwargs=strategy_kwargs,
-                symbols=symbols,
-                period=period,
-                financial_adapter=financial_adapter,
-                data_processor=data_processor,
-                **bt_kwargs,
-            )
-
-    _CachedParamsAdapter.__qualname__ = f'_CachedParamsAdapter_{strategy_logic_class.__name__}'
-    _ADAPTER_CLASS_CACHE[cache_key] = _CachedParamsAdapter
-    return _CachedParamsAdapter
-
-
-class BacktestStrategyAdapter(BaseStrategy):
-    """回测策略适配器 - 将StrategyLogic桥接到backtrader框架
-
-    独立于BacktestAPI的顶层类，通过构造函数接收所有依赖，
-    避免闭包捕获外部变量带来的隐式耦合。
-    """
-
-    def __init__(self, strategy_logic_class: Type[StrategyLogic],
-                 strategy_kwargs: Dict[str, Any],
-                 symbols: List[str],
-                 period: str = '1d',
-                 financial_adapter: Optional[FinancialDataAdapter] = None,
-                 data_processor=None,
-                 **bt_kwargs):
-        super().__init__()
-        self._symbols = symbols
-
-        logic = strategy_logic_class(**strategy_kwargs)
-
-        adapter = BacktraderDataAdapter(period=period)
-        executor = BacktestExecutor(self, data_adapter=adapter)
-
-        logging.getLogger(__name__).debug(
-            f'[BacktestStrategyAdapter] 初始化: symbols={symbols}, period={period}, '
-            f'datas数量={len(self.datas) if hasattr(self, "datas") else 0}'
-        )
-
-        for i, sym in enumerate(symbols):
-            if i < len(self.datas):
-                adapter.register_data(sym, self.datas[i])
-                executor.register_data(sym, self.datas[i])
-                logging.getLogger(__name__).debug(
-                    f'[BacktestStrategyAdapter] 映射: {sym} -> datas[{i}], '
-                    f'name={self.datas[i]._name if hasattr(self.datas[i], "_name") else "N/A"}'
-                )
-            else:
-                logging.getLogger(__name__).warning(
-                    f'[BacktestStrategyAdapter] 无法映射: {sym}, datas数量不足 '
-                    f'(需要索引{i}, 只有{len(self.datas)}个数据源)'
-                )
-
-        logic.set_data_adapter(adapter)
-        logic.executor = executor
-
-        if financial_adapter:
-            logic.set_financial_data_adapter(financial_adapter)
-
-        if data_processor is not None:
-            logic.set_data_processor(data_processor)
-
-        self.set_strategy_logic(logic)
+from engine import BacktestEngine, SimulatedBroker
 
 
 class BacktestAPI(BaseAPI):
-    """回测API - 通过backtrader引擎驱动策略
+    """回测API - 通过自研回测引擎驱动策略
 
     策略逻辑与执行环境解耦：
     - 策略类继承StrategyLogic，仅定义交易逻辑
-    - BacktestAPI负责创建适配层，将StrategyLogic桥接到backtrader
-    - 数据访问通过BacktraderDataAdapter
-    - 交易执行通过BacktestExecutor
+    - BacktestAPI负责创建引擎，将StrategyLogic桥接到回测引擎
+    - 数据访问通过EngineDataAdapter
+    - 交易执行通过EngineExecutor
     - 回测结果通过PerformanceAnalyzer构建BacktestingResult
 
     使用方式：
@@ -140,7 +48,9 @@ class BacktestAPI(BaseAPI):
 
     def __init__(self, proxy: str = '', data_source: str = 'qmt'):
         super().__init__()
-        self.cerebro = bt.Cerebro()
+        self._engine = BacktestEngine()
+        self._broker = SimulatedBroker()
+        self._engine.set_broker(self._broker)
         self._data_source = data_source
         self.data_processor = create_data_processor(
             fallback_to_simulated=False, proxy=proxy, data_source=data_source
@@ -148,9 +58,9 @@ class BacktestAPI(BaseAPI):
         self._financial_data_processor = create_data_processor(
             fallback_to_simulated=False, proxy=proxy, use_opendata=False
         )
-        # 即使使用富途数据源，仍需要 OpenData 处理器用于获取基准数据
         self._opendata_processor = OpenDataProcessor(fallback_to_simulated=False)
         self._symbols: List[str] = []
+        self._data_cache: Dict[str, pd.DataFrame] = {}
         self._strategy_logic_class: Optional[Type[StrategyLogic]] = None
         self._strategy_kwargs: Dict[str, Any] = {}
         self._initial_cash: float = 0.0
@@ -161,7 +71,6 @@ class BacktestAPI(BaseAPI):
         self._benchmark: str = '000300.SH'
         self._data_start_date: Optional[str] = None
         self._data_end_date: Optional[str] = None
-        self._custom_analyzers_added = False
         self._financial_adapter: Optional[FinancialDataAdapter] = None
         self._stock_pool: Optional[List[str]] = None
         self._compare_symbols: List[str] = []
@@ -178,25 +87,6 @@ class BacktestAPI(BaseAPI):
                   period: str = '1d', trade_start_date: Optional[str] = None,
                   slippage: float = 0.0, compare_symbols: Optional[List[str]] = None,
                   **kwargs):
-        """一次性配置回测参数
-
-        将 start_date 自动前移 data_lookback_days 天作为数据加载起始日，
-        start_date 本身作为交易起始日（trade_start_date）。
-
-        数据源以QMT为主，QMT数据不足时自动用OpenData补充，
-        因此支持任意长度的历史数据回测。
-
-        Args:
-            cash: 初始资金
-            commission: 手续费率
-            start_date: 交易起始日，如 '2025-07-10'
-            end_date: 回测结束日，如 '2026-04-17'
-            data_lookback_days: 数据前移天数，用于指标预热
-            benchmark: 基准标的
-            period: 数据周期
-            trade_start_date: 交易起始日，默认等于 start_date
-            slippage: 滑点百分比，如0.001表示0.1%，0表示无滑点
-        """
         self.set_cash(cash)
         self.set_commission(commission)
         self.set_slippage(slippage)
@@ -218,39 +108,12 @@ class BacktestAPI(BaseAPI):
             )
 
     def set_data_range(self, start_date: str, end_date: str, period: str = '1d'):
-        """设置数据加载范围
-
-        与 add_data 不同，此方法仅记录范围参数，不立即加载数据。
-        后续 add_strategy 会根据此范围自动加载策略所需的标的数据。
-
-        Args:
-            start_date: 数据起始日
-            end_date: 数据结束日
-            period: 数据周期
-        """
         self._data_start_date = start_date
         self._data_end_date = end_date
         self._period = period
 
     def add_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d",
                  skip_if_late_start: bool = False):
-        """加载标的数据到回测引擎
-
-        数据源选择逻辑：
-        - data_source='futu': 使用 FutuDataProcessor 从 .cache/FutuData 读取
-        - data_source='qmt'(默认): 优先使用 OpenData 的后复权数据，因为 QMT 和 OpenData 的
-          后复权因子存在系统性差异，使用统一数据源可避免混合数据源时价格断裂。
-          不复权数据两者完全一致，不受影响。
-
-        Args:
-            symbol: 标的代码
-            start_date: 数据起始日
-            end_date: 数据结束日
-            period: 数据周期
-            skip_if_late_start: 已废弃参数，保留仅为向后兼容
-        """
-        import numpy as np
-
         self._period = period
         self._data_start_date = start_date
         self._data_end_date = end_date
@@ -258,17 +121,13 @@ class BacktestAPI(BaseAPI):
         data = None
 
         if self._data_source == 'futu':
-            # 富途数据源：直接从 FutuDataProcessor 获取
             try:
                 data = self.data_processor.get_data(symbol, start_date, end_date, period)
             except FutuServiceError:
-                # OpenD服务未开启，直接退出
                 raise
             except Exception as e:
                 self.logger.warning(f'[add_data] {symbol}: FutuData获取失败({e})')
         else:
-            # 回测仅使用 OpenData，不降级 QMT（避免混合数据源导致价格不一致）
-            # skip_current_year_refresh=True: 缓存已覆盖回测区间时不重新下载
             try:
                 data = self._opendata_processor.get_data(
                     symbol, start_date, end_date, period,
@@ -278,53 +137,9 @@ class BacktestAPI(BaseAPI):
                 self.logger.warning(f'[add_data] {symbol}: OpenData获取失败({e})')
 
         if not data.empty:
-            # 如果数据实际起始日晚于请求的起始日，用 NaN 行补齐前置日期
-            # 这样 backtrader 的时间对齐不会因晚起始数据而推迟整个回测
-            actual_start = data.index[0]
-            if hasattr(actual_start, 'strftime'):
-                actual_start_str = actual_start.strftime('%Y-%m-%d')
-            else:
-                actual_start_str = str(actual_start)[:10]
-
-            if actual_start_str > start_date:
-                try:
-                    # 生成从 start_date 到 actual_start 之前的交易日
-                    import pandas as pd
-                    fill_start_dt = pd.to_datetime(start_date)
-                    fill_end_dt = pd.to_datetime(actual_start_str) - pd.Timedelta(days=1)
-                    if fill_start_dt <= fill_end_dt:
-                        fill_dates = pd.bdate_range(start=fill_start_dt, end=fill_end_dt)
-                        if len(fill_dates) > 0:
-                            # 构建全 NaN 的填充行
-                            fill_rows = pd.DataFrame(
-                                np.nan,
-                                index=fill_dates,
-                                columns=data.columns
-                            )
-                            # 拼接：前置 NaN 行 + 实际数据
-                            data = pd.concat([fill_rows, data])
-                            self.logger.debug(
-                                f'[add_data] {symbol}: 前置填充 {len(fill_dates)} 个NaN行 '
-                                f'({fill_dates[0].strftime("%Y-%m-%d")} ~ '
-                                f'{fill_dates[-1].strftime("%Y-%m-%d")}), '
-                                f'实际数据起始日={actual_start_str}'
-                            )
-                except Exception as e:
-                    self.logger.debug(f'[add_data] {symbol}: 前置填充失败: {e}')
-
-            bt_data = bt.feeds.PandasData(
-                dataname=data,
-                datetime='datetime' if 'datetime' in data.columns else None,
-                open='open',
-                high='high',
-                low='low',
-                close='close',
-                volume='volume',
-                openinterest='openinterest' if 'openinterest' in data.columns else -1
-            )
-
-            self.cerebro.adddata(bt_data, name=symbol)
+            self._engine.add_data(symbol, data)
             self._symbols.append(symbol)
+            self._data_cache[symbol] = data
         else:
             self.logger.warning(f'[add_data] {symbol}: 数据为空! start={start_date}, end={end_date}, period={period}')
 
@@ -333,41 +148,14 @@ class BacktestAPI(BaseAPI):
                             sector: Optional[str] = None,
                             start_time: str = '', end_time: str = '',
                             report_type: str = 'announce_time') -> FinancialDataAdapter:
-        """加载财务数据并创建财务数据适配器
-
-        Args:
-            stock_list: 股票代码列表，与 sector 二选一
-            table_list: 财务报表列表，为空则加载全部
-            sector: 板块名称，如 '沪深300'，与 stock_list 二选一
-            start_time: 财务数据起始时间
-            end_time: 财务数据结束时间
-            report_type: 报表筛选方式
-                'announce_time' - 按披露日期（回测推荐，避免未来数据）
-                'report_time' - 按报告期
-
-        Returns:
-            FinancialDataAdapter 实例
-
-        示例:
-            # 方式1：指定股票列表
-            adapter = api.load_financial_data(
-                stock_list=['000001.SZ', '600000.SH'],
-                table_list=['Balance', 'Income', 'Pershareindex']
-            )
-
-            # 方式2：指定板块
-            adapter = api.load_financial_data(sector='沪深300')
-        """
         import time as _time
         overall_start = _time.time()
 
-        # 如果未指定时间范围，使用回测配置的时间范围
         if not start_time and self._data_start_date:
             start_time = self._data_start_date
         if not end_time and self._data_end_date:
             end_time = self._data_end_date
 
-        # ── 阶段1：获取股票池（收集回测期间所有历史成分股） ──
         if stock_list is None and sector:
             if start_time and end_time:
                 self.logger.info(f"[阶段1/6] 获取板块 '{sector}' 回测期间全部历史成分股 "
@@ -392,7 +180,6 @@ class BacktestAPI(BaseAPI):
         if not stock_list:
             raise ValueError("必须指定 stock_list 或 sector")
 
-        # ── 阶段1.5: 批量更新股票生命周期数据 ──
         try:
             if self._lifecycle_manager is None:
                 self._lifecycle_manager = get_lifecycle_manager(
@@ -410,7 +197,6 @@ class BacktestAPI(BaseAPI):
                 f"{delisted_count} 只退市, {late_list_count} 只晚上市"
             )
 
-            # 将退市信息同步到缓存索引的永久标记
             from core.cache import cache_manager
             for s in stock_list:
                 if self._lifecycle_manager.is_delisted(s) and not cache_manager.index_manager.is_delisted(s):
@@ -423,12 +209,11 @@ class BacktestAPI(BaseAPI):
         tables = table_list or ['Balance', 'Income', 'CashFlow', 'Capital',
                                 'HolderNum', 'Top10Holder', 'Top10FlowHolder', 'Pershareindex']
 
-        # ── 阶段2：检查磁盘缓存覆盖情况，只下载缺失的数据 ──        from core.cache import cache_manager
+        from core.cache import cache_manager
         namespace = f"{self._financial_data_processor.__class__.__name__}_Financial"
         time_suffix = f"_{start_time}_{end_time}" if start_time or end_time else ""
         ns_dir = cache_manager.disk_cache.get_namespace_dir(namespace)
 
-        # 计算请求的年份范围
         req_years = []
         if start_time and end_time:
             try:
@@ -444,7 +229,6 @@ class BacktestAPI(BaseAPI):
             for table in tables:
                 table_suffix = f"{table}_{report_type}"
 
-                # V2: 检查年份分片格式
                 if req_years:
                     available_years = cache_manager.index_manager.get_available_financial_years(stock, table_suffix)
                     if not available_years:
@@ -455,12 +239,10 @@ class BacktestAPI(BaseAPI):
                         all_tables_cached = False
                         break
                 else:
-                    # 无时间限制时，检查是否有任何年份数据
                     available_years = cache_manager.index_manager.get_available_financial_years(stock, table_suffix)
                     if not available_years:
                         available_years = cache_manager.disk_cache.list_yearly_files(namespace, stock, table_suffix)
                     if not available_years:
-                        # 回退到旧格式检查
                         cache_key = f"{stock}{time_suffix}_{table}_{report_type}"
                         file_path = ns_dir / f"{cache_key}.parquet"
                         if not file_path.exists():
@@ -477,19 +259,16 @@ class BacktestAPI(BaseAPI):
             self.logger.info(
                 f"[阶段2/6] 下载缺失的财务数据: "
                 f"{len(uncached_stocks)} 只股票缺少缓存 (已有 {len(cached_stocks)} 只缓存)"
-
             )
             self._financial_data_processor.download_financial_data(
                 uncached_stocks, table_list, start_time, end_time
             )
-            # 对刚下载的股票，读取并存入磁盘 parquet 缓存
             self._financial_data_processor.get_financial_data(
                 uncached_stocks, table_list, start_time, end_time, report_type
             )
         else:
             self.logger.info(f"[阶段2/6] 全部 {len(stock_list)} 只股票已有磁盘缓存，跳过下载")
 
-        # ── 阶段3：创建按需加载的财务数据适配器 ──
         cache = FinancialDataCache(
             data_processor=self._financial_data_processor,
             report_type=report_type,
@@ -524,10 +303,8 @@ class BacktestAPI(BaseAPI):
             f"[阶段3/6] 财务数据适配器创建完成(按需加载模式): {len(stock_list)} 只股票待查询"
         )
 
-        # ── 阶段4：获取行业映射（优先使用历史行业数据） ──
         self.logger.info(f"[阶段4/6] 获取申万行业分类映射...")
         try:
-            # 使用回测开始日期作为历史行业数据的基准日期
             hist_date = start_time if start_time else end_time
             if not hist_date:
                 hist_date = pd.Timestamp.now().strftime('%Y-%m-%d')
@@ -547,7 +324,6 @@ class BacktestAPI(BaseAPI):
         except Exception as e:
             self.logger.warning(f"[阶段4/6] 行业分类映射加载失败: {e}，策略将无法使用行业筛选")
 
-        # ── 阶段5：获取分红数据 ──
         self.logger.info(f"[阶段5/6] 获取分红数据，共 {len(stock_list)} 只股票...")
         try:
             dividend_data = self._financial_data_processor.get_dividend_data(stock_list)
@@ -569,18 +345,6 @@ class BacktestAPI(BaseAPI):
 
     def load_stock_pool(self, sector: str = '沪深A股',
                         stock_list: Optional[List[str]] = None) -> List[str]:
-        """加载股票池
-
-        回测时自动收集回测期间所有历史成分股的并集，
-        确保成分股调整期间涉及的股票数据都能被获取。
-
-        Args:
-            sector: 板块名称
-            stock_list: 自定义股票列表，优先于 sector
-
-        Returns:
-            股票代码列表
-        """
         if stock_list:
             self._stock_pool = stock_list
         else:
@@ -603,28 +367,6 @@ class BacktestAPI(BaseAPI):
     def add_stock_selection_strategy(self, strategy_class: Type[StockSelectionStrategy],
                                      stock_pool: Optional[List[str]] = None,
                                      **kwargs):
-        """添加选股策略 - 支持多标的调仓回测
-
-        选股策略会自动加载股票池中所有标的的行情数据，
-        并注入财务数据适配器。
-
-        Args:
-            strategy_class: 选股策略类（须继承 StockSelectionStrategy）
-            stock_pool: 股票池，为空则使用 load_stock_pool 加载的池子
-            **kwargs: 策略参数
-
-        使用方式:
-            api = BacktestAPI()
-            api.set_cash(1000000)
-            api.configure(start_date='2024-01-01', end_date='2026-04-17')
-
-            # 加载财务数据
-            api.load_financial_data(sector='沪深300')
-
-            # 添加选股策略
-            api.add_stock_selection_strategy(MyFundamentalStrategy, max_stocks=10)
-            api.run()
-        """
         if not self._data_start_date or not self._data_end_date:
             today = datetime.date.today()
             self._data_end_date = today.strftime('%Y-%m-%d')
@@ -648,18 +390,9 @@ class BacktestAPI(BaseAPI):
 
         self._preload_auxiliary_data(pool)
 
-        self._register_stock_selection_strategy(strategy_class, kwargs)
-
     def _load_pool_market_data(self, pool: List[str]):
-        """加载股票池行情数据到回测引擎
-
-        Args:
-            pool: 股票代码列表
-
-        Returns:
-            (loaded_count, failed_count, skipped_count) 元组
-        """
         import time as _time
+        import numpy as np
         from concurrent.futures import ThreadPoolExecutor, as_completed
         load_start = _time.time()
 
@@ -697,17 +430,13 @@ class BacktestAPI(BaseAPI):
 
                 data = None
                 if self._data_source == 'futu':
-                    # 富途数据源
                     try:
                         data = self.data_processor.get_data(symbol, effective_start, effective_end, self._period)
                     except FutuServiceError:
-                        # OpenD服务未开启，直接向上抛出以终止回测
                         raise
                     except Exception:
                         pass
                 else:
-                    # 回测仅使用 OpenData，不降级 QMT（避免混合数据源导致价格不一致）
-                    # skip_current_year_refresh=True: 缓存已覆盖回测区间时不重新下载
                     try:
                         data = self._opendata_processor.get_data(
                             symbol, effective_start, effective_end, self._period,
@@ -717,7 +446,6 @@ class BacktestAPI(BaseAPI):
                         pass
                 return (symbol, data, None)
             except FutuServiceError:
-                # OpenD服务未开启，直接向上抛出以终止回测
                 raise
             except Exception as e:
                 return (symbol, None, e)
@@ -750,7 +478,6 @@ class BacktestAPI(BaseAPI):
                         if done_count % 100 == 0 or done_count == len(symbols_to_load):
                             self.logger.info(f"[ {done_count} / {len(symbols_to_load)} ] 行情数据获取进度")
 
-            import numpy as np
             for symbol in symbols_to_load:
                 if symbol in fetch_errors:
                     failed_count += 1
@@ -764,34 +491,9 @@ class BacktestAPI(BaseAPI):
                     continue
 
                 try:
-                    actual_start = data.index[0]
-                    if hasattr(actual_start, 'strftime'):
-                        actual_start_str = actual_start.strftime('%Y-%m-%d')
-                    else:
-                        actual_start_str = str(actual_start)[:10]
-
-                    if actual_start_str > self._data_start_date:
-                        try:
-                            fill_start_dt = pd.to_datetime(self._data_start_date)
-                            fill_end_dt = pd.to_datetime(actual_start_str) - pd.Timedelta(days=1)
-                            if fill_start_dt <= fill_end_dt:
-                                fill_dates = pd.bdate_range(start=fill_start_dt, end=fill_end_dt)
-                                if len(fill_dates) > 0:
-                                    fill_rows = pd.DataFrame(
-                                        np.nan, index=fill_dates, columns=data.columns
-                                    )
-                                    data = pd.concat([fill_rows, data])
-                        except Exception:
-                            pass
-
-                    bt_data = bt.feeds.PandasData(
-                        dataname=data,
-                        datetime='datetime' if 'datetime' in data.columns else None,
-                        open='open', high='high', low='low', close='close', volume='volume',
-                        openinterest='openinterest' if 'openinterest' in data.columns else -1
-                    )
-                    self.cerebro.adddata(bt_data, name=symbol)
+                    self._engine.add_data(symbol, data)
                     self._symbols.append(symbol)
+                    self._data_cache[symbol] = data
                     loaded_count += 1
                 except Exception as e:
                     failed_count += 1
@@ -806,11 +508,6 @@ class BacktestAPI(BaseAPI):
         return loaded_count, failed_count, skipped_count
 
     def _preload_auxiliary_data(self, pool: List[str]):
-        """预加载财务数据和不复权行情数据
-
-        Args:
-            pool: 股票代码列表
-        """
         import time as _time
         from concurrent.futures import ThreadPoolExecutor
 
@@ -898,11 +595,6 @@ class BacktestAPI(BaseAPI):
             self._preload_raw_market_data(pool)
 
     def _preload_raw_market_data(self, pool: List[str]):
-        """预下载不复权行情数据（无财务适配器时的独立路径）
-
-        Args:
-            pool: 股票代码列表
-        """
         import time as _time
         raw_start = _time.time()
         raw_loaded = 0
@@ -954,29 +646,6 @@ class BacktestAPI(BaseAPI):
             f"{raw_skipped} 跳过, {raw_nodata} 黑名单跳过, 耗时 {raw_elapsed:.1f}秒"
         )
 
-    def _register_stock_selection_strategy(self, strategy_class: Type[StockSelectionStrategy],
-                                            kwargs: Dict[str, Any]):
-        """注册选股策略到回测引擎
-
-        Args:
-            strategy_class: 选股策略类
-            kwargs: 策略参数
-        """
-        self._ensure_default_analyzers()
-
-        strategy_logic_class_ref = strategy_class
-        strategy_kwargs = dict(kwargs)
-        symbols = list(self._symbols)
-        period = self._period
-        trade_start_date = self._trade_start_date
-        financial_adapter = self._financial_adapter
-
-        adapter_cls = _make_adapter_class(
-            strategy_logic_class_ref, strategy_kwargs, symbols, period, financial_adapter,
-            data_processor=self._opendata_processor,
-        )
-        self.cerebro.addstrategy(adapter_cls, trade_start_date=trade_start_date)
-
     def add_strategy(self, strategy_logic_class: Type[StrategyLogic], **kwargs):
         self._strategy_logic_class = strategy_logic_class
         self._strategy_kwargs = kwargs
@@ -994,26 +663,11 @@ class BacktestAPI(BaseAPI):
             if symbol not in self._symbols:
                 self.add_data(symbol, self._data_start_date, self._data_end_date, self._period)
 
-        self._ensure_default_analyzers()
-
-        strategy_logic_class_ref = strategy_logic_class
-        strategy_kwargs = dict(kwargs)
-        symbols = list(self._symbols)
-        period = self._period
-        trade_start_date = self._trade_start_date
-        financial_adapter = self._financial_adapter
-
-        adapter_cls = _make_adapter_class(
-            strategy_logic_class_ref, strategy_kwargs, symbols, period, financial_adapter,
-            data_processor=self.data_processor,
-        )
-        self.cerebro.addstrategy(adapter_cls, trade_start_date=trade_start_date)
-
     def set_cash(self, cash: float):
         self._initial_cash = cash
-        self.cerebro.broker.setcash(cash)
-        self.cerebro.broker.set_checksubmit(False)
-        self.cerebro.broker.set_coc(True)
+        self._broker.setcash(cash)
+        self._broker.set_checksubmit(False)
+        self._broker.set_coc(True)
 
     def set_trade_start_date(self, trade_start_date: str):
         self._trade_start_date = trade_start_date
@@ -1022,52 +676,55 @@ class BacktestAPI(BaseAPI):
         self._benchmark = benchmark
 
     def set_commission(self, commission: float):
-        self.cerebro.broker.setcommission(commission=commission)
+        self._broker.setcommission(commission)
 
     def set_slippage(self, slippage: float):
         if slippage > 0:
-            self.cerebro.broker.set_slippage_perc(slippage)
+            self._broker.set_slippage_perc(slippage)
 
     def add_analyzer(self, analyzer_class, **kwargs):
-        self._custom_analyzers_added = True
-        self.cerebro.addanalyzer(analyzer_class, **kwargs)
+        pass
 
     def _ensure_default_analyzers(self):
-        if self._custom_analyzers_added:
-            return
-        self.cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
-        self.cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
-        self.cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
-        self.cerebro.addanalyzer(bt.analyzers.Transactions, _name='transactions')
+        pass
 
     def run(self):
         if self._initial_cash == 0.0:
             self.set_cash(200000)
+
+        if self._strategy_logic_class is None:
+            self.logger.warning('[run] 未设置策略，无法运行回测')
+            return None
 
         self.logger.info(
             f'[run] 回测启动: symbols={self._symbols}, period={self._period}, '
             f'数据范围={self._data_start_date}~{self._data_end_date}, '
             f'交易起始日={self._trade_start_date}, '
             f'初始资金={self._initial_cash}, '
-            f'策略={self._strategy_logic_class.__name__ if self._strategy_logic_class else "N/A"}, '
-            f'数据源数量={len(self.cerebro.datas)}'
+            f'策略={self._strategy_logic_class.__name__}, '
+            f'数据源数量={len(self._symbols)}'
         )
 
-        # 检查数据源
-        for i, data in enumerate(self.cerebro.datas):
-            name = data._name if hasattr(data, '_name') else f'data[{i}]'
-            self.logger.debug(f'[run] cerebro.datas[{i}]: {name}')
+        strategy_logic = self._strategy_logic_class(**self._strategy_kwargs)
 
-        results = self.cerebro.run()
-        self.cerebro.runstrats = [results]
+        if self._financial_adapter:
+            strategy_logic.set_financial_data_adapter(self._financial_adapter)
 
-        if results:
-            strategy = results[0]
-            self._analyzer.set_context(
-                self.cerebro, strategy, self._initial_cash
-            )
+        if hasattr(self, '_opendata_processor') and self._opendata_processor:
+            strategy_logic.set_data_processor(self._opendata_processor)
+
+        self._engine.set_strategy(strategy_logic)
+        self._engine.set_trade_start_date(self._trade_start_date)
+        self._engine.set_period(self._period)
+
+        self._load_trading_calendar()
+
+        engine_result = self._engine.run()
+
+        if engine_result:
             strategy_params = self._build_strategy_params()
-            self._backtest_result = self._analyzer.build_result(
+            self._backtest_result = self._analyzer.build_result_from_engine(
+                engine_result,
                 strategy_params=strategy_params,
                 show_kline=True,
                 trade_start_date=self._trade_start_date,
@@ -1075,42 +732,36 @@ class BacktestAPI(BaseAPI):
 
             self._fetch_benchmark_data()
             self._fetch_compare_data()
-            self._log_summary(strategy)
+            self._log_summary(engine_result)
 
             if not self._no_record:
                 self._auto_record()
 
-        return results
+        return engine_result
 
-    def _log_summary(self, strategy):
+    def _log_summary(self, engine_result):
         try:
-            sharpe = strategy.analyzers.sharpe.get_analysis()
-            drawdown = strategy.analyzers.drawdown.get_analysis()
-            returns = strategy.analyzers.returns.get_analysis()
-            transactions = strategy.analyzers.transactions.get_analysis()
+            initial = engine_result.initial_cash
+            final_value = engine_result.final_value
+            total_return = (final_value - initial) / initial * 100 if initial > 0 else 0.0
 
-            final_value = self.cerebro.broker.getvalue()
-            total_return = returns['rtot'] * 100
-
-            self.logger.info(f"初始资金: {self._initial_cash}")
+            self.logger.info(f"初始资金: {initial}")
             self.logger.info(f"最终资金: {final_value:.2f}")
             self.logger.info(f"总收益率: {total_return:.2f}%")
 
-            sharpe_ratio = sharpe.get('sharperatio')
-            if sharpe_ratio is not None:
-                self.logger.info(f"夏普比率: {sharpe_ratio:.2f}")
-            else:
-                self.logger.info("夏普比率: N/A")
+            if self._backtest_result and self._backtest_result.df is not None:
+                sharpe = self._backtest_result.sharpe_ratio()
+                max_dd = self._backtest_result.max_drawdown()
+                self.logger.info(f"夏普比率: {sharpe:.2f}")
+                self.logger.info(f"最大回撤: {max_dd * 100:.2f}%")
 
-            self.logger.info(f"最大回撤: {drawdown['max']['drawdown']:.2f}%")
-            self.logger.info(f"交易次数: {len(transactions)}")
+            trade_count = len(engine_result.trade_records)
+            self.logger.info(f"交易次数: {trade_count}")
         except Exception as e:
             self.logger.warning(f"回测摘要输出失败: {e}")
 
-    def _fetch_benchmark_data(self):
-        if self._backtest_result is None or not self._benchmark:
-            return
-        if not self._data_start_date or not self._data_end_date:
+    def _load_trading_calendar(self):
+        if not self._benchmark or not self._data_start_date or not self._data_end_date:
             return
         try:
             benchmark_data = None
@@ -1122,10 +773,52 @@ class BacktestAPI(BaseAPI):
                     "1d",
                     skip_current_year_refresh=True,
                 )
-                if benchmark_data is not None and not benchmark_data.empty:
-                    self.logger.info(f"基准数据从OpenData获取成功: {self._benchmark}, {len(benchmark_data)}条")
             except Exception as e:
-                self.logger.warning(f"基准数据OpenData获取失败: {self._benchmark}, {e}")
+                self.logger.warning(f"交易日历基准数据获取失败: {self._benchmark}, {e}")
+
+            if benchmark_data is None or benchmark_data.empty:
+                self.logger.warning(f"交易日历基准数据为空: {self._benchmark}，将使用默认判断逻辑")
+                return
+
+            if not isinstance(benchmark_data.index, pd.DatetimeIndex):
+                benchmark_data.index = pd.to_datetime(benchmark_data.index)
+
+            self._benchmark_df = benchmark_data
+
+            trading_dates = set()
+            for ts in benchmark_data.index:
+                trading_dates.add(pd.Timestamp(ts).date())
+
+            self._engine.set_trading_dates(trading_dates)
+            self.logger.info(
+                f"交易日历已加载: 基准={self._benchmark}, "
+                f"交易日数量={len(trading_dates)}, "
+                f"范围={min(trading_dates)}~{max(trading_dates)}"
+            )
+        except Exception as e:
+            self.logger.warning(f"交易日历加载失败: {e}，将使用默认判断逻辑")
+
+    def _fetch_benchmark_data(self):
+        if self._backtest_result is None or not self._benchmark:
+            return
+        if not self._data_start_date or not self._data_end_date:
+            return
+        try:
+            benchmark_data = getattr(self, '_benchmark_df', None)
+            if benchmark_data is None or benchmark_data.empty:
+                benchmark_data = None
+                try:
+                    benchmark_data = self._opendata_processor.get_data(
+                        self._benchmark,
+                        self._data_start_date,
+                        self._data_end_date,
+                        "1d",
+                        skip_current_year_refresh=True,
+                    )
+                    if benchmark_data is not None and not benchmark_data.empty:
+                        self.logger.info(f"基准数据从OpenData获取成功: {self._benchmark}, {len(benchmark_data)}条")
+                except Exception as e:
+                    self.logger.warning(f"基准数据OpenData获取失败: {self._benchmark}, {e}")
 
             if benchmark_data is None or benchmark_data.empty:
                 self.logger.warning(f"基准数据获取失败: {self._benchmark}")
@@ -1186,8 +879,11 @@ class BacktestAPI(BaseAPI):
 
     def set_ai_mode(self, enabled: bool):
         self._ai_mode = enabled
-        from utils.report import set_ai_mode as set_report_ai_mode
-        set_report_ai_mode(enabled)
+        try:
+            from utils.report import set_ai_mode as set_report_ai_mode
+            set_report_ai_mode(enabled)
+        except ImportError:
+            pass
         self.logger.info(f"AI自动运行模式: {'开启' if enabled else '关闭'}")
 
     def is_ai_mode(self) -> bool:
@@ -1230,13 +926,14 @@ class BacktestAPI(BaseAPI):
         if self._ai_mode:
             self.logger.info("AI自动运行模式下跳过报告绘图")
             return
-        from utils.report import generate_report
-        generate_report(self._backtest_result)
+        try:
+            from utils.report import generate_report
+            generate_report(self._backtest_result)
+        except Exception as e:
+            self.logger.warning(f"报告显示失败({type(e).__name__}: {e})，回测结果已记录到文件")
 
     def plot(self, **kwargs):
-        if not hasattr(self.cerebro, '_exactbars'):
-            self.cerebro._exactbars = 0
-        self.cerebro.plot(**kwargs)
+        self.logger.info("自研引擎不支持 plot()，请使用 show_report() 查看结果")
 
     def _build_strategy_params(self) -> Dict[str, Any]:
         params = {}

@@ -768,18 +768,15 @@ class OpenDataProcessor(DataProcessor):
             for cache_file in ns_dir.glob('dividend_merged_*.parquet'):
                 if cache_file.name == f"{merged_cache_key}.parquet":
                     continue
-                try:
-                    candidate = pd.read_parquet(cache_file)
-                    if candidate is not None and isinstance(candidate, pd.DataFrame) and not candidate.empty:
-                        if '_stock_code' in candidate.columns:
-                            cached_stocks = set(candidate['_stock_code'].unique())
-                            if request_set.issubset(cached_stocks):
-                                candidate_dict = _parquet_to_merged_dict(candidate, mode='dividend')
-                                result_subset = {s: candidate_dict[s] for s in stock_list if s in candidate_dict}
-                                if len(result_subset) == len(stock_list):
-                                    return result_subset
-                except Exception:
-                    continue
+                candidate = cache_manager.disk_cache._try_read_cache_file(cache_file, 'parquet')
+                if candidate is not None and isinstance(candidate, pd.DataFrame) and not candidate.empty:
+                    if '_stock_code' in candidate.columns:
+                        cached_stocks = set(candidate['_stock_code'].unique())
+                        if request_set.issubset(cached_stocks):
+                            candidate_dict = _parquet_to_merged_dict(candidate, mode='dividend')
+                            result_subset = {s: candidate_dict[s] for s in stock_list if s in candidate_dict}
+                            if len(result_subset) == len(stock_list):
+                                return result_subset
         result = {}
         total = len(stock_list)
         for i, symbol in enumerate(stock_list, 1):
@@ -872,7 +869,9 @@ def _get_qvix_cache_dir() -> str:
 
 
 def _get_qvix_cache_path(symbol: str) -> str:
-    return os.path.join(_get_qvix_cache_dir(), f'QVIX_{symbol}.parquet')
+    from core.cache import HAS_PYARROW
+    ext = '.parquet' if HAS_PYARROW else '.pkl'
+    return os.path.join(_get_qvix_cache_dir(), f'QVIX_{symbol}{ext}')
 
 
 def _is_qvix_cache_valid(cache_path: str) -> bool:
@@ -883,11 +882,16 @@ def _is_qvix_cache_valid(cache_path: str) -> bool:
 
 
 def _load_qvix_from_cache(symbol: str) -> Optional[pd.DataFrame]:
+    from core.cache import HAS_PYARROW, _safe_pickle_load
     cache_path = _get_qvix_cache_path(symbol)
     if not _is_qvix_cache_valid(cache_path):
         return None
     try:
-        df = pd.read_parquet(cache_path)
+        if HAS_PYARROW:
+            df = pd.read_parquet(cache_path)
+        else:
+            with open(cache_path, 'rb') as f:
+                df = _safe_pickle_load(f)
         if df.empty:
             return None
         df['date'] = pd.to_datetime(df['date'])
@@ -899,11 +903,17 @@ def _load_qvix_from_cache(symbol: str) -> Optional[pd.DataFrame]:
 
 
 def _save_qvix_to_cache(symbol: str, df: pd.DataFrame):
+    import pickle
+    from core.cache import HAS_PYARROW
     cache_path = _get_qvix_cache_path(symbol)
     try:
         save_df = df.copy()
         save_df['date'] = save_df['date'].astype(str)
-        save_df.to_parquet(cache_path, index=False)
+        if HAS_PYARROW:
+            save_df.to_parquet(cache_path, index=False)
+        else:
+            with open(cache_path, 'wb') as f:
+                pickle.dump(save_df, f, protocol=pickle.HIGHEST_PROTOCOL)
         logging.getLogger(__name__).info(f"QVIX数据已缓存: {cache_path}, {len(df)}行")
     except Exception as e:
         logging.getLogger(__name__).warning(f"QVIX缓存写入失败: {cache_path}, {e}")

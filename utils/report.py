@@ -3,9 +3,30 @@ import bisect
 import datetime as dt_module
 import numpy as np
 import pandas as pd
-import pyqtgraph as pg
 from collections import deque, defaultdict, OrderedDict
-from PyQt5.QtWidgets import (
+from typing import Optional, Any
+
+try:
+    import pyqtgraph as pg
+except ImportError:
+    import types
+    pg = types.ModuleType('pyqtgraph')
+    pg.LegendItem = object
+    pg.GraphicsObject = object
+    pg.AxisItem = object
+    pg.PlotWidget = object
+    pg.ViewBox = object
+    pg.PlotCurveItem = object
+    pg.ScatterPlotItem = object
+    pg.BarGraphItem = object
+    pg.InfiniteLine = object
+    pg.TextItem = object
+    pg.mkPen = lambda *a, **kw: None
+    pg.mkBrush = lambda *a, **kw: None
+    pg.mkColor = lambda *a, **kw: None
+
+try:
+    from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
     QWidget,
@@ -31,8 +52,47 @@ from PyQt5.QtWidgets import (
     QTextEdit,
     QScrollArea,
 )
-from PyQt5.QtGui import QFont, QColor, QPainter, QPicture, QBrush, QPen, QPolygonF
-from PyQt5.QtCore import Qt, QPointF, QRectF
+except ImportError:
+    QApplication = None
+    QMainWindow = object
+    QWidget = object
+    QGridLayout = object
+    QLabel = object
+    QSpacerItem = object
+    QSizePolicy = object
+    QVBoxLayout = object
+    QTabWidget = object
+    QTableWidget = object
+    QTableWidgetItem = object
+    QHeaderView = object
+    QFrame = object
+    QGraphicsView = object
+    QCheckBox = object
+    QHBoxLayout = object
+    QPushButton = object
+    QMessageBox = object
+    QMenu = object
+    QAction = object
+    QLineEdit = object
+    QWidgetAction = object
+    QTextEdit = object
+    QScrollArea = object
+
+try:
+    from PyQt5.QtGui import QFont, QColor, QPainter, QPicture, QBrush, QPen, QPolygonF
+    from PyQt5.QtCore import Qt, QPointF, QRectF
+except ImportError:
+    QFont = object
+    QColor = object
+    QPainter = object
+    QPicture = object
+    QBrush = object
+    QPen = object
+    QPolygonF = object
+    Qt = None
+    QPointF = object
+    QRectF = object
+
 from typing import Callable
 
 from core.models import BacktestingResult
@@ -2180,9 +2240,13 @@ class BacktestReportWindow(QMainWindow):
                 if trade["pnl"] != 0:
                     pnl_text = f"{trade['pnl']:,.2f}"
 
+            time_str = "N/A"
+            if trade["time"]:
+                time_str = trade["time"].strftime("%Y-%m-%d %H:%M:%S")
+
             items_to_add = [
                 str(trade["order_id"]),
-                trade["time"].strftime("%Y-%m-%d %H:%M:%S"),
+                time_str,
                 trade["instrument"],
                 display_action,
                 str(trade["volume"]),
@@ -2476,9 +2540,19 @@ class BacktestReportWindow(QMainWindow):
         trading_dates = df["datetime"].dt.strftime("%Y-%m-%d").tolist()
         portfolio_values = df["PortfolioValue"].tolist()
 
+        def _sort_key(t):
+            if not t.trade_time:
+                return dt_module.datetime.min
+            if isinstance(t.trade_time, dt_module.datetime):
+                return t.trade_time
+            try:
+                return pd.Timestamp(t.trade_time).to_pydatetime()
+            except Exception:
+                return dt_module.datetime.min
+
         sorted_trades = sorted(
             [t for t in trade_log if t.trade_price > 0 and t.order_id != -1],
-            key=lambda t: t.trade_time if t.trade_time else "",
+            key=_sort_key,
         )
 
         trades_by_date = defaultdict(list)

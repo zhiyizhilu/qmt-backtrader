@@ -868,21 +868,18 @@ class QMTDataProcessor(DataProcessor):
             for cache_file in ns_dir.glob('merged_*.parquet'):
                 if cache_file.name == f"{merged_cache_key}.parquet":
                     continue
-                try:
-                    candidate = pd.read_parquet(cache_file)
-                    if candidate is not None and isinstance(candidate, pd.DataFrame) and not candidate.empty:
-                        if '_stock_code' in candidate.columns:
-                            cached_stocks = set(candidate['_stock_code'].unique())
-                            if request_set.issubset(cached_stocks):
-                                candidate_dict = _parquet_to_merged_dict(candidate, mode='financial')
-                                result_subset = {s: candidate_dict[s] for s in stock_list if s in candidate_dict}
-                                if len(result_subset) == len(stock_list):
-                                    self.logger.info(
-                                        f"合并缓存(子集)命中: 缓存{len(cached_stocks)}只, 请求{len(stock_list)}只"
-                                    )
-                                    return result_subset
-                except Exception:
-                    continue
+                candidate = cache_manager.disk_cache._try_read_cache_file(cache_file, 'parquet')
+                if candidate is not None and isinstance(candidate, pd.DataFrame) and not candidate.empty:
+                    if '_stock_code' in candidate.columns:
+                        cached_stocks = set(candidate['_stock_code'].unique())
+                        if request_set.issubset(cached_stocks):
+                            candidate_dict = _parquet_to_merged_dict(candidate, mode='financial')
+                            result_subset = {s: candidate_dict[s] for s in stock_list if s in candidate_dict}
+                            if len(result_subset) == len(stock_list):
+                                self.logger.info(
+                                    f"合并缓存(子集)命中: 缓存{len(cached_stocks)}只, 请求{len(stock_list)}只"
+                                )
+                                return result_subset
 
         return None
 
