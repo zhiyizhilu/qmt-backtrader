@@ -205,6 +205,9 @@ class StrategyLogic:
         self._t_plus_1_overrides: Dict[str, bool] = {}
         self._unadjusted_price_cache: Dict[str, float] = {}
         self._unadjusted_price_cache_date: Optional[dt_module.date] = None
+        self._unadjusted_price_df_cache: Dict[str, Any] = {}
+        self._backtest_start_date: Optional[dt_module.date] = None
+        self._backtest_end_date: Optional[dt_module.date] = None
 
     def set_data_adapter(self, adapter: MarketDataAdapter) -> None:
         """设置数据适配器"""
@@ -475,7 +478,9 @@ class StrategyLogic:
         回测模式下通过 data_processor 获取不复权行情数据，
         实盘模式下与 get_current_price 一致（实盘价格本身就是实际价格）。
 
-        同一天同一股票的结果会被缓存，避免重复磁盘IO。
+        优化策略：
+        1. 同一天同一股票的结果会被缓存（日期级缓存）
+        2. 首次查询某股票时加载整个回测期间的DataFrame并缓存，后续日期直接查找
 
         Returns:
             不复权价格，无法获取时返回 None
@@ -489,26 +494,51 @@ class StrategyLogic:
         if symbol in self._unadjusted_price_cache:
             return self._unadjusted_price_cache[symbol]
 
-        result = self._get_unadjusted_price_uncached(symbol, current_date)
+        result = self._get_unadjusted_price_from_df_cache(symbol, current_date)
 
         if result is not None and result > 0:
             self._unadjusted_price_cache[symbol] = result
 
         return result
 
-    def _get_unadjusted_price_uncached(self, symbol: str, current_date) -> Optional[float]:
-        """获取不复权价格的底层实现（无缓存）"""
+    def _get_unadjusted_price_from_df_cache(self, symbol: str, current_date) -> Optional[float]:
+        import pandas as pd
+
+        cached_df = self._unadjusted_price_df_cache.get(symbol)
+        if cached_df is not None and not cached_df.empty:
+            if isinstance(cached_df.index, pd.DatetimeIndex):
+                ts = pd.Timestamp(current_date)
+                pos = cached_df.index.searchsorted(ts, side='right') - 1
+                if pos >= 0:
+                    price = float(cached_df.iloc[pos]['close'])
+                    if price > 0:
+                        return price
+            return self.get_current_price(symbol)
+
         if self._data_processor is not None and hasattr(self._data_processor, 'get_raw_data'):
             if current_date is None:
                 return self.get_current_price(symbol)
 
-            date_str = current_date.strftime('%Y-%m-%d')
+            start_str = self._backtest_start_date.strftime('%Y-%m-%d') if self._backtest_start_date else current_date.strftime('%Y-%m-%d')
+            end_str = self._backtest_end_date.strftime('%Y-%m-%d') if self._backtest_end_date else current_date.strftime('%Y-%m-%d')
             try:
-                raw_df = self._data_processor.get_raw_data(symbol, date_str, date_str, '1d', skip_current_year_refresh=True)
-                if raw_df is not None and not raw_df.empty and 'close' in raw_df.columns:
-                    price = float(raw_df['close'].iloc[-1])
-                    if price > 0:
-                        return price
+                raw_df = self._data_processor.get_raw_data(
+                    symbol, start_str, end_str, '1d', skip_current_year_refresh=True
+                )
+                if raw_df is not None and not raw_df.empty:
+                    if isinstance(raw_df.index, pd.DatetimeIndex) and 'close' in raw_df.columns:
+                        self._unadjusted_price_df_cache[symbol] = raw_df
+                    ts = pd.Timestamp(current_date)
+                    if isinstance(raw_df.index, pd.DatetimeIndex):
+                        pos = raw_df.index.searchsorted(ts, side='right') - 1
+                        if pos >= 0 and 'close' in raw_df.columns:
+                            price = float(raw_df.iloc[pos]['close'])
+                            if price > 0:
+                                return price
+                    if 'close' in raw_df.columns:
+                        price = float(raw_df['close'].iloc[-1])
+                        if price > 0:
+                            return price
             except Exception as e:
                 from core.data.futu import FutuServiceError
                 if isinstance(e, FutuServiceError):

@@ -58,7 +58,13 @@ class EngineDataAdapter(MarketDataAdapter):
     def update(self, global_idx: int):
         """更新当前全局索引，计算每个数据源的本地索引并缓存价格数据"""
         self._current_global_idx = global_idx
-        self._current_local_indices = self._timeline.get_all_feed_bar_indices(global_idx)
+        indices_column = self._timeline.get_feed_local_indices_column(global_idx)
+
+        self._current_local_indices.clear()
+        for feed_idx in range(len(indices_column)):
+            local_idx = int(indices_column[feed_idx])
+            if local_idx >= 0:
+                self._current_local_indices[self._timeline._feed_symbols[feed_idx]] = local_idx
 
         for symbol, local_idx in self._current_local_indices.items():
             feed = self._data_feeds.get(symbol)

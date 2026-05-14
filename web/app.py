@@ -293,13 +293,6 @@ def _find_log_for_run(strategy_name, run_id):
             return log_file
     except (json.JSONDecodeError, IOError):
         pass
-    logs_dir = os.path.join(PROJECT_ROOT, 'logs')
-    if os.path.isdir(logs_dir):
-        ts_part = run_id.split('_')[0] if '_' in run_id else run_id
-        strat_part = strategy_name.replace('_strategy', '').replace('_', '')
-        for fname in os.listdir(logs_dir):
-            if fname.startswith(ts_part) and fname.endswith('.log'):
-                return os.path.join(logs_dir, fname)
     return None
 
 

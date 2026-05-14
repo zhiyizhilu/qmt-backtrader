@@ -98,6 +98,10 @@ class BacktestEngine:
             f'bar数量={num_bars}, 周期={self._period}'
         )
 
+        if self._strategy_logic and num_bars > 0:
+            self._strategy_logic._backtest_start_date = self._timeline.get_date(0)
+            self._strategy_logic._backtest_end_date = self._timeline.get_date(num_bars - 1)
+
         equity_history: List[tuple] = []
         trade_records: List[Dict] = []
         last_equity_date = None

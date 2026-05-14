@@ -29,7 +29,7 @@ class Timeline:
 
         self._timestamps: np.ndarray = np.array([], dtype='datetime64[ns]')
         self._ts_to_idx: Dict = {}
-        self._feed_local_indices: List[np.ndarray] = []
+        self._feed_local_indices: np.ndarray = np.array([])  # shape: (num_feeds, num_bars)
         self._num_bars: int = 0
 
         self._build()
@@ -65,15 +65,12 @@ class Timeline:
             else:
                 self._ts_to_idx[ts] = i
 
-        self._feed_local_indices = []
+        num_feeds = len(self._feed_symbols)
+        self._feed_local_indices = np.full((num_feeds, self._num_bars), -1, dtype=np.int32)
+
         for feed_idx, feed in enumerate(self._data_feeds):
             if feed.length == 0:
-                self._feed_local_indices.append(
-                    np.full(self._num_bars, -1, dtype=np.int32)
-                )
                 continue
-
-            local_indices = np.full(self._num_bars, -1, dtype=np.int32)
             feed_dates = feed_date_arrays[feed_idx]
 
             for local_idx in range(len(feed_dates)):
@@ -84,9 +81,7 @@ class Timeline:
                     key = ts
                 global_idx = self._ts_to_idx.get(key)
                 if global_idx is not None:
-                    local_indices[global_idx] = local_idx
-
-            self._feed_local_indices.append(local_indices)
+                    self._feed_local_indices[feed_idx, global_idx] = local_idx
 
     def get_trading_dates(self) -> np.ndarray:
         return self._timestamps
@@ -110,9 +105,23 @@ class Timeline:
             return -1
         if global_idx < 0 or global_idx >= self._num_bars:
             return -1
-        return int(self._feed_local_indices[feed_idx][global_idx])
+        return int(self._feed_local_indices[feed_idx, global_idx])
+
+    def get_feed_local_indices_column(self, global_idx: int) -> np.ndarray:
+        """返回指定全局索引下所有数据源的 local_idx 数组 (长度=数据源数量)
+        
+        高效版本：直接返回 numpy 数组切片，避免创建 dict。
+        调用方应使用 feed_idx 索引而非 symbol 查找。
+        """
+        if global_idx < 0 or global_idx >= self._num_bars:
+            return np.full(len(self._feed_symbols), -1, dtype=np.int32)
+        return self._feed_local_indices[:, global_idx]
 
     def get_all_feed_bar_indices(self, global_idx: int) -> Dict[str, int]:
+        """返回指定全局索引下所有数据源的 symbol -> local_idx 映射
+        
+        保留此方法用于兼容性，新代码应使用 get_feed_local_indices_column()。
+        """
         result = {}
         for feed_idx, symbol in enumerate(self._feed_symbols):
             local_idx = self.get_feed_bar_index(feed_idx, global_idx)

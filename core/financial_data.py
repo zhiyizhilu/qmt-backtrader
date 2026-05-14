@@ -415,7 +415,6 @@ class FinancialDataCache:
         Returns:
             字段值或整行Series，无数据返回None
         """
-        # 按需加载
         self._ensure_table_loaded(stock_code, table_name)
 
         stock_data = self._data.get(stock_code, {})
@@ -436,23 +435,19 @@ class FinancialDataCache:
                 )
                 return None
 
-        mask = table_df.index < pd.Timestamp(date)
-        available = table_df[mask]
-
-        if available.empty:
+        pos = table_df.index.searchsorted(pd.Timestamp(date)) - 1
+        if pos < 0:
             return None
 
-        latest_row = available.iloc[-1]
-
         if field:
-            if field in latest_row.index:
-                val = latest_row[field]
+            if field in table_df.columns:
+                val = table_df.iat[pos, table_df.columns.get_loc(field)]
                 if pd.isna(val):
                     return None
                 return val
             return None
 
-        return latest_row
+        return table_df.iloc[pos]
 
     def get_latest_multi_fields(self, stock_code: str, table_name: str,
                                 date: datetime.date, fields: List[str]) -> Dict[str, Any]:
@@ -467,7 +462,6 @@ class FinancialDataCache:
         Returns:
             { field1: value1, field2: value2, ... }
         """
-        # 按需加载
         self._ensure_table_loaded(stock_code, table_name)
 
         result = {}
@@ -484,17 +478,13 @@ class FinancialDataCache:
             except Exception:
                 return {f: None for f in fields}
 
-        mask = table_df.index.date < date
-        available = table_df[mask]
-
-        if available.empty:
+        pos = table_df.index.searchsorted(pd.Timestamp(date)) - 1
+        if pos < 0:
             return {f: None for f in fields}
 
-        latest_row = available.iloc[-1]
-
         for field in fields:
-            if field in latest_row.index:
-                val = latest_row[field]
+            if field in table_df.columns:
+                val = table_df.iat[pos, table_df.columns.get_loc(field)]
                 result[field] = None if pd.isna(val) else val
             else:
                 result[field] = None
@@ -516,7 +506,6 @@ class FinancialDataCache:
         Returns:
             field非空时返回list，否则返回DataFrame
         """
-        # 按需加载
         self._ensure_table_loaded(stock_code, table_name)
 
         stock_data = self._data.get(stock_code, {})
@@ -532,8 +521,9 @@ class FinancialDataCache:
             except Exception:
                 return [] if field else pd.DataFrame()
 
-        mask = table_df.index.date < date
-        available = table_df[mask].tail(count)
+        end_pos = table_df.index.searchsorted(pd.Timestamp(date))
+        start_pos = max(0, end_pos - count)
+        available = table_df.iloc[start_pos:end_pos]
 
         if available.empty:
             return [] if field else pd.DataFrame()
