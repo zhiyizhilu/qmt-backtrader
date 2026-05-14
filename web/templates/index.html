@@ -807,10 +807,11 @@ createApp({
         });
 
         function logLineColor(line) {
-            if (line.includes('ERROR')) return '#f87171';
-            if (line.includes('WARNING')) return '#fbbf24';
-            if (line.includes('DEBUG')) return '#64748b';
-            if (line.includes('INFO')) return '#94a3b8';
+            const upper = line.toUpperCase();
+            if (upper.includes(' - ERROR - ') || upper.includes(' - CRITICAL - ') || upper.includes(' - FATAL - ')) return '#ef4444';
+            if (upper.includes(' - WARNING - ') || upper.includes(' - WARN - ')) return '#f59e0b';
+            if (upper.includes(' - DEBUG - ')) return '#38bdf8';
+            if (upper.includes(' - INFO - ')) return '#a3e635';
             return '#cbd5e1';
         }
 
