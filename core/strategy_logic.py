@@ -208,6 +208,8 @@ class StrategyLogic:
         self._unadjusted_price_df_cache: Dict[str, Any] = {}
         self._backtest_start_date: Optional[dt_module.date] = None
         self._backtest_end_date: Optional[dt_module.date] = None
+        self._data_start_date: Optional[str] = None
+        self._data_end_date: Optional[str] = None
 
     def set_data_adapter(self, adapter: MarketDataAdapter) -> None:
         """设置数据适配器"""
@@ -519,8 +521,8 @@ class StrategyLogic:
             if current_date is None:
                 return self.get_current_price(symbol)
 
-            start_str = self._backtest_start_date.strftime('%Y-%m-%d') if self._backtest_start_date else current_date.strftime('%Y-%m-%d')
-            end_str = self._backtest_end_date.strftime('%Y-%m-%d') if self._backtest_end_date else current_date.strftime('%Y-%m-%d')
+            start_str = self._data_start_date if self._data_start_date else (self._backtest_start_date.strftime('%Y-%m-%d') if self._backtest_start_date else current_date.strftime('%Y-%m-%d'))
+            end_str = self._data_end_date if self._data_end_date else (self._backtest_end_date.strftime('%Y-%m-%d') if self._backtest_end_date else current_date.strftime('%Y-%m-%d'))
             try:
                 raw_df = self._data_processor.get_raw_data(
                     symbol, start_str, end_str, '1d', skip_current_year_refresh=True

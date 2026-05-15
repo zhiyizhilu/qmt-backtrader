@@ -758,6 +758,11 @@ class BacktestAPI(BaseAPI):
         if hasattr(self, '_opendata_processor') and self._opendata_processor:
             strategy_logic.set_data_processor(self._opendata_processor)
 
+        if self._data_start_date:
+            strategy_logic._data_start_date = self._data_start_date
+        if self._data_end_date:
+            strategy_logic._data_end_date = self._data_end_date
+
         self._engine.set_strategy(strategy_logic)
         self._engine.set_trade_start_date(self._trade_start_date)
         self._engine.set_period(self._period)

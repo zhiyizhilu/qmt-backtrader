@@ -250,12 +250,17 @@ class CacheIndexManager:
             if not checked:
                 return []
             now = pd.Timestamp.now()
+            current_year = now.year
             valid_years = []
             for year_str, check_time in checked.items():
                 try:
-                    check_dt = pd.Timestamp(check_time)
-                    if (now - check_dt).days < max_age_days:
-                        valid_years.append(int(year_str))
+                    year = int(year_str)
+                    if year < current_year:
+                        valid_years.append(year)
+                    else:
+                        check_dt = pd.Timestamp(check_time)
+                        if (now - check_dt).days < max_age_days:
+                            valid_years.append(year)
                 except Exception:
                     continue
             return valid_years
@@ -299,12 +304,17 @@ class CacheIndexManager:
             if not checked:
                 return []
             now = pd.Timestamp.now()
+            current_year = now.year
             valid_years = []
             for year_str, check_time in checked.items():
                 try:
-                    check_dt = pd.Timestamp(check_time)
-                    if (now - check_dt).days < max_age_days:
-                        valid_years.append(int(year_str))
+                    year = int(year_str)
+                    if year < current_year:
+                        valid_years.append(year)
+                    else:
+                        check_dt = pd.Timestamp(check_time)
+                        if (now - check_dt).days < max_age_days:
+                            valid_years.append(year)
                 except Exception:
                     continue
             return valid_years
@@ -1455,23 +1465,28 @@ class SmartCacheManager:
 
             stale_index_years = cached_years - actually_cached_years
             if stale_index_years:
-                truly_missing |= stale_index_years
-                self.logger.info(f"[{namespace}] {symbol} 索引与实际缓存不同步，缺失年份: {sorted(stale_index_years)}")
+                stale_index_years -= checked_years
+                if stale_index_years:
+                    truly_missing |= stale_index_years
+                    self.logger.info(f"[{namespace}] {symbol} 索引与实际缓存不同步，缺失年份: {sorted(stale_index_years)}")
 
         if not truly_missing:
             if cached_frames:
-                coverage_missing = self._verify_cache_date_coverage(
-                    namespace, symbol, pd.concat(cached_frames), req_years, req_start, req_end, checked_years,
-                    skip_current_year_refresh
-                )
-                if coverage_missing == set(req_years):
-                    cached_frames = []
-                elif coverage_missing:
-                    cached_frames = [f for f in cached_frames
-                                     if not (isinstance(f.index, pd.DatetimeIndex) and
-                                             f.index.year.unique().tolist() and
-                                             set(f.index.year.unique()) & coverage_missing)]
-                truly_missing = coverage_missing
+                if skip_current_year_refresh and not (missing_years - checked_years):
+                    pass
+                else:
+                    coverage_missing = self._verify_cache_date_coverage(
+                        namespace, symbol, pd.concat(cached_frames), req_years, req_start, req_end, checked_years,
+                        skip_current_year_refresh
+                    )
+                    if coverage_missing == set(req_years):
+                        cached_frames = []
+                    elif coverage_missing:
+                        cached_frames = [f for f in cached_frames
+                                         if not (isinstance(f.index, pd.DatetimeIndex) and
+                                                 f.index.year.unique().tolist() and
+                                                 set(f.index.year.unique()) & coverage_missing)]
+                    truly_missing = coverage_missing
             else:
                 if missing_years and missing_years == checked_years:
                     self.logger.info(f"[{namespace}] {symbol} 所有年份已检查且无数据，跳过: {sorted(missing_years)}")
@@ -1501,23 +1516,37 @@ class SmartCacheManager:
         missing = set()
         if disk_start > req_start:
             first_cached_year = cached_df.index.min().year
-            missing |= set(y for y in req_years if y < first_cached_year)
-            self.logger.info(
-                f"[{namespace}] {symbol} 缓存未覆盖起始日期: "
-                f"缓存起始={disk_start}, 请求起始={req_start}, 缺失年份={sorted(missing)}"
-            )
+            start_missing = set(y for y in req_years if y < first_cached_year)
+            start_missing -= checked_years
+            missing |= start_missing
+            if start_missing:
+                self.logger.info(
+                    f"[{namespace}] {symbol} 缓存未覆盖起始日期: "
+                    f"缓存起始={disk_start}, 请求起始={req_start}, 缺失年份={sorted(start_missing)}"
+                )
+            else:
+                self.logger.debug(
+                    f"[{namespace}] {symbol} 缓存未覆盖起始日期(已检查): "
+                    f"缓存起始={disk_start}, 请求起始={req_start}"
+                )
 
         if disk_end < req_end:
             last_cached_year = cached_df.index.max().year
             end_missing = set(y for y in req_years if y > last_cached_year)
             end_missing -= checked_years
-            if not end_missing:
+            if not end_missing and not skip_current_year_refresh:
                 end_missing = {max(req_years)} - checked_years
             missing |= end_missing
-            self.logger.info(
-                f"[{namespace}] {symbol} 缓存未覆盖结束日期: "
-                f"缓存截止={disk_end}, 请求截止={req_end}, 增量获取年份={sorted(end_missing)}"
-            )
+            if end_missing:
+                self.logger.info(
+                    f"[{namespace}] {symbol} 缓存未覆盖结束日期: "
+                    f"缓存截止={disk_end}, 请求截止={req_end}, 增量获取年份={sorted(end_missing)}"
+                )
+            else:
+                self.logger.debug(
+                    f"[{namespace}] {symbol} 缓存未覆盖结束日期(已检查): "
+                    f"缓存截止={disk_end}, 请求截止={req_end}"
+                )
 
         if disk_end >= req_end and not skip_current_year_refresh:
             current_year = pd.Timestamp.now().year
@@ -1627,6 +1656,10 @@ class SmartCacheManager:
                     idx.update_checked_market_years(symbol, period, sorted(no_data_years))
         except Exception as e:
             self.logger.warning(f"[{namespace}] {symbol} 增量获取失败: {e}")
+            if is_raw:
+                idx.update_checked_market_raw_years(symbol, period, sorted(truly_missing))
+            else:
+                idx.update_checked_market_years(symbol, period, sorted(truly_missing))
 
         return new_frames
 
