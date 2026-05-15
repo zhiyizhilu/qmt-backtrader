@@ -246,7 +246,7 @@ class StockSelectionStrategy(StrategyLogic):
         has_sells = False
         pending_sell_symbols = set()
 
-        for symbol in full_sell_symbols:
+        for symbol in sorted(full_sell_symbols):
             pos_size = self._current_holdings.get(symbol, 0)
             if pos_size > 0:
                 sellable = self.get_sellable_volume(symbol)
@@ -275,7 +275,7 @@ class StockSelectionStrategy(StrategyLogic):
             else:
                 del self._current_holdings[symbol]
 
-        for symbol in hold_symbols:
+        for symbol in sorted(hold_symbols):
             pos_size = self._current_holdings.get(symbol, 0)
             if pos_size > 0:
                 sellable = self.get_sellable_volume(symbol)

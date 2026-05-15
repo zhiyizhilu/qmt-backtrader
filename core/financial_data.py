@@ -120,18 +120,13 @@ class FinancialDataCache:
                 self._data[stock_code] = {}
             self._loaded_tables[(stock_code, table_name)] = True
             return
-        if cache_manager.index_manager.is_financial_nodata(stock_code, f"{table_name}_{self._report_type}"):
-            self._loaded_tables[(stock_code, table_name)] = False
-            if stock_code not in self._data:
-                self._data[stock_code] = {}
-            return
 
         effective_start_time = start_time if start_time else self._start_time
         effective_end_time = end_time if end_time else self._end_time
 
-        if effective_start_time and len(effective_start_time) >= 10:
+        if self._start_time and len(self._start_time) >= 10:
             try:
-                start_dt = pd.to_datetime(effective_start_time[:10])
+                start_dt = pd.to_datetime(self._start_time[:10])
                 self._effective_filter_start = start_dt - pd.DateOffset(years=1)
             except Exception:
                 self._effective_filter_start = None
@@ -146,8 +141,6 @@ class FinancialDataCache:
         else:
             self._effective_filter_end = None
 
-        from core.cache import cache_manager
-
         if self._data_processor is not None:
             namespace = f"{self._data_processor.__class__.__name__}_Financial"
         else:
@@ -159,7 +152,6 @@ class FinancialDataCache:
         if not available_years:
             available_years = cache_manager.disk_cache.list_yearly_files(namespace, stock_code, table_suffix)
 
-        # 按回测时间范围过滤年份，避免加载无关历史数据
         if available_years and self._effective_filter_start is not None:
             needed_start_year = self._effective_filter_start.year
             needed_end_year = (self._effective_filter_end.year + 1) if self._effective_filter_end else 9999
@@ -175,7 +167,6 @@ class FinancialDataCache:
                 df = self._ensure_datetime_index(df, stock_code, table_name)
                 if not df.empty:
                     df = df.sort_index()
-                    # 按时间范围截断，减少内存占用
                     if self._effective_filter_start is not None and isinstance(df.index, pd.DatetimeIndex):
                         df = df[df.index >= self._effective_filter_start]
                 self._data[stock_code][table_name] = df
@@ -223,6 +214,12 @@ class FinancialDataCache:
 
             cache_manager.disk_cache.delete(namespace, cache_key, 'pkl')
             self.logger.info(f"旧pkl缓存已迁移为parquet: {stock_code}.{table_name}")
+            return
+
+        if cache_manager.index_manager.is_financial_nodata(stock_code, f"{table_name}_{self._report_type}"):
+            self._loaded_tables[(stock_code, table_name)] = False
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
             return
 
         if self._data_processor is not None:
@@ -294,7 +291,6 @@ class FinancialDataCache:
 
         # 检查是否成功加载了数据
         if stock_code in self._data and table_name in self._data[stock_code]:
-            # 成功加载，标记为已加载
             self._loaded_tables[(stock_code, table_name)] = True
             self.logger.debug(f"成功加载数据: {stock_code}.{table_name}")
         else:
@@ -302,12 +298,6 @@ class FinancialDataCache:
             self.logger.debug(f"数据加载失败，标记为失败: {stock_code}.{table_name}")
             if stock_code not in self._data:
                 self._data[stock_code] = {}
-            try:
-                from core.cache import cache_manager
-                cache_manager.index_manager.mark_financial_nodata(stock_code, f"{table_name}_{self._report_type}")
-                cache_manager.index_manager.save_index()
-            except Exception:
-                pass
 
     def _ensure_datetime_index(self, df: pd.DataFrame,
                                 stock_code: str = '', table_name: str = '') -> pd.DataFrame:

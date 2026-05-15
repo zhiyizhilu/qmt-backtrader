@@ -133,12 +133,12 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
         bt_elapsed = _time.time() - bt_start
 
         if results:
-        if bt_elapsed < 60:
-            logger.info(f"回测耗时: {bt_elapsed:.2f}秒")
-        elif bt_elapsed < 3600:
-            logger.info(f"回测耗时: {bt_elapsed / 60:.2f}分钟")
-        else:
-            logger.info(f"回测耗时: {bt_elapsed / 3600:.2f}小时")
+            if bt_elapsed < 60:
+                logger.info(f"回测耗时: {bt_elapsed:.2f}秒")
+            elif bt_elapsed < 3600:
+                logger.info(f"回测耗时: {bt_elapsed / 60:.2f}分钟")
+            else:
+                logger.info(f"回测耗时: {bt_elapsed / 3600:.2f}小时")
             api.show_report()
         else:
             logger.info("回测未产生结果，可能是因为没有数据")
