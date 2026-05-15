@@ -37,6 +37,9 @@ class FinancialDataCache:
         self._effective_filter_end = None
         self._loaded = False
         self._lock = threading.Lock()
+        self._stock_locks: Dict[str, threading.Lock] = {}
+        self._stock_locks_lock = threading.Lock()
+        self._download_failed: set = set()
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
 
         # 预加载的数据直接注入（兼容旧调用方式）
@@ -83,6 +86,12 @@ class FinancialDataCache:
         stock_count = len(self._data)
         self.logger.info(f"财务数据缓存加载完成: {stock_count} 只股票")
 
+    def _get_stock_lock(self, stock_code: str) -> threading.Lock:
+        with self._stock_locks_lock:
+            if stock_code not in self._stock_locks:
+                self._stock_locks[stock_code] = threading.Lock()
+            return self._stock_locks[stock_code]
+
     def _ensure_table_loaded(self, stock_code: str, table_name: str,
                              start_time: str = '', end_time: str = '') -> None:
         """确保指定股票的指定表已加载到内存
@@ -102,7 +111,8 @@ class FinancialDataCache:
         if (stock_code, table_name) in self._loaded_tables:
             return
 
-        with self._lock:
+        stock_lock = self._get_stock_lock(stock_code)
+        with stock_lock:
             if (stock_code, table_name) in self._loaded_tables:
                 return
 
@@ -222,6 +232,12 @@ class FinancialDataCache:
                 self._data[stock_code] = {}
             return
 
+        if (stock_code, table_name) in self._download_failed:
+            self._loaded_tables[(stock_code, table_name)] = False
+            if stock_code not in self._data:
+                self._data[stock_code] = {}
+            return
+
         if self._data_processor is not None:
             try:
                 self.logger.info(f"请求数据: {stock_code}.{table_name}")
@@ -286,8 +302,15 @@ class FinancialDataCache:
                         self.logger.debug(f"[加载结果] {stock_code}.{table_name} 不是DataFrame")
                 else:
                     self.logger.debug(f"[加载结果] {stock_code}.{table_name} 数据不存在于返回结果中，data={data}")
+                    try:
+                        from core.cache import cache_manager as _cm
+                        _cm.index_manager.mark_financial_nodata(stock_code, f"{table_name}_{self._report_type}")
+                        _cm.index_manager.save_index()
+                    except Exception:
+                        pass
             except Exception as e:
                 self.logger.warning(f"按需下载失败: {stock_code}.{table_name}: {e}")
+                self._download_failed.add((stock_code, table_name))
 
         # 检查是否成功加载了数据
         if stock_code in self._data and table_name in self._data[stock_code]:
@@ -298,6 +321,8 @@ class FinancialDataCache:
             self.logger.debug(f"数据加载失败，标记为失败: {stock_code}.{table_name}")
             if stock_code not in self._data:
                 self._data[stock_code] = {}
+            if self._data_processor is not None:
+                self._download_failed.add((stock_code, table_name))
 
     def _ensure_datetime_index(self, df: pd.DataFrame,
                                 stock_code: str = '', table_name: str = '') -> pd.DataFrame:

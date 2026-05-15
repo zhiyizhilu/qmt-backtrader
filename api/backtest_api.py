@@ -522,7 +522,7 @@ class BacktestAPI(BaseAPI):
             raw_download_future = None
             raw_executor = None
             if self._opendata_processor:
-                raw_executor = ThreadPoolExecutor(max_workers=1)
+                raw_executor = ThreadPoolExecutor(max_workers=4)
 
                 def _download_raw_data():
                     raw_start = _time.time()
@@ -546,22 +546,43 @@ class BacktestAPI(BaseAPI):
                             f"剩余 {len(symbols_to_fetch)} 只待下载"
                         )
 
-                    for i, symbol in enumerate(symbols_to_fetch, 1):
+                    def _fetch_one(sym):
                         try:
                             df = self._opendata_processor.get_raw_data(
-                                symbol, self._data_start_date, self._data_end_date, self._period,
+                                sym, self._data_start_date, self._data_end_date, self._period,
                                 skip_current_year_refresh=True
                             )
                             if df is not None and not df.empty:
-                                raw_loaded += 1
+                                return sym, True, False
                             else:
-                                raw_skipped += 1
-                                idx.mark_market_raw_nodata(symbol, self._period)
+                                return sym, False, True
                         except Exception:
-                            raw_skipped += 1
-                            idx.mark_market_raw_nodata(symbol, self._period)
-                        if i % 100 == 0 or i == len(symbols_to_fetch):
-                            self.logger.info(f"[ {i} / {len(symbols_to_fetch)} ] 不复权行情预下载进度")
+                            return sym, False, True
+
+                    completed = 0
+                    total = len(symbols_to_fetch)
+                    if total <= 10:
+                        for sym in symbols_to_fetch:
+                            _, loaded, skipped = _fetch_one(sym)
+                            if loaded:
+                                raw_loaded += 1
+                            if skipped:
+                                raw_skipped += 1
+                                idx.mark_market_raw_nodata(sym, self._period)
+                            completed += 1
+                    else:
+                        from concurrent.futures import as_completed as _as_completed
+                        futures = {raw_executor.submit(_fetch_one, s): s for s in symbols_to_fetch}
+                        for future in _as_completed(futures):
+                            sym, loaded, skipped = future.result()
+                            if loaded:
+                                raw_loaded += 1
+                            if skipped:
+                                raw_skipped += 1
+                                idx.mark_market_raw_nodata(sym, self._period)
+                            completed += 1
+                            if completed % 100 == 0 or completed == total:
+                                self.logger.info(f"[ {completed} / {total} ] 不复权行情预下载进度")
 
                     try:
                         idx.save_index()
@@ -597,6 +618,7 @@ class BacktestAPI(BaseAPI):
 
     def _preload_raw_market_data(self, pool: List[str]):
         import time as _time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         raw_start = _time.time()
         raw_loaded = 0
         raw_skipped = 0
@@ -619,22 +641,44 @@ class BacktestAPI(BaseAPI):
                 f"剩余 {len(symbols_to_fetch)} 只待下载"
             )
 
-        for i, symbol in enumerate(symbols_to_fetch, 1):
+        def _fetch_one(sym):
             try:
                 df = self._opendata_processor.get_raw_data(
-                    symbol, self._data_start_date, self._data_end_date, self._period,
+                    sym, self._data_start_date, self._data_end_date, self._period,
                     skip_current_year_refresh=True
                 )
                 if df is not None and not df.empty:
-                    raw_loaded += 1
+                    return sym, True, False
                 else:
-                    raw_skipped += 1
-                    idx.mark_market_raw_nodata(symbol, self._period)
+                    return sym, False, True
             except Exception:
-                raw_skipped += 1
-                idx.mark_market_raw_nodata(symbol, self._period)
-            if i % 100 == 0 or i == len(symbols_to_fetch):
-                self.logger.info(f"[ {i} / {len(symbols_to_fetch)} ] 不复权行情预下载进度")
+                return sym, False, True
+
+        completed = 0
+        total = len(symbols_to_fetch)
+        if total <= 10:
+            for sym in symbols_to_fetch:
+                _, loaded, skipped = _fetch_one(sym)
+                if loaded:
+                    raw_loaded += 1
+                if skipped:
+                    raw_skipped += 1
+                    idx.mark_market_raw_nodata(sym, self._period)
+                completed += 1
+        else:
+            max_workers = min(4, total)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_fetch_one, s): s for s in symbols_to_fetch}
+                for future in as_completed(futures):
+                    sym, loaded, skipped = future.result()
+                    if loaded:
+                        raw_loaded += 1
+                    if skipped:
+                        raw_skipped += 1
+                        idx.mark_market_raw_nodata(sym, self._period)
+                    completed += 1
+                    if completed % 100 == 0 or completed == total:
+                        self.logger.info(f"[ {completed} / {total} ] 不复权行情预下载进度")
 
         try:
             idx.save_index()
