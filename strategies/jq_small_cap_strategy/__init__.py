@@ -1,0 +1,1 @@
+from .jq_small_cap_strategy import JqSmallCapStrategy
