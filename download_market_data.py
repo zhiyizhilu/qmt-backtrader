@@ -63,6 +63,7 @@ class MissingType(Enum):
     DATA_INCOMPLETE = 'data_incomplete'
     EXTRA_NON_TRADING = 'extra_non_trading'
     RAW_MARKET_MISMATCH = 'raw_market_mismatch'
+    HFQ_DISCONTINUITY = 'hfq_discontinuity'
 
 
 @dataclass
@@ -78,6 +79,7 @@ class CheckResult:
     suspended_ranges: List[List[str]] = field(default_factory=list)
     raw_rows: int = 0
     market_rows: int = 0
+    hfq_discontinuities: List[Dict] = field(default_factory=list)
 
 class TradingDayCalendar:
     BENCHMARK_INDEX = '000300.SH'
@@ -162,10 +164,120 @@ class TradingDayCalendar:
 class DataIntegrityChecker:
     SUSPENSION_GAP_THRESHOLD = 15
     MISSING_GAP_THRESHOLD = 8
+    HFQ_CHANGE_THRESHOLD = 0.25
 
     def __init__(self, trading_days: Set[str]):
         self._trading_days = sorted(trading_days)
         self._trading_day_set = trading_days
+
+    @staticmethod
+    def get_limit_ratio(symbol: str) -> float:
+        code = symbol.split('.')[0] if '.' in symbol else symbol
+        if code.startswith(('300', '301')):
+            return 0.20
+        if code.startswith('688'):
+            return 0.20
+        if code.startswith(('4', '8')):
+            return 0.30
+        return 0.10
+
+    def check_hfq_continuity(self, symbol: str, start_date: str, end_date: str,
+                              threshold: float = None,
+                              year_boundary_only: bool = False) -> List[Dict]:
+        namespace = 'OpenDataProcessor'
+        req_years = cache_manager._parse_years_from_range(start_date, end_date)
+        if not req_years:
+            return []
+
+        frames = []
+        for year in req_years:
+            df = cache_manager.disk_cache.get_yearly(namespace, symbol, year, '1d')
+            if df is not None and not df.empty:
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    df.index = pd.to_datetime(df.index)
+                frames.append(df)
+
+        if len(frames) < 2:
+            return []
+
+        merged = pd.concat(frames).sort_index()
+        merged = merged[~merged.index.duplicated(keep='last')]
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
+        merged = merged[(merged.index >= start_ts) & (merged.index <= end_ts)]
+
+        if len(merged) < 2:
+            return []
+
+        raw_namespace = 'OpenDataProcessor_Raw'
+        raw_frames = []
+        for year in req_years:
+            df = cache_manager.disk_cache.get_yearly(raw_namespace, symbol, year, '1d')
+            if df is not None and not df.empty:
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    df.index = pd.to_datetime(df.index)
+                raw_frames.append(df)
+
+        raw_merged = None
+        if raw_frames:
+            raw_merged = pd.concat(raw_frames).sort_index()
+            raw_merged = raw_merged[~raw_merged.index.duplicated(keep='last')]
+            raw_merged = raw_merged[(raw_merged.index >= start_ts) & (raw_merged.index <= end_ts)]
+
+        if threshold is None:
+            limit_ratio = self.get_limit_ratio(symbol)
+            threshold = max(self.HFQ_CHANGE_THRESHOLD, limit_ratio + 0.08)
+
+        issues = []
+        import numpy as np
+        closes = merged['close'].values
+        dates = merged.index
+
+        for i in range(1, len(closes)):
+            prev_close = closes[i - 1]
+            curr_close = closes[i]
+
+            if prev_close <= 0 or curr_close <= 0:
+                continue
+            if np.isnan(prev_close) or np.isnan(curr_close):
+                continue
+
+            pct_change = (curr_close / prev_close) - 1.0
+
+            if year_boundary_only:
+                if dates[i - 1].year == dates[i].year:
+                    continue
+
+            if abs(pct_change) > threshold:
+                is_real_market_event = False
+                if raw_merged is not None and not raw_merged.empty:
+                    prev_date = dates[i - 1]
+                    curr_date = dates[i]
+                    prev_raw = raw_merged.loc[prev_date, 'close'] if prev_date in raw_merged.index else None
+                    curr_raw = raw_merged.loc[curr_date, 'close'] if curr_date in raw_merged.index else None
+                    if prev_raw is not None and curr_raw is not None:
+                        try:
+                            prev_raw_f = float(prev_raw)
+                            curr_raw_f = float(curr_raw)
+                            if prev_raw_f > 0 and curr_raw_f > 0:
+                                raw_pct = abs((curr_raw_f / prev_raw_f) - 1.0)
+                                if raw_pct > threshold * 0.5:
+                                    is_real_market_event = True
+                        except (ValueError, TypeError):
+                            pass
+
+                if not is_real_market_event:
+                    issues.append({
+                        'symbol': symbol,
+                        'prev_date': dates[i - 1].strftime('%Y-%m-%d'),
+                        'curr_date': dates[i].strftime('%Y-%m-%d'),
+                        'prev_close': float(prev_close),
+                        'curr_close': float(curr_close),
+                        'pct_change': float(pct_change),
+                        'is_year_boundary': dates[i - 1].year != dates[i].year,
+                    })
+
+        return issues
 
     def check_symbol(self, symbol: str, start_date: str, end_date: str,
                      data_type: str) -> Dict:
@@ -464,6 +576,110 @@ class DataRepairEngine:
         self.processor = processor
         self.checker = checker
         self.progress = progress
+
+    def repair_hfq_discontinuity(self, symbol: str, start_date: str, end_date: str,
+                                  period: str = '1d') -> str:
+        try:
+            namespace = 'OpenDataProcessor'
+            req_years = cache_manager._parse_years_from_range(start_date, end_date)
+            if not req_years:
+                self.progress.record_skipped()
+                return f"skip:{symbol}:no_years"
+
+            for year in req_years:
+                cache_manager.disk_cache.delete_yearly(namespace, symbol, year, period)
+
+            idx = cache_manager.index_manager
+            idx.remove_market_index(symbol, period)
+            idx.save_index()
+            cache_manager.mem_cache.clear()
+
+            df = self.processor.get_data(symbol, start_date, end_date, period,
+                                          skip_current_year_refresh=False)
+            if df is None or df.empty:
+                self.progress.record_failed()
+                return f"err:{symbol}:empty_data"
+
+            written = cache_manager.disk_cache.put_yearly_from_df(
+                namespace, symbol, period, df
+            )
+            for y in written:
+                idx.update_market_index(symbol, period, y)
+            idx.save_index()
+
+            verify_issues = self.checker.check_hfq_continuity(
+                symbol, start_date, end_date, year_boundary_only=True
+            )
+            if verify_issues:
+                logger.warning(f"[{symbol}] 腾讯财经后复权数据源异常({len(verify_issues)}点)，尝试东方财富降级修复...")
+                fallback_result = self._repair_with_fallback_source(
+                    symbol, start_date, end_date, period, namespace
+                )
+                if fallback_result:
+                    return fallback_result
+
+                self.progress.record_repaired()
+                return f"warn:{symbol}:source_issue_{len(verify_issues)}_points"
+
+            self.progress.record_repaired()
+            return f"repaired:{symbol}"
+
+        except Exception as e:
+            self.progress.record_failed()
+            logger.error(f"[{symbol}] 后复权修复失败: {e}")
+            return f"err:{symbol}:{e}"
+
+    def _repair_with_fallback_source(self, symbol: str, start_date: str, end_date: str,
+                                      period: str, namespace: str) -> Optional[str]:
+        """使用降级数据源修复后复权数据源异常（依次尝试东方财富、新浪财经）
+
+        Returns:
+            修复结果字符串，如果降级修复未成功则返回 None
+        """
+        fallback_sources = [
+            ('sina', '新浪财经'),
+        ]
+
+        for source_key, source_name in fallback_sources:
+            try:
+                logger.info(f"[{symbol}] 尝试{source_name}降级修复...")
+                df = self.processor.get_data_from_source(
+                    symbol, start_date, end_date, source=source_key, period=period
+                )
+                if df is None or df.empty:
+                    logger.warning(f"[{symbol}] {source_name}降级获取数据为空")
+                    continue
+
+                for year in cache_manager._parse_years_from_range(start_date, end_date):
+                    cache_manager.disk_cache.delete_yearly(namespace, symbol, year, period)
+
+                idx = cache_manager.index_manager
+                idx.remove_market_index(symbol, period)
+                idx.save_index()
+                cache_manager.mem_cache.clear()
+
+                written = cache_manager.disk_cache.put_yearly_from_df(
+                    namespace, symbol, period, df
+                )
+                for y in written:
+                    idx.update_market_index(symbol, period, y)
+                idx.save_index()
+
+                verify_issues = self.checker.check_hfq_continuity(
+                    symbol, start_date, end_date, year_boundary_only=True
+                )
+                if not verify_issues:
+                    logger.info(f"[{symbol}] {source_name}降级修复成功")
+                    self.progress.record_repaired()
+                    return f"repaired_{source_key}:{symbol}"
+                else:
+                    logger.warning(f"[{symbol}] {source_name}降级修复后仍有{len(verify_issues)}点异常，尝试下一个数据源")
+
+            except Exception as e:
+                logger.warning(f"[{symbol}] {source_name}降级修复失败: {e}")
+                continue
+
+        return None
 
     def repair_one(self, symbol: str, start_date: str, end_date: str,
                    period: str, data_type: str) -> str:
@@ -1412,6 +1628,195 @@ def run_check(start_date, end_date, processor, calendar,
     logger.info(f"{'='*60}")
 
 
+def run_check_hfq(start_date, end_date, processor, calendar,
+                   fix=False, dry_run=False, report_path='',
+                   year_boundary_only=True, threshold=0.25,
+                   stocks=None):
+    logger.info(f"{'='*60}")
+    logger.info(f"开始检查后复权数据连续性: {start_date} ~ {end_date}")
+    if year_boundary_only:
+        logger.info("检查模式: 仅年份边界")
+    else:
+        logger.info("检查模式: 全量（含日内异常）")
+    logger.info(f"{'='*60}")
+
+    cache_base = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache', 'OpenData')
+    market_dir = os.path.join(cache_base, 'market')
+
+    if not os.path.exists(market_dir):
+        logger.error(f"后复权数据目录不存在: {market_dir}")
+        return
+
+    stock_dirs = sorted([d for d in os.listdir(market_dir)
+                         if os.path.isdir(os.path.join(market_dir, d))])
+    INDEX_CODES = {'000300.SH', '000905.SH', '000852.SH', '000016.SH',
+                   '000001.SH', '399001.SZ', '399006.SZ'}
+    stock_dirs = [s for s in stock_dirs if s not in INDEX_CODES]
+
+    if stocks:
+        specified = set(s.strip() for s in stocks.split(','))
+        stock_dirs = [s for s in stock_dirs if s in specified]
+
+    total = len(stock_dirs)
+    logger.info(f"扫描 {total} 只股票...")
+
+    trading_days_set = calendar.get_trading_days(start_date, end_date)
+    checker = DataIntegrityChecker(trading_days_set)
+
+    all_issues = []
+    for i, symbol in enumerate(stock_dirs, 1):
+        if i % 200 == 0:
+            logger.info(f"进度: {i}/{total}, 已发现 {len(all_issues)} 处异常")
+
+        issues = checker.check_hfq_continuity(
+            symbol, start_date, end_date,
+            threshold=threshold,
+            year_boundary_only=year_boundary_only,
+        )
+        all_issues.extend(issues)
+
+    if not all_issues:
+        logger.info("未发现后复权数据连续性问题！")
+        return
+
+    by_symbol = defaultdict(list)
+    for issue in all_issues:
+        by_symbol[issue['symbol']].append(issue)
+
+    logger.info(f"\n{'='*60}")
+    logger.info(f"检测结果: {len(by_symbol)} 只股票存在 {len(all_issues)} 处异常")
+    logger.info(f"{'='*60}")
+
+    for symbol in sorted(by_symbol.keys()):
+        issues = by_symbol[symbol]
+        boundary_count = sum(1 for i in issues if i['is_year_boundary'])
+        intraday_count = len(issues) - boundary_count
+        parts = []
+        if boundary_count:
+            parts.append(f"年份边界断裂{boundary_count}处")
+        if intraday_count:
+            parts.append(f"日内异常{intraday_count}处")
+        logger.info(f"  {symbol}: {', '.join(parts)}")
+        for issue in issues:
+            pct = issue['pct_change'] * 100
+            tag = "[边界]" if issue['is_year_boundary'] else "[日内]"
+            logger.info(
+                f"    {tag} {issue['prev_date']} -> {issue['curr_date']}: "
+                f"{issue['prev_close']:.4f} -> {issue['curr_close']:.4f} ({pct:+.2f}%)"
+            )
+
+    if fix:
+        logger.info(f"\n{'='*60}")
+        logger.info(f"开始修复 {'(DRY RUN)' if dry_run else ''}")
+        logger.info(f"{'='*60}")
+
+        progress = DownloadProgress(len(by_symbol))
+        repair_engine = DataRepairEngine(processor, checker, progress)
+
+        for symbol in sorted(by_symbol.keys()):
+            if dry_run:
+                logger.info(f"  [DRY RUN] {symbol}: 将删除旧缓存并重新获取 {start_date} ~ {end_date}")
+                progress.record_skipped()
+                continue
+
+            logger.info(f"  修复 {symbol}...")
+            result = repair_engine.repair_hfq_discontinuity(symbol, start_date, end_date)
+            status = result.split(':')[0]
+            detail = result.split(':', 2)[-1] if ':' in result else ''
+            if status == 'repaired' and 'source_issue' not in detail:
+                logger.info(f"  {symbol}: 修复成功")
+            elif status.startswith('repaired_'):
+                source_name = {'repaired_sina': '新浪财经'}.get(status, status)
+                logger.info(f"  {symbol}: {source_name}降级修复成功")
+            elif status == 'warn' and 'source_issue' in detail:
+                logger.warning(f"  {symbol}: 数据源异常（腾讯财经和新浪财经均无法修复）")
+            else:
+                logger.error(f"  {symbol}: 修复失败 - {result}")
+
+        logger.info(f"\n修复完成: {progress.report()}")
+
+    if not report_path:
+        report_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    'check_hfq_report.html')
+
+    _generate_hfq_report(all_issues, report_path, dry_run)
+
+    logger.info(f"{'='*60}")
+    logger.info(f"后复权连续性检查完成")
+    logger.info(f"{'='*60}")
+
+
+def _generate_hfq_report(issues, output_path, dry_run):
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    by_symbol = defaultdict(list)
+    for issue in issues:
+        by_symbol[issue['symbol']].append(issue)
+
+    type_counts = defaultdict(int)
+    for issue in issues:
+        if issue['is_year_boundary']:
+            type_counts['年份边界断裂'] += 1
+        else:
+            type_counts['日内异常波动'] += 1
+
+    css = (
+        "body { font-family: 'Microsoft YaHei', sans-serif; margin: 20px; background: #f5f5f5; }"
+        "h1 { color: #333; }"
+        ".summary { display: flex; gap: 15px; margin: 20px 0; flex-wrap: wrap; }"
+        ".card { background: white; padding: 12px 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }"
+        ".card h3 { margin: 0 0 5px; color: #666; font-size: 13px; }"
+        ".card .value { font-size: 24px; font-weight: bold; }"
+        ".card.red .value { color: #ff4d4f; }"
+        ".card.orange .value { color: #fa8c16; }"
+        ".card.blue .value { color: #1890ff; }"
+        "table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin: 10px 0; }"
+        "th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #eee; font-size: 13px; }"
+        "th { background: #fafafa; font-weight: bold; }"
+        "tr:hover { background: #f0f7ff; }"
+        ".badge { padding: 2px 6px; border-radius: 4px; font-size: 11px; white-space: nowrap; }"
+        ".badge-boundary { background: #fff1f0; color: #cf1322; }"
+        ".badge-intraday { background: #fff7e6; color: #d46b08; }"
+    )
+
+    parts = []
+    parts.append('<!DOCTYPE html><html><head><meta charset="utf-8">')
+    parts.append('<title>后复权数据连续性检查报告</title>')
+    parts.append(f'<style>{css}</style></head><body>')
+    parts.append('<h1>后复权数据连续性检查报告</h1>')
+    parts.append(f'<p>生成时间: {now} {"(DRY RUN)" if dry_run else ""}</p>')
+    parts.append('<div class="summary">')
+    parts.append(f'<div class="card blue"><h3>受影响股票数</h3><div class="value">{len(by_symbol)}</div></div>')
+    parts.append(f'<div class="card red"><h3>异常点总数</h3><div class="value">{len(issues)}</div></div>')
+    for t, count in sorted(type_counts.items(), key=lambda x: -x[1]):
+        css_class = 'boundary' if '边界' in t else 'intraday'
+        parts.append(f'<div class="card orange"><h3>{t}</h3><div class="value">{count}</div></div>')
+    parts.append('</div>')
+    parts.append('<h2>问题详情</h2>')
+    parts.append('<table><tr><th>股票</th><th>前一交易日</th><th>当前交易日</th><th>前收盘价</th><th>当前收盘价</th><th>涨跌幅</th><th>类型</th></tr>')
+    for symbol in sorted(by_symbol.keys()):
+        symbol_issues = by_symbol[symbol]
+        for j, issue in enumerate(symbol_issues):
+            symbol_cell = symbol if j == 0 else ''
+            badge = '年份边界断裂' if issue['is_year_boundary'] else '日内异常波动'
+            badge_css = 'boundary' if issue['is_year_boundary'] else 'intraday'
+            pct = issue['pct_change'] * 100
+            pct_color = 'red' if pct < 0 else 'green'
+            parts.append(
+                f'<tr><td>{symbol_cell}</td>'
+                f'<td>{issue["prev_date"]}</td>'
+                f'<td>{issue["curr_date"]}</td>'
+                f'<td>{issue["prev_close"]:.4f}</td>'
+                f'<td>{issue["curr_close"]:.4f}</td>'
+                f'<td style="color:{pct_color}">{pct:+.2f}%</td>'
+                f'<td><span class="badge badge-{badge_css}">{badge}</span></td></tr>'
+            )
+    parts.append('</table></body></html>')
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(parts))
+    logger.info(f"报告已保存: {output_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='批量并发下载市场行情数据（含完整性校验与修复）',
@@ -1470,6 +1875,12 @@ def main():
                         help='仅校验已有数据完整性并修复缺失，不执行新下载')
     parser.add_argument('--check', action='store_true', default=False,
                         help='检查数据一致性（以沪深300交易日为基准），需配合 --start/--end 或使用默认值')
+    parser.add_argument('--check-hfq', action='store_true', default=False,
+                        help='检查后复权数据连续性（年份边界断裂检测）')
+    parser.add_argument('--full-scan', action='store_true', default=False,
+                        help='与 --check-hfq 配合，检查所有日期（不仅年份边界）')
+    parser.add_argument('--hfq-threshold', type=float, default=0.25,
+                        help='后复权连续性检查的涨跌幅异常阈值（默认0.25即25%%）')
     parser.add_argument('--fix', action='store_true', default=False,
                         help='与 --check 配合使用，自动修复不一致的数据')
     parser.add_argument('--dry-run', action='store_true', default=False,
@@ -1524,6 +1935,21 @@ def main():
             opendata_processor, calendar,
             fix=args.fix, dry_run=args.dry_run,
             report_path=args.report,
+        )
+        return
+
+    if args.check_hfq:
+        check_start = args.start or '2014-01-01'
+        check_end = args.end or f'{datetime.now().year}-12-31'
+        calendar = TradingDayCalendar(opendata_processor)
+        run_check_hfq(
+            check_start, check_end,
+            opendata_processor, calendar,
+            fix=args.fix, dry_run=args.dry_run,
+            report_path=args.report,
+            year_boundary_only=not args.full_scan,
+            threshold=args.hfq_threshold,
+            stocks=args.stocks,
         )
         return
 

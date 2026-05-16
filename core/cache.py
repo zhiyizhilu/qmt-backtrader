@@ -1605,10 +1605,24 @@ class SmartCacheManager:
                               truly_missing: set, req_years: List[int],
                               req_start: str, req_end: str,
                               is_raw: bool) -> list:
-        """获取缺失年份数据，写入磁盘并更新索引，返回新数据帧列表"""
+        """获取缺失年份数据，写入磁盘并更新索引，返回新数据帧列表
+
+        对于后复权数据(is_raw=False)，采用重叠校验策略：
+        1. 先获取缺失年份数据（含少量重叠日期）
+        2. 对比重叠日期的后复权价，判断调整因子是否变化
+        3. 如果调整因子未变 → 安全追加新数据
+        4. 如果调整因子已变 → 全量重获取所有年份
+        """
         idx = self.index_manager
         self.stats['incremental_merges'] += 1
         actual_cached = sorted(set(req_years) - truly_missing)
+
+        if not is_raw and actual_cached:
+            return self._fetch_hfq_with_overlap_check(
+                namespace, func, args, kwargs, symbol, period,
+                truly_missing, req_years, req_start, req_end
+            )
+
         self.logger.info(
             f"[{namespace}] {symbol} 行情增量更新: "
             f"已有年份={actual_cached}, 缺失年份={sorted(truly_missing)}"
@@ -1660,6 +1674,266 @@ class SmartCacheManager:
                 idx.update_checked_market_raw_years(symbol, period, sorted(truly_missing))
             else:
                 idx.update_checked_market_years(symbol, period, sorted(truly_missing))
+
+        return new_frames
+
+    def _fetch_hfq_with_overlap_check(self, namespace: str, func: Callable, args: tuple,
+                                       kwargs: dict, symbol: str, period: str,
+                                       truly_missing: set, req_years: List[int],
+                                       req_start: str, req_end: str) -> list:
+        """后复权数据增量更新：重叠校验策略
+
+        后复权价格 = 原始价格 × 累计调整因子，调整因子随除权除息事件变化。
+        如果期间没有新的除权除息事件，调整因子不变，可以安全追加。
+        如果有新的除权除息事件，调整因子变化，必须全量重获取。
+
+        策略：
+        1. 检查缺失年份是在已有年份前面还是后面
+        2. 如果有缺失年份在已有年份前面 → 直接全量重获取
+        3. 如果缺失年份只在已有年份后面 → 重叠校验
+           a. 从已有缓存的最后一天的前几天开始获取新数据（制造重叠）
+           b. 对比重叠日期的后复权价
+           c. 一致 → 调整因子未变 → 只写入新年份数据
+           d. 不一致 → 调整因子已变 → 全量重获取所有年份
+        """
+        idx = self.index_manager
+        all_years = sorted(req_years)
+        actual_cached = sorted(set(req_years) - truly_missing)
+
+        if not actual_cached:
+            return self._fetch_hfq_full_range(
+                namespace, func, args, kwargs, symbol, period,
+                truly_missing, req_years, req_start, req_end
+            )
+
+        min_cached = min(actual_cached)
+        missing_before = any(y < min_cached for y in truly_missing)
+
+        if missing_before:
+            self.logger.info(
+                f"[{namespace}] {symbol} 检测到缺失年份在已有年份前面，触发全量重获取: "
+                f"已有年份={actual_cached}, 缺失年份={sorted(truly_missing)}"
+            )
+            return self._fetch_hfq_full_range(
+                namespace, func, args, kwargs, symbol, period,
+                truly_missing, req_years, req_start, req_end
+            )
+
+        overlap_start, cached_last_date = self._get_hfq_overlap_start(
+            namespace, symbol, period, actual_cached
+        )
+
+        if overlap_start is None:
+            return self._fetch_hfq_full_range(
+                namespace, func, args, kwargs, symbol, period,
+                truly_missing, req_years, req_start, req_end
+            )
+
+        min_missing = min(truly_missing)
+        max_missing = max(truly_missing)
+        inc_start = max(overlap_start, f"{min_missing}-01-01")
+        inc_end = f"{max_missing}-12-31"
+
+        self.logger.info(
+            f"[{namespace}] {symbol} 后复权增量更新(含重叠校验): "
+            f"已有年份={actual_cached}, 缺失年份={sorted(truly_missing)}, "
+            f"获取范围={inc_start}~{inc_end}, 重叠校验日期<={cached_last_date}"
+        )
+
+        inc_args, inc_kwargs = self._build_incremental_args(
+            func, args, kwargs,
+            start_date_override=inc_start,
+            end_date_override=inc_end
+        )
+
+        new_frames = []
+        try:
+            new_data = func(*inc_args, **inc_kwargs)
+            if new_data is None or not isinstance(new_data, pd.DataFrame) or new_data.empty:
+                idx.update_checked_market_years(symbol, period, sorted(truly_missing))
+                return new_frames
+
+            factor_changed = self._check_hfq_factor_change(
+                namespace, symbol, period, new_data, cached_last_date
+            )
+
+            if factor_changed:
+                self.logger.info(
+                    f"[{namespace}] {symbol} 检测到调整因子变化，触发全量重获取"
+                )
+                written = self.disk_cache.put_yearly_from_df(
+                    namespace, symbol, period, new_data,
+                    only_years=sorted(new_data.index.year.unique())
+                )
+                for y in written:
+                    idx.update_market_index(symbol, period, y)
+                return self._fetch_hfq_full_range(
+                    namespace, func, args, kwargs, symbol, period,
+                    truly_missing, req_years, req_start, req_end
+                )
+
+            self.logger.info(
+                f"[{namespace}] {symbol} 调整因子未变化，安全追加新数据"
+            )
+            new_only_years = sorted(truly_missing & set(new_data.index.year.unique()))
+            written = self.disk_cache.put_yearly_from_df(
+                namespace, symbol, period, new_data,
+                only_years=new_only_years if new_only_years else None
+            )
+            for y in written:
+                idx.update_market_index(symbol, period, y)
+            new_frames.append(new_data)
+
+            fetched_years_with_data = (set(new_data.index.year.unique())
+                                       if isinstance(new_data.index, pd.DatetimeIndex)
+                                       else set())
+            checked_gap_years = truly_missing & fetched_years_with_data
+            if checked_gap_years:
+                idx.update_checked_market_years(symbol, period, sorted(checked_gap_years))
+            no_data_years = truly_missing - fetched_years_with_data
+            if no_data_years:
+                idx.update_checked_market_years(symbol, period, sorted(no_data_years))
+
+        except Exception as e:
+            self.logger.warning(f"[{namespace}] {symbol} 后复权增量更新失败: {e}")
+            idx.update_checked_market_years(symbol, period, sorted(truly_missing))
+
+        return new_frames
+
+    def _get_hfq_overlap_start(self, namespace: str, symbol: str, period: str,
+                                cached_years: List[int]) -> Tuple[Optional[str], Optional[str]]:
+        """获取后复权重叠校验的起始日期
+
+        从已有缓存的最后一年中找到最后一个交易日，向前取5个交易日作为重叠起始。
+        返回 (overlap_start, cached_last_date)，如果无法获取则返回 (None, None)。
+        """
+        if not cached_years:
+            return None, None
+
+        last_cached_year = max(cached_years)
+        df = self.disk_cache.get_yearly(namespace, symbol, last_cached_year, period)
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            return None, None
+        if not isinstance(df.index, pd.DatetimeIndex):
+            return None, None
+
+        sorted_df = df.sort_index()
+        if len(sorted_df) < 2:
+            last_date = sorted_df.index[-1].strftime('%Y-%m-%d')
+            overlap_start = (sorted_df.index[-1] - pd.Timedelta(days=10)).strftime('%Y-%m-%d')
+            return overlap_start, last_date
+
+        overlap_idx = max(0, len(sorted_df) - 6)
+        overlap_start = sorted_df.index[overlap_idx].strftime('%Y-%m-%d')
+        cached_last_date = sorted_df.index[-1].strftime('%Y-%m-%d')
+        return overlap_start, cached_last_date
+
+    def _check_hfq_factor_change(self, namespace: str, symbol: str, period: str,
+                                  new_data: pd.DataFrame,
+                                  cached_last_date: str) -> bool:
+        """检查后复权调整因子是否变化
+
+        对比新获取数据和已有缓存中重叠日期的后复权价。
+        如果差异超过 0.1%，认为调整因子已变化。
+        """
+        if not isinstance(new_data.index, pd.DatetimeIndex):
+            return True
+
+        overlap_data = new_data[new_data.index <= cached_last_date]
+        if overlap_data.empty:
+            self.logger.info(
+                f"[{namespace}] {symbol} 无重叠数据可校验，保守判定调整因子已变化"
+            )
+            return True
+
+        all_years = sorted(overlap_data.index.year.unique())
+        cached_frames = []
+        for year in all_years:
+            df = self.disk_cache.get_yearly(namespace, symbol, year, period)
+            if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
+                cached_frames.append(df)
+
+        if not cached_frames:
+            return True
+
+        cached_merged = pd.concat(cached_frames).sort_index()
+        cached_merged = cached_merged[~cached_merged.index.duplicated(keep='last')]
+
+        common_dates = overlap_data.index.intersection(cached_merged.index)
+        if len(common_dates) == 0:
+            self.logger.info(
+                f"[{namespace}] {symbol} 无公共日期可校验，保守判定调整因子已变化"
+            )
+            return True
+
+        for date in common_dates:
+            old_close = float(cached_merged.loc[date, 'close'])
+            new_close = float(overlap_data.loc[date, 'close'])
+            if old_close <= 0:
+                continue
+            diff_pct = abs(new_close - old_close) / old_close
+            if diff_pct > 0.001:
+                self.logger.info(
+                    f"[{namespace}] {symbol} 调整因子变化检测: "
+                    f"日期={date.strftime('%Y-%m-%d')}, "
+                    f"旧价={old_close:.4f}, 新价={new_close:.4f}, "
+                    f"差异={diff_pct*100:.2f}%"
+                )
+                return True
+
+        return False
+
+    def _fetch_hfq_full_range(self, namespace: str, func: Callable, args: tuple,
+                               kwargs: dict, symbol: str, period: str,
+                               truly_missing: set, req_years: List[int],
+                               req_start: str, req_end: str) -> list:
+        """后复权数据全量重获取策略（调整因子变化时的兜底方案）
+
+        从最早年份到最晚年份一次性获取全部后复权数据，覆盖旧缓存，
+        确保所有年份使用同一个调整因子。
+        """
+        idx = self.index_manager
+        all_years = sorted(req_years)
+        self.logger.info(
+            f"[{namespace}] {symbol} 后复权数据全量重获取: "
+            f"获取范围={all_years[0]}~{all_years[-1]}"
+        )
+
+        inc_start = f"{all_years[0]}-01-01"
+        inc_end = f"{all_years[-1]}-12-31"
+
+        inc_args, inc_kwargs = self._build_incremental_args(
+            func, args, kwargs,
+            start_date_override=inc_start,
+            end_date_override=inc_end
+        )
+
+        new_frames = []
+        try:
+            new_data = func(*inc_args, **inc_kwargs)
+            if new_data is not None and isinstance(new_data, pd.DataFrame) and not new_data.empty:
+                written = self.disk_cache.put_yearly_from_df(
+                    namespace, symbol, period, new_data,
+                    only_years=all_years
+                )
+                for y in written:
+                    idx.update_market_index(symbol, period, y)
+                new_frames.append(new_data)
+                fetched_years_with_data = (set(new_data.index.year.unique())
+                                           if isinstance(new_data.index, pd.DatetimeIndex)
+                                           else set())
+                no_data_years = truly_missing - fetched_years_with_data
+                checked_gap_years = truly_missing & fetched_years_with_data
+                if checked_gap_years:
+                    idx.update_checked_market_years(symbol, period, sorted(checked_gap_years))
+                all_checked = set(all_years) - fetched_years_with_data
+                if all_checked:
+                    idx.update_checked_market_years(symbol, period, sorted(all_checked))
+            else:
+                idx.update_checked_market_years(symbol, period, sorted(truly_missing))
+        except Exception as e:
+            self.logger.warning(f"[{namespace}] {symbol} 后复权全量获取失败: {e}")
+            idx.update_checked_market_years(symbol, period, sorted(truly_missing))
 
         return new_frames
 

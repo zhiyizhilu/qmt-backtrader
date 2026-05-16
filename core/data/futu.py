@@ -322,6 +322,13 @@ class FutuDataProcessor(DataProcessor):
                                period: str, sub_dir: str = 'market') -> bool:
         """增量下载缺失数据并缓存到本地
 
+        对于后复权数据，采用重叠校验策略：
+            1. 如果有缺失年份且是后复权数据
+            2. 先检查是否有缺失年份在已有年份前面 → 全量重下载
+            3. 如果只是后面有缺失，先下载一个重叠范围检查调整因子
+            4. 如果重叠部分价格一致 → 只追加缺失年份
+            5. 如果价格不一致 → 全量重下载所有年份
+
         Args:
             symbol: QMT格式代码
             start_date: 起始日期
@@ -357,6 +364,17 @@ class FutuDataProcessor(DataProcessor):
         autype = AuType.HFQ if sub_dir == 'market' else AuType.NONE
         period_suffix = self._map_period(period)
 
+        # 对于后复权数据，采用重叠校验策略
+        if sub_dir == 'market':
+            try:
+                return self._download_hfq_with_overlap_check(
+                    symbol, futu_code, start_date, end_date, period, period_suffix,
+                    ktype, autype, missing_years
+                )
+            except Exception as e:
+                self.logger.error(f"{symbol}: 后复权重叠校验失败，回退到全量重下载: {e}")
+
+        # 不复权数据，或者后复权重叠校验失败，按原有逻辑下载
         ctx = OpenQuoteContext(host=self._futu_host, port=self._futu_port)
         try:
             stock_unknown = False  # 标记该股票是否被富途识别为"未知股票"
@@ -390,6 +408,158 @@ class FutuDataProcessor(DataProcessor):
             ctx.close()
 
         return True
+
+    def _download_hfq_with_overlap_check(self, symbol: str, futu_code: str,
+                                          start_date: str, end_date: str,
+                                          period: str, period_suffix: str,
+                                          ktype, autype,
+                                          missing_years: list) -> bool:
+        """下载后复权数据，采用重叠校验策略"""
+        from futu import OpenQuoteContext, KLType, AuType
+
+        ctx = OpenQuoteContext(host=self._futu_host, port=self._futu_port)
+        try:
+            # 获取已有的年份
+            req_years = []
+            try:
+                start_year = pd.Timestamp(start_date).year
+                end_year = pd.Timestamp(end_date).year
+                req_years = list(range(start_year, end_year + 1))
+            except Exception:
+                pass
+
+            existing_years = sorted(set(req_years) - set(missing_years))
+            all_years = sorted(set(existing_years) | set(missing_years))
+
+            # 检查是否有缺失年份在已有年份前面，是的话全量重下载
+            missing_before_existing = False
+            if existing_years:
+                min_existing = min(existing_years)
+                missing_before_existing = any(y < min_existing for y in missing_years)
+
+            if missing_before_existing:
+                self.logger.info(f"[{symbol}] 检测到缺失年份在已有年份前面，全量重下载...")
+                return self._download_hfq_full_range(
+                    symbol, futu_code, start_date, end_date, period, period_suffix,
+                    ktype, autype, all_years
+                )
+
+            # 只有后面有缺失年份，尝试重叠校验
+            if existing_years:
+                try:
+                    # 获取重叠检查的起始日期（已有最后一年的最后一个月）
+                    max_existing = max(existing_years)
+                    overlap_start = f"{max_existing}-12-01"
+                    overlap_end = f"{max_existing}-12-31"
+
+                    # 加载已有的重叠部分数据
+                    existing_df = self._load_from_parquet(
+                        symbol, overlap_start, overlap_end, period, sub_dir='market'
+                    )
+
+                    if existing_df is not None and not existing_df.empty:
+                        # 下载包含重叠部分的新数据（从重叠检查起始到需要的结束）
+                        new_overlap_start = overlap_start
+                        new_overlap_end = end_date
+                        self.logger.info(f"[{symbol}] 检查后复权调整因子: {new_overlap_start}~{new_overlap_end}")
+
+                        overlap_raw_df = self._download_kline(ctx, futu_code, new_overlap_start, new_overlap_end, ktype, autype)
+                        if overlap_raw_df is not None and not overlap_raw_df.empty:
+                            # 提取重叠的部分
+                            overlap_df = overlap_raw_df.copy()
+                            overlap_df['datetime'] = pd.to_datetime(overlap_df['time_key'])
+                            overlap_df = overlap_df.set_index('datetime')
+                            overlap_df = overlap_df[(overlap_df.index >= overlap_start) & (overlap_df.index <= overlap_end)]
+                            overlap_df = overlap_df[['close']]
+
+                            # 对比收盘价
+                            if not overlap_df.empty and not existing_df.empty:
+                                common_idx = overlap_df.index.intersection(existing_df.index)
+                                if len(common_idx) > 0:
+                                    overlap_close = overlap_df.loc[common_idx, 'close'].sort_index()
+                                    existing_close = existing_df.loc[common_idx, 'close'].sort_index()
+
+                                    # 检查是否一致
+                                    import numpy as np
+                                    close_diff = np.abs(overlap_close - existing_close)
+                                    max_diff = close_diff.max()
+
+                                    if max_diff < 0.01:
+                                        self.logger.info(f"[{symbol}] 调整因子一致，只追加缺失年份")
+                                        # 重叠校验通过，只下载缺失年份
+                                        stock_unknown = False
+                                        for year in missing_years:
+                                            if stock_unknown:
+                                                continue
+                                            year_start = f'{year}-01-01'
+                                            year_end = f'{year}-12-31'
+                                            self.logger.info(f"  下载 {symbol} {year}年数据...")
+                                            raw_df = self._download_kline(ctx, futu_code, year_start, year_end, ktype, autype)
+                                            if raw_df is not None and not raw_df.empty:
+                                                self._save_kline_to_parquet(raw_df, symbol, year, period_suffix, 'market')
+                                            else:
+                                                self.logger.warning(f"  {symbol} {year}年无数据")
+                                                if year == missing_years[0]:
+                                                    stock_unknown = True
+                                        return True
+                                    else:
+                                        self.logger.warning(f"[{symbol}] 调整因子变化 ({max_diff:.4f}>)，全量重下载")
+                                        # 调整因子变了，全量重下载
+                                        return self._download_hfq_full_range(
+                                            symbol, futu_code, start_date, end_date, period, period_suffix,
+                                            ktype, autype, all_years
+                                        )
+                except Exception as e:
+                    self.logger.warning(f"[{symbol}] 重叠校验异常，回退到全量重下载: {e}")
+
+            # 没有已有数据，或者重叠校验失败，全量重下载
+            self.logger.info(f"[{symbol}] 全量重下载: {start_date}~{end_date}")
+            return self._download_hfq_full_range(
+                symbol, futu_code, start_date, end_date, period, period_suffix,
+                ktype, autype, all_years
+            )
+        finally:
+            ctx.close()
+
+    def _download_hfq_full_range(self, symbol: str, futu_code: str,
+                                  start_date: str, end_date: str,
+                                  period: str, period_suffix: str,
+                                  ktype, autype, years: list) -> bool:
+        """全量下载后复权数据，覆盖所有年份"""
+        from futu import OpenQuoteContext, KLType, AuType
+
+        # 先删除旧的年份文件
+        for year in years:
+            fpath = os.path.join(self._data_dir, 'market', symbol, f"{year}_{period_suffix}.parquet")
+            if os.path.exists(fpath):
+                try:
+                    os.remove(fpath)
+                    self.logger.info(f"  删除旧文件: {fpath}")
+                except Exception as e:
+                    self.logger.warning(f"  删除失败 {fpath}: {e}")
+
+        # 下载整个范围
+        self.logger.info(f"  全量下载 {symbol} 后复权数据: {start_date}~{end_date}")
+        ctx = OpenQuoteContext(host=self._futu_host, port=self._futu_port)
+        try:
+            raw_df = self._download_kline(ctx, futu_code, start_date, end_date, ktype, autype)
+            if raw_df is not None and not raw_df.empty:
+                # 按年份拆分并保存
+                df = raw_df.copy()
+                df['datetime'] = pd.to_datetime(df['time_key'])
+                for year in years:
+                    year_df = df[df['datetime'].dt.year == year].copy()
+                    if not year_df.empty:
+                        self._save_kline_to_parquet(year_df, symbol, year, period_suffix, 'market')
+                return True
+            else:
+                self.logger.warning(f"  {symbol} 无数据返回")
+                return False
+        except Exception as e:
+            self.logger.error(f"  全量下载 {symbol} 失败: {e}")
+            return False
+        finally:
+            ctx.close()
 
     @staticmethod
     def _map_period_to_kltype(period: str):

@@ -91,8 +91,42 @@ class OpenDataProcessor(DataProcessor):
         if df is not None and not df.empty:
             return self._process_akshare_data(df, symbol, start_date, end_date)
 
-        # 腾讯财经失败
+        # 腾讯财经失败，降级到新浪财经
+        self.logger.info(f"腾讯财经获取 {symbol} 失败，尝试新浪财经降级...")
+        df = self._get_data_from_sina(symbol, start_date, end_date)
+        if df is not None and not df.empty:
+            return self._process_akshare_data(df, symbol, start_date, end_date)
+
         raise ValueError(f"{symbol} 在 {start_date} 到 {end_date} 期间没有数据")
+
+    def get_data_from_source(self, symbol: str, start_date: str, end_date: str,
+                              source: str = 'sina', period: str = '1d') -> pd.DataFrame:
+        """从指定数据源获取后复权数据（用于修复流程的降级获取）
+
+        Args:
+            symbol: 股票代码 (QMT格式，如 000001.SZ)
+            start_date: 起始日期 (YYYY-MM-DD)
+            end_date: 结束日期 (YYYY-MM-DD)
+            source: 数据源，'tx'=腾讯财经, 'sina'=新浪财经
+            period: 周期
+
+        Returns:
+            处理后的 DataFrame
+        """
+        if not self._ak:
+            raise RuntimeError("akshare 未安装，请 pip install akshare")
+
+        if source == 'sina':
+            df = self._get_data_from_sina(symbol, start_date, end_date)
+        elif source == 'tx':
+            df = self._get_data_from_tx(symbol, start_date, end_date)
+        else:
+            raise ValueError(f"不支持的数据源: {source}")
+
+        if df is not None and not df.empty:
+            return self._process_akshare_data(df, symbol, start_date, end_date)
+
+        raise ValueError(f"{symbol} 从 {source} 获取 {start_date} 到 {end_date} 期间没有数据")
 
     def _get_data_from_tx(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
         """从腾讯财经获取数据"""
@@ -104,12 +138,30 @@ class OpenDataProcessor(DataProcessor):
             else:
                 tx_symbol = symbol
 
-            # 使用腾讯财经的历史数据接口（后复权，避免前复权随时间变化的问题）
             df = self._ak.stock_zh_a_hist_tx(symbol=tx_symbol, start_date=start_date, end_date=end_date, adjust='hfq')
             if df is not None and not df.empty:
                 return df
         except Exception as e:
             self.logger.debug(f"腾讯财经接口失败: {e}")
+        return None
+
+    def _get_data_from_sina(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
+        """从新浪财经获取后复权数据（降级方案）"""
+        try:
+            if '.' in symbol:
+                code, suffix = symbol.split('.')
+                sina_symbol = f"{suffix.lower()}{code}"
+            else:
+                sina_symbol = symbol
+
+            sina_start = start_date.replace('-', '')
+            sina_end = end_date.replace('-', '')
+            df = self._ak.stock_zh_a_daily(symbol=sina_symbol, start_date=sina_start,
+                                            end_date=sina_end, adjust='hfq')
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            self.logger.debug(f"新浪财经接口失败: {e}")
         return None
 
     def _get_index_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d") -> Optional[pd.DataFrame]:
@@ -831,6 +883,12 @@ class OpenDataProcessor_Raw:
         if df is not None and not df.empty:
             return self._processor._process_akshare_data(df, symbol, start_date, end_date)
 
+        # 腾讯财经失败，降级到新浪财经
+        self._processor.logger.info(f"腾讯财经不复权 {symbol} 失败，尝试新浪财经降级...")
+        df = self._get_raw_data_from_sina(symbol, start_date, end_date)
+        if df is not None and not df.empty:
+            return self._processor._process_akshare_data(df, symbol, start_date, end_date)
+
         raise ValueError(f"{symbol} 在 {start_date} 到 {end_date} 期间没有不复权数据")
 
     def _get_raw_data_from_tx(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
@@ -847,6 +905,25 @@ class OpenDataProcessor_Raw:
                 return df
         except Exception as e:
             self._processor.logger.debug(f"腾讯财经不复权接口失败: {e}")
+        return None
+
+    def _get_raw_data_from_sina(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
+        """从新浪财经获取不复权数据（降级方案）"""
+        try:
+            if '.' in symbol:
+                code, suffix = symbol.split('.')
+                sina_symbol = f"{suffix.lower()}{code}"
+            else:
+                sina_symbol = symbol
+
+            sina_start = start_date.replace('-', '')
+            sina_end = end_date.replace('-', '')
+            df = self._processor._ak.stock_zh_a_daily(symbol=sina_symbol, start_date=sina_start,
+                                                       end_date=sina_end, adjust='')
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            self._processor.logger.debug(f"新浪财经不复权接口失败: {e}")
         return None
 
 
