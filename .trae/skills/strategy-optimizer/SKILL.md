@@ -7,6 +7,23 @@ description: "系统性地通过回测优化量化交易策略。当用户需要
 
 在 qmt_backtrader 框架中系统性优化量化交易策略。本技能提供结构化的工作流程：提出优化建议、独立实施、逐一回测、硬逻辑与过度拟合审查、仅保留有效且稳健的改进。
 
+## 环境配置
+
+**Python 运行环境**（通过 PowerShell 动态获取系统 Python 环境）：
+
+```powershell
+$pythonPath = "$env:USERPROFILE\AppData\Local\Programs\Python\Python312\python.exe"
+if (-not (Test-Path $pythonPath)) {
+    $pythonPath = (Get-ChildItem "$env:USERPROFILE\AppData\Local\Programs\Python\Python*" -Directory |
+        Sort-Object Name -Descending | Select-Object -First 1).FullName + "\python.exe"
+}
+```
+
+- 所有回测、脚本、pip 安装等 Python 操作必须使用动态获取的 Python 路径
+- 示例：`& "$pythonPath" main.py --mode backtest ...`
+- 如需指定完整路径而非使用 PATH 中的 Python，可通过 `sys.executable` 或上述脚本获取后调用
+- 项目根目录：`e:\jupyter notebook\automatic\qmt_backtrader`
+
 ## 调用时机
 
 当用户出现以下情况时调用此技能：
@@ -60,12 +77,13 @@ description: "系统性地通过回测优化量化交易策略。当用户需要
 #### 回测命令模板
 
 ```bash
-python main.py --mode backtest --strategy <策略名> --period 1d --pool <股票池> --start <起始日期> --end <结束日期> --debug
+$pythonPath = "$env:USERPROFILE\AppData\Local\Programs\Python\Python312\python.exe"
+& "$pythonPath" main.py --mode backtest --strategy <策略名> --period 1d --pool <股票池> --start <起始日期> --end <结束日期> --debug
 ```
 
 #### 程序化回测模板（StockSelectionStrategy）
 
-在策略目录下的 `optimization/` 目录中创建 `run_optimization.py` 脚本：
+在**策略目录下**的 `optimization/` 目录中创建 `run_optimization.py` 脚本（确保脚本和结果文件都在策略目录内）：
 
 ```python
 import os
@@ -86,7 +104,9 @@ from core.data.index_constituent import IndexConstituentManager
 
 STRATEGY_NAME = '<策略注册名>'
 STRATEGY_DIR = get_strategy_dir(STRATEGY_NAME)
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'optimization_results')
+# 所有优化相关文件都放在策略目录下的 optimization/ 子目录中
+OPTIMIZATION_DIR = os.path.join(STRATEGY_DIR, 'optimization')
+RESULTS_DIR = os.path.join(OPTIMIZATION_DIR, 'optimization_results')
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
@@ -167,10 +187,13 @@ sys.path.insert(0, PROJECT_ROOT)
 os.environ['QMT_LOG_LEVEL'] = 'WARNING'
 
 from api.backtest_api import BacktestAPI
-from strategies import get_strategy, get_strategy_default_kwargs, get_strategy_backtest_config
+from strategies import get_strategy, get_strategy_default_kwargs, get_strategy_backtest_config, get_strategy_dir
 
 STRATEGY_NAME = '<策略注册名>'
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'optimization_results')
+STRATEGY_DIR = get_strategy_dir(STRATEGY_NAME)
+# 所有优化相关文件都放在策略目录下的 optimization/ 子目录中
+OPTIMIZATION_DIR = os.path.join(STRATEGY_DIR, 'optimization')
+RESULTS_DIR = os.path.join(OPTIMIZATION_DIR, 'optimization_results')
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
@@ -481,7 +504,7 @@ def run_temporal_stability_test(strategy_name, extra_params, label,
 
 #### HTML 报告生成模板
 
-在策略目录下的 `optimization/` 目录中创建 `generate_report.py` 脚本，生成包含 Chart.js 交互式图表的 HTML 报告。
+在**策略目录下**的 `optimization/` 目录中创建 `generate_report.py` 脚本，生成包含 Chart.js 交互式图表的 HTML 报告（确保报告文件也在策略目录内）。
 
 报告应包含以下7个章节：
 
@@ -496,9 +519,14 @@ def run_temporal_stability_test(strategy_name, extra_params, label,
 ```python
 import json
 import os
+from strategies import get_strategy_dir
 
-RESULTS_DIR = os.path.join(os.path.dirname(__file__), 'optimization_results')
-OUTPUT_FILE = os.path.join(os.path.dirname(__file__), 'optimization_report.html')
+STRATEGY_NAME = '<策略注册名>'
+STRATEGY_DIR = get_strategy_dir(STRATEGY_NAME)
+# 所有优化相关文件都放在策略目录下的 optimization/ 子目录中
+OPTIMIZATION_DIR = os.path.join(STRATEGY_DIR, 'optimization')
+RESULTS_DIR = os.path.join(OPTIMIZATION_DIR, 'optimization_results')
+OUTPUT_FILE = os.path.join(OPTIMIZATION_DIR, 'optimization_report.html')
 
 ALL_RESULTS = [
     ('baseline', '基线策略', None),
@@ -723,6 +751,7 @@ if __name__ == '__main__':
 8. **验证回测**：清理代码后必须重新回测，确认结果与优化预期一致
 9. **硬逻辑优先**：优化的逻辑因果链和经济合理性比统计显著性更重要，无法解释"为什么有效"的优化不可采纳
 10. **过度拟合防范**：每项有效优化必须通过样本外验证、参数敏感性分析和时间稳定性测试，三项中任何一项不通过即放弃
+11. **目录隔离**：所有优化过程中新增的文件（脚本、报告、结果）必须严格放置在被优化策略所在的目录内，不得在策略目录外创建任何文件
 
 ## 策略文件结构
 
@@ -813,19 +842,20 @@ class ETFRotationStrategy(StrategyLogic):
 
 ## 输出目录结构
 
-优化结果保存在策略目录下的 `optimization/` 子目录中：
+**所有优化相关文件严格限制在被优化策略所在的目录内**，优化结果保存在策略目录下的 `optimization/` 子目录中：
 
 ```
-strategies/<策略目录>/
+strategies/<策略目录>/           # ← 被优化策略的根目录
 ├── <策略名>.py                  # 策略主文件
-├── readme.md                    # 策略文档
-├── backtest_results/            # 回测结果记录
+├── __init__.py                  # 模块初始化文件
+├── readme.md                    # 策略文档（优化后更新）
+├── backtest_results/            # 回测结果记录（原有）
 │   └── YYYYMMDD_HHMMSS_<策略名>.json
-└── optimization/                # 优化案例目录
+└── optimization/                # ← 新增的优化目录（全部在策略目录内）
     ├── run_optimization.py          # 自动化回测运行脚本
     ├── generate_report.py           # HTML报告生成脚本
     ├── optimization_report.html     # HTML优化报告
-    └── optimization_results/        # 优化回测结果
+    └── optimization_results/        # 优化回测结果子目录
         ├── baseline.json            # 基线结果
         ├── opt01_xxx.json           # 优化1结果
         ├── opt02_xxx.json           # 优化2结果
@@ -837,6 +867,12 @@ strategies/<策略目录>/
         ├── opt01_xxx_YYYY.json      # 优化1年度稳定性测试结果
         └── review_summary.json      # 硬逻辑与过度拟合审查汇总
 ```
+
+**目录隔离规则**：
+- ❌ 禁止在策略目录外创建任何文件或目录
+- ❌ 禁止修改策略目录外的任何文件
+- ✅ 所有新增文件（脚本、报告、结果）必须在 `strategies/<策略目录>/optimization/` 目录内
+- ✅ 仅修改策略目录内的文件（策略主文件、readme.md）
 
 ### 策略目录与注册名映射
 

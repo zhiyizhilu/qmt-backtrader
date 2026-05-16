@@ -7,6 +7,23 @@ description: "从策略文档（Markdown/PDF/Word/URL）自动理解策略逻辑
 
 从策略文档自动理解策略逻辑，在 qmt_backtrader 框架中生成可运行的量化策略代码，并完成回测。
 
+## 环境配置
+
+**Python 运行环境**（通过 PowerShell 动态获取系统 Python 环境）：
+
+```powershell
+$pythonPath = "$env:USERPROFILE\AppData\Local\Programs\Python\Python312\python.exe"
+if (-not (Test-Path $pythonPath)) {
+    $pythonPath = (Get-ChildItem "$env:USERPROFILE\AppData\Local\Programs\Python\Python*" -Directory |
+        Sort-Object Name -Descending | Select-Object -First 1).FullName + "\python.exe"
+}
+```
+
+- 所有回测、脚本、pip 安装等 Python 操作必须使用动态获取的 Python 路径
+- 示例：`& "$pythonPath" main.py --mode backtest ...`
+- 如需指定完整路径而非使用 PATH 中的 Python，可通过 `sys.executable` 或上述脚本获取后调用
+- 项目根目录：`e:\jupyter notebook\automatic\qmt_backtrader`
+
 ## 调用时机
 
 当用户出现以下情况时调用此技能：
@@ -56,7 +73,7 @@ except ImportError:
         sys.exit(1)
 ```
 
-运行方式：`python -c "<上述脚本>" <pdf文件路径>`
+运行方式：使用 `$pythonPath = "$env:USERPROFILE\AppData\Local\Programs\Python\Python312\python.exe"; & "$pythonPath" -c "<上述脚本>" <pdf文件路径>`
 
 **Word 提取脚本**：
 
@@ -73,7 +90,7 @@ except ImportError:
     sys.exit(1)
 ```
 
-运行方式：`python -c "<上述脚本>" <docx文件路径>`
+运行方式：使用 `$pythonPath = "$env:USERPROFILE\AppData\Local\Programs\Python\Python312\python.exe"; & "$pythonPath" -c "<上述脚本>" <docx文件路径>`
 
 #### 1.2 策略要素提取
 
@@ -300,7 +317,8 @@ strategies/<strategy_name>_strategy/     (或 strategies_for_vip/<strategy_name>
 **命令行方式**：
 
 ```bash
-python main.py --mode backtest --strategy <strategy_name> --period 1d --pool <股票池> --start <起始日期> --end <结束日期> --ai-mode --debug
+$pythonPath = "$env:USERPROFILE\AppData\Local\Programs\Python\Python312\python.exe"
+& "$pythonPath" main.py --mode backtest --strategy <strategy_name> --period 1d --pool <股票池> --start <起始日期> --end <结束日期> --ai-mode --debug
 ```
 
 **程序化方式**（推荐，可获取详细指标）：

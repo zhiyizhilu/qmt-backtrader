@@ -78,7 +78,7 @@ def _init_virtual_book_from_account(api: QMTAPI, book: VirtualBook):
     book.initialize_from_account(actual_positions, actual_cash, set())
 
 
-def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
+def run_backtest(strategy_name='double_ma', period='1d', pool=None,
                  start_date=None, end_date=None, proxy='', ai_mode=False,
                  no_record=False, slippage=None, data_source='qmt'):
     """运行回测"""
@@ -103,7 +103,8 @@ def run_backtest(strategy_name='double_ma', period='1d', pool='沪深A股',
     if slippage is not None:
         config['slippage'] = slippage
 
-    pool = backtest_config.get('pool', pool)
+    pool = pool if pool is not None else backtest_config.get('pool', '沪深A股')
+    config['pool'] = pool
 
     benchmark = IndexConstituentManager.SECTOR_TO_INDEX.get(pool, '000300.SH')
     config.setdefault('benchmark', benchmark)
@@ -234,7 +235,7 @@ def main():
                         help='运行模式: backtest=回测, sim=模拟交易, real=实盘交易, instances=多策略实例')
     parser.add_argument('--strategy', type=str, default='double_ma', choices=get_strategy_choices(), help='策略类型')
     parser.add_argument('--period', type=str, default='1d', choices=['1d', '1m', '5m', '15m', '30m', '60m', 'tick'], help='数据周期')
-    parser.add_argument('--pool', type=str, default='沪深A股', help='股票池板块名称')
+    parser.add_argument('--pool', type=str, default=None, help='股票池板块名称（不指定则使用策略默认值）')
     parser.add_argument('--start', type=str, default=None, help='回测起始日期，如 2016-01-01')
     parser.add_argument('--end', type=str, default=None, help='回测结束日期，如 2026-04-17')
     parser.add_argument('--proxy', type=str, default='', help='代理地址，格式 host:port（已弃用，保留参数用于兼容性）')
