@@ -669,19 +669,30 @@
                         <h3 class="text-sm font-semibold text-slate-300">运行日志</h3>
                         <div class="flex items-center gap-3">
                             <span v-if="logFile" class="text-xs text-slate-500">{{ logFile }}</span>
-                            <button v-if="logContent" @click="copyLog"
+                            <span v-if="logTotalLines > 0" class="text-xs text-slate-500">
+                                {{ Math.min(logOffset, logTotalLines) }} / {{ logTotalLines }} 行
+                            </span>
+                            <button v-if="logLines.length > 0" @click="copyLog"
                                     class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
                                     :class="logCopied ? 'bg-green-600 text-white' : 'bg-slate-600 text-slate-300 hover:bg-slate-500'">
                                 {{ logCopied ? '已复制' : '复制日志' }}
                             </button>
                         </div>
                     </div>
-                    <div v-if="logLoading" class="text-center py-8">
+                    <div v-if="logLoading && logLines.length === 0" class="text-center py-8">
                         <div class="pulse text-slate-400">加载日志中...</div>
                     </div>
-                    <div v-else-if="logContent" class="log-content">
-                        <span v-for="(line, i) in logLines" :key="i"
-                              :style="{ color: logLineColor(line) }">{{ line + '\n' }}</span>
+                    <div v-else-if="logLines.length > 0">
+                        <div id="log-content-box" class="log-content" @scroll="handleLogScroll">
+                            <span v-for="(line, i) in logLines" :key="i"
+                                  :style="{ color: logLineColor(line) }">{{ line + '\n' }}</span>
+                        </div>
+                        <div v-if="logLoading" class="text-center py-2 text-xs text-slate-500 mt-2">
+                            <div class="pulse">加载更多...</div>
+                        </div>
+                        <div v-else-if="logOffset >= logTotalLines && logTotalLines > 0" class="text-center py-2 text-xs text-slate-600 mt-2">
+                            已加载全部日志
+                        </div>
                     </div>
                     <div v-else class="text-center py-8 text-slate-500">
                         <svg class="w-10 h-10 mx-auto mb-3 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -722,10 +733,13 @@ createApp({
         const collapsedVip = ref(false);
         const sidebarView = ref('strategy');
         const selectedRuns = ref([]);
-        const logContent = ref('');
         const logFile = ref('');
         const logLoading = ref(false);
         const logCopied = ref(false);
+        const logLines = ref([]);
+        const logOffset = ref(0);
+        const logTotalLines = ref(0);
+        const LOG_BATCH = 500;
         const cachePath = ref('');
         const cacheParent = ref('');
         const cacheEntries = ref([]);
@@ -746,6 +760,7 @@ createApp({
         let equityChart = null;
         let drawdownChart = null;
         let compareChart = null;
+        const CHART_SYNC_GROUP = 'equity-drawdown-sync';
 
         const totalTradePages = computed(() => {
             if (!currentRun.value?.trade_log) return 1;
@@ -786,27 +801,7 @@ createApp({
             return s?.display_name || formatStrategyName(selectedStrategy.value);
         });
 
-        const highlightedLog = computed(() => {
-            if (!logContent.value) return '';
-            return logContent.value
-                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-                .split('\n')
-                .map(line => {
-                    if (/ERROR/i.test(line)) return '<span style="color:#f87171">' + line + '</span>';
-                    if (/WARNING/i.test(line)) return '<span style="color:#fbbf24">' + line + '</span>';
-                    if (/DEBUG/i.test(line)) return '<span style="color:#64748b">' + line + '</span>';
-                    if (/INFO/i.test(line)) return '<span style="color:#94a3b8">' + line + '</span>';
-                    return '<span>' + line + '</span>';
-                })
-                .join('\n');
-        });
-
-        const logLines = computed(() => {
-            if (!logContent.value) return [];
-            return logContent.value.split('\n');
-        });
-
-        function logLineColor(line) {
+        const logLineColor = (line) => {
             const upper = line.toUpperCase();
             if (upper.includes(' - ERROR - ') || upper.includes(' - CRITICAL - ') || upper.includes(' - FATAL - ')) return '#ef4444';
             if (upper.includes(' - WARNING - ') || upper.includes(' - WARN - ')) return '#f59e0b';
@@ -981,7 +976,9 @@ createApp({
             strategyReadme.value = '';
             strategyCode.value = '';
             selectedRuns.value = [];
-            logContent.value = '';
+            logLines.value = [];
+            logOffset.value = 0;
+            logTotalLines.value = 0;
             logFile.value = '';
             try {
                 const res = await fetch(`/api/strategies/${name}/runs`);
@@ -1104,25 +1101,70 @@ createApp({
         async function loadLog() {
             if (!selectedRunId.value || !selectedStrategy.value) return;
             logLoading.value = true;
-            logContent.value = '';
+            logLines.value = [];
+            logOffset.value = 0;
+            logTotalLines.value = 0;
             logFile.value = '';
             try {
-                const res = await fetch(`/api/logs/${encodeURIComponent(selectedStrategy.value)}/${encodeURIComponent(selectedRunId.value)}`);
+                const res = await fetch(`/api/logs/${encodeURIComponent(selectedStrategy.value)}/${encodeURIComponent(selectedRunId.value)}?offset=0&limit=${LOG_BATCH}`);
                 const data = await res.json();
-                logContent.value = data.content || '';
                 logFile.value = data.file || '';
+                logTotalLines.value = data.total_lines || 0;
+                if (data.content) {
+                    const lines = data.content.split('\n');
+                    if (lines.length > 0 && lines[lines.length - 1] === '') {
+                        lines.pop();
+                    }
+                    logLines.value = lines;
+                    logOffset.value = lines.length;
+                }
+                await nextTick();
+                const el = document.getElementById('log-content-box');
+                if (el) el.scrollTop = 0;
             } catch (e) {
                 console.error('Failed to load log:', e);
-                logContent.value = '';
             } finally {
                 logLoading.value = false;
             }
         }
 
-        async function copyLog() {
-            if (!logContent.value) return;
+        async function loadMoreLog() {
+            if (!selectedRunId.value || !selectedStrategy.value) return;
+            if (logLoading.value) return;
+            if (logOffset.value >= logTotalLines.value) return;
+            logLoading.value = true;
             try {
-                await navigator.clipboard.writeText(logContent.value);
+                const res = await fetch(`/api/logs/${encodeURIComponent(selectedStrategy.value)}/${encodeURIComponent(selectedRunId.value)}?offset=${logOffset.value}&limit=${LOG_BATCH}`);
+                const data = await res.json();
+                if (data.content) {
+                    const lines = data.content.split('\n');
+                    if (lines.length > 0 && lines[lines.length - 1] === '') {
+                        lines.pop();
+                    }
+                    logLines.value = [...logLines.value, ...lines];
+                    logOffset.value += lines.length;
+                }
+            } catch (e) {
+                console.error('Failed to load more log:', e);
+            } finally {
+                logLoading.value = false;
+            }
+        }
+
+        function handleLogScroll() {
+            const el = document.getElementById('log-content-box');
+            if (!el || logLoading.value) return;
+            if (logOffset.value >= logTotalLines.value) return;
+            const scrollBottom = el.scrollTop + el.clientHeight;
+            if (scrollBottom >= el.scrollHeight - 80) {
+                loadMoreLog();
+            }
+        }
+
+        async function copyLog() {
+            if (!logLines.value.length) return;
+            try {
+                await navigator.clipboard.writeText(logLines.value.join('\n'));
                 logCopied.value = true;
                 setTimeout(() => { logCopied.value = false; }, 2000);
             } catch (e) {
@@ -1285,6 +1327,7 @@ createApp({
             }
             if (!equityChart) {
                 equityChart = echarts.init(el, 'dark');
+                equityChart.group = CHART_SYNC_GROUP;
             }
             const ec = currentRun.value.equity_curve || [];
             const bc = currentRun.value.benchmark_curve || [];
@@ -1385,6 +1428,7 @@ createApp({
             }
             if (!drawdownChart) {
                 drawdownChart = echarts.init(el, 'dark');
+                drawdownChart.group = CHART_SYNC_GROUP;
             }
             const ec = currentRun.value.equity_curve || [];
             if (ec.length === 0) return;
@@ -1438,6 +1482,10 @@ createApp({
                 }],
                 dataZoom: [{ type: 'inside', start: 0, end: 100 }],
             }, true);
+
+            if (equityChart && drawdownChart) {
+                echarts.connect(CHART_SYNC_GROUP);
+            }
         }
 
         function renderCompareChart() {
@@ -1594,14 +1642,14 @@ createApp({
             editingName, editNameValue,
             collapsedAll, collapsedStandard, collapsedVip, sidebarView,
             selectedRuns,
-            logContent, logFile, logLoading, logCopied, highlightedLog, logLines, logLineColor,
+            logFile, logLoading, logCopied, logLines, logOffset, logTotalLines, logLineColor,
             cachePath, cacheParent, cacheEntries, cacheLoading, cacheViewData, cacheAllRows,
             cacheDateHierarchy, selectedYear, selectedMonth, selectedDay, selectedDateFilter,
             formatStrategyName, formatTimestamp, formatPercent, formatNum, formatMoney, formatFileSize,
             calcWinRate, selectStrategy, selectRun, deleteRun, switchTab, copyCode,
             startEditName, saveEditName, cancelEditName,
             toggleRunSelection, toggleSelectAllRuns, batchDeleteRuns,
-            loadLog, copyLog,
+            loadLog, copyLog, handleLogScroll,
             browseCache, viewCacheFile, loadMoreCacheData, handleCacheScroll, fetchCacheDates, applyDateFilter,
         };
     }

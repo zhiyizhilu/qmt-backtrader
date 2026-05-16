@@ -302,9 +302,27 @@ def api_log_content(strategy_name, run_id):
     if not log_path:
         return jsonify({'content': '', 'found': False})
     try:
+        offset = request.args.get('offset', type=int)
+        limit = request.args.get('limit', type=int)
         with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
-            content = f.read()
-        return jsonify({'content': content, 'found': True, 'file': os.path.basename(log_path)})
+            if offset is not None or limit is not None:
+                lines = f.readlines()
+                total_lines = len(lines)
+                start = offset if offset is not None else 0
+                batch = limit if limit is not None else total_lines
+                sliced = lines[start:start + batch]
+                return jsonify({
+                    'content': ''.join(sliced),
+                    'found': True,
+                    'file': os.path.basename(log_path),
+                    'total_lines': total_lines,
+                    'offset': start,
+                    'limit': batch,
+                    'returned': len(sliced),
+                })
+            else:
+                content = f.read()
+                return jsonify({'content': content, 'found': True, 'file': os.path.basename(log_path)})
     except IOError as e:
         return jsonify({'content': '', 'found': False, 'error': str(e)})
 
