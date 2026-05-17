@@ -112,6 +112,8 @@ def _load_run_summaries(bt_dir):
                 'final_value': metrics.get('final_value'),
                 'start_date': config.get('start_date', ''),
                 'end_date': config.get('end_date', ''),
+                'pool': config.get('pool', ''),
+                'benchmark': config.get('benchmark', ''),
             })
         except (json.JSONDecodeError, IOError):
             continue

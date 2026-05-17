@@ -234,6 +234,10 @@
                             </span>
                             <span class="text-xs text-slate-400">SR: {{ formatNum(run.sharpe_ratio) }}</span>
                         </div>
+                        <div v-if="run.pool || run.benchmark" class="flex items-center gap-1.5 mt-1 ml-6 flex-wrap">
+                            <span v-if="run.pool" class="text-xs px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-400/80">{{ run.pool }}</span>
+                            <span v-if="run.benchmark" class="text-xs px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-400/80">{{ benchmarkDisplayName(run.benchmark) }}</span>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -423,9 +427,27 @@
                     <div class="flex items-center justify-between mb-6">
                         <div>
                             <h2 class="text-2xl font-bold text-white">{{ currentStrategyDisplayName }}</h2>
-                            <p class="text-slate-400 text-sm mt-1" v-if="currentRun">
-                                回测周期: {{ currentRun.config?.start_date || '-' }} ~ {{ currentRun.config?.end_date || '-' }}
-                            </p>
+                            <div class="flex items-center gap-4 mt-1 flex-wrap" v-if="currentRun">
+                                <span class="text-slate-400 text-sm">
+                                    回测周期: {{ currentRun.config?.start_date || '-' }} ~ {{ currentRun.config?.end_date || '-' }}
+                                </span>
+                                <span v-if="currentRun.config?.pool" class="inline-flex items-center gap-1 text-sm">
+                                    <span class="px-2 py-0.5 rounded bg-blue-900/50 text-blue-300 border border-blue-700/50">
+                                        <svg class="w-3 h-3 inline-block mr-0.5 -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+                                        </svg>
+                                        {{ currentRun.config.pool }}
+                                    </span>
+                                </span>
+                                <span v-if="currentRun.config?.benchmark" class="inline-flex items-center gap-1 text-sm">
+                                    <span class="px-2 py-0.5 rounded bg-amber-900/50 text-amber-300 border border-amber-700/50">
+                                        <svg class="w-3 h-3 inline-block mr-0.5 -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+                                        </svg>
+                                        {{ benchmarkDisplayName(currentRun.config.benchmark) }}
+                                    </span>
+                                </span>
+                            </div>
                         </div>
                         <div class="flex gap-2">
                             <button @click="activeTab = 'detail'" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium"
@@ -531,7 +553,7 @@
                     </div>
 
                     <div class="card p-4 mb-6">
-                        <h3 class="text-sm font-semibold text-slate-300 mb-3">权益曲线 vs 基准</h3>
+                        <h3 class="text-sm font-semibold text-slate-300 mb-3">权益曲线 vs {{ currentRun.config?.benchmark ? benchmarkDisplayName(currentRun.config.benchmark) : '基准' }}</h3>
                         <div id="equity-chart" style="height: 420px;"></div>
                     </div>
 
@@ -629,6 +651,8 @@
                                 <thead>
                                     <tr class="text-left text-slate-400 border-b border-slate-700">
                                         <th class="pb-2 pr-4">时间</th>
+                                        <th class="pb-2 pr-4">股票池</th>
+                                        <th class="pb-2 pr-4">基准</th>
                                         <th class="pb-2 pr-4 text-right">总收益率</th>
                                         <th class="pb-2 pr-4 text-right">年化收益率</th>
                                         <th class="pb-2 pr-4 text-right">夏普比率</th>
@@ -642,6 +666,8 @@
                                         class="border-b border-slate-800 hover:bg-slate-800/50 cursor-pointer"
                                         @click="selectRun(run.run_id); activeTab = 'detail'">
                                         <td class="py-2 pr-4 text-slate-300">{{ formatTimestamp(run.timestamp) }}</td>
+                                        <td class="py-2 pr-4 text-slate-300 text-xs">{{ run.pool || '-' }}</td>
+                                        <td class="py-2 pr-4 text-slate-300 text-xs">{{ run.benchmark ? benchmarkDisplayName(run.benchmark) : '-' }}</td>
                                         <td class="py-2 pr-4 text-right font-mono"
                                             :class="run.total_return_pct >= 0 ? 'positive' : 'negative'">
                                             {{ formatPercent(run.total_return_pct) }}
@@ -761,6 +787,23 @@ createApp({
         let drawdownChart = null;
         let compareChart = null;
         const CHART_SYNC_GROUP = 'equity-drawdown-sync';
+
+        const BENCHMARK_NAME_MAP = {
+            '000300.SH': '沪深300',
+            '000016.SH': '上证50',
+            '000905.SH': '中证500',
+            '000852.SH': '中证1000',
+            '000001.SH': '上证指数',
+            '399001.SZ': '深证成指',
+            '399006.SZ': '创业板指',
+            '399101.SZ': '中小综指',
+            '000985.SH': '中证全指',
+        };
+
+        function benchmarkDisplayName(code) {
+            if (!code) return '';
+            return BENCHMARK_NAME_MAP[code] || code;
+        }
 
         const totalTradePages = computed(() => {
             if (!currentRun.value?.trade_log) return 1;
@@ -1361,11 +1404,14 @@ createApp({
                 },
             ];
 
+            const benchmarkCode = currentRun.value.config?.benchmark || '';
+            const benchmarkLabel = benchmarkCode ? benchmarkDisplayName(benchmarkCode) + '净值' : '基准净值';
+
             if (bcFiltered.length > 0) {
                 const baseClose = bcFiltered[0].close || 1;
                 const benchmarkData = bcFiltered.map(d => [d.date, +(d.close / baseClose).toFixed(4)]);
                 series.push({
-                    name: '基准净值',
+                    name: benchmarkLabel,
                     type: 'line',
                     data: benchmarkData,
                     smooth: true,
@@ -1391,7 +1437,7 @@ createApp({
                     }
                 },
                 legend: {
-                    data: ['策略净值', '基准净值'],
+                    data: ['策略净值', benchmarkLabel],
                     top: 0,
                     textStyle: { color: '#94a3b8' },
                 },
@@ -1647,7 +1693,7 @@ createApp({
             cacheDateHierarchy, selectedYear, selectedMonth, selectedDay, selectedDateFilter,
             formatStrategyName, formatTimestamp, formatPercent, formatNum, formatMoney, formatFileSize,
             calcWinRate, selectStrategy, selectRun, deleteRun, switchTab, copyCode,
-            startEditName, saveEditName, cancelEditName,
+            startEditName, saveEditName, cancelEditName, benchmarkDisplayName,
             toggleRunSelection, toggleSelectAllRuns, batchDeleteRuns,
             loadLog, copyLog, handleLogScroll,
             browseCache, viewCacheFile, loadMoreCacheData, handleCacheScroll, fetchCacheDates, applyDateFilter,
