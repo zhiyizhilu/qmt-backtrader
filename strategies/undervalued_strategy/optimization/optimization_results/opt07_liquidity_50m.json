@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 1000000,
+  "total_return_pct": 0.0,
+  "sharpe_ratio": 0.0,
+  "max_drawdown_pct": 0.0,
+  "annual_return_pct": 0.0,
+  "trading_days": 1454,
+  "fee": 0,
+  "turnover": 0.0,
+  "label": "opt07_liquidity_50m",
+  "extra_params": {
+    "min_avg_amount": 50000000
+  },
+  "timestamp": "2026-05-16T19:43:43.233367"
+}

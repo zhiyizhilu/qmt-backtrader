@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 1866891.3670751539,
+  "total_return_pct": 86.68913670751539,
+  "sharpe_ratio": 0.6770036048607795,
+  "max_drawdown_pct": -29.626039505104814,
+  "annual_return_pct": 11.426629994142324,
+  "trading_days": 1454,
+  "fee": 0,
+  "turnover": 28538353.827029217,
+  "label": "opt03_pe_filter_20",
+  "extra_params": {
+    "max_pe": 20
+  },
+  "timestamp": "2026-05-16T18:48:18.724372"
+}

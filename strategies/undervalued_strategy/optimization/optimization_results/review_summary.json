@@ -1,0 +1,59 @@
+{
+  "temporal_stability": {
+    "test": "temporal_stability",
+    "yearly_results": [
+      {
+        "year": 2020,
+        "opt_sharpe": 1.8299453977122397,
+        "base_sharpe": 1.3918616940578687,
+        "improvement": 0.438083703654371,
+        "is_positive": true
+      },
+      {
+        "year": 2021,
+        "opt_sharpe": 1.9595568356842077,
+        "base_sharpe": 1.6753803420698292,
+        "improvement": 0.28417649361437847,
+        "is_positive": true
+      },
+      {
+        "year": 2022,
+        "opt_sharpe": -1.309781096980484,
+        "base_sharpe": -1.1122919706210166,
+        "improvement": -0.19748912635946736,
+        "is_positive": false
+      },
+      {
+        "year": 2023,
+        "opt_sharpe": 0.5110504046006865,
+        "base_sharpe": 0.4854430015692087,
+        "improvement": 0.025607403031477793,
+        "is_positive": true
+      },
+      {
+        "year": 2024,
+        "opt_sharpe": 0.5495746471797656,
+        "base_sharpe": 0.35854887313509376,
+        "improvement": 0.1910257740446718,
+        "is_positive": true
+      },
+      {
+        "year": 2025,
+        "opt_sharpe": 1.749366910231637,
+        "base_sharpe": 1.673332301557817,
+        "improvement": 0.07603460867381995,
+        "is_positive": true
+      },
+      {
+        "year": 2026,
+        "opt_sharpe": 1.4399677306485676,
+        "base_sharpe": 1.7722359757398227,
+        "improvement": -0.3322682450912551,
+        "is_positive": false
+      }
+    ],
+    "positive_years": 5,
+    "total_years": 7,
+    "consistency_ratio": 0.7142857142857143
+  }
+}

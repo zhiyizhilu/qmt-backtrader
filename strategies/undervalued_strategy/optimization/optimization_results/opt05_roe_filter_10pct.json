@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 1715568.6206110753,
+  "total_return_pct": 71.55686206110752,
+  "sharpe_ratio": 0.5976878631763999,
+  "max_drawdown_pct": -30.43112067950974,
+  "annual_return_pct": 9.806092485824314,
+  "trading_days": 1454,
+  "fee": 0,
+  "turnover": 28108949.761945006,
+  "label": "opt05_roe_filter_10pct",
+  "extra_params": {
+    "min_roe": 0.1
+  },
+  "timestamp": "2026-05-16T19:06:43.812219"
+}

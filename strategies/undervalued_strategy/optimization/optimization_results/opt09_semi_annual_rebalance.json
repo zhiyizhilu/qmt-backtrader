@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 1885960.8584999999,
+  "total_return_pct": 88.59608584999998,
+  "sharpe_ratio": 0.6043386991036724,
+  "max_drawdown_pct": -43.54075902821127,
+  "annual_return_pct": 11.623065070818539,
+  "trading_days": 1454,
+  "fee": 0,
+  "turnover": 933955.0,
+  "label": "opt09_semi_annual_rebalance",
+  "extra_params": {
+    "rebalance_freq": "semi_annual"
+  },
+  "timestamp": "2026-05-16T20:11:22.270780"
+}

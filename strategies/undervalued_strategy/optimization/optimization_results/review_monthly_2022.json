@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 753676.9540999997,
+  "total_return_pct": -24.632304590000025,
+  "sharpe_ratio": -1.309781096980484,
+  "max_drawdown_pct": -28.58756839834412,
+  "annual_return_pct": -25.50789523645276,
+  "trading_days": 242,
+  "fee": 0,
+  "turnover": 9322343.0,
+  "label": "review_monthly_2022",
+  "extra_params": {
+    "rebalance_freq": "monthly"
+  },
+  "timestamp": "2026-05-16T21:00:54.932809"
+}

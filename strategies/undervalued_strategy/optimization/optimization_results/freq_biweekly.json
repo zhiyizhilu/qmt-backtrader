@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 1729348.672458318,
+  "total_return_pct": 72.9348672458318,
+  "sharpe_ratio": 0.6214075831665441,
+  "max_drawdown_pct": -36.82193833874325,
+  "annual_return_pct": 9.958451466758401,
+  "trading_days": 1454,
+  "fee": 0,
+  "turnover": 115784995.94124934,
+  "label": "freq_biweekly",
+  "extra_params": {
+    "rebalance_freq": "biweekly"
+  },
+  "timestamp": "2026-05-17T10:00:26.690274"
+}

@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 1544971.211625073,
+  "total_return_pct": 54.49712116250731,
+  "sharpe_ratio": 0.4617328003101667,
+  "max_drawdown_pct": -29.113017209897613,
+  "annual_return_pct": 7.830777421773383,
+  "trading_days": 1454,
+  "fee": 0,
+  "turnover": 33991101.48831204,
+  "label": "opt04_dividend_yield_2pct",
+  "extra_params": {
+    "min_dividend_yield": 0.02
+  },
+  "timestamp": "2026-05-16T18:58:48.108390"
+}
