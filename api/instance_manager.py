@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import threading
 from typing import Dict, List, Optional
@@ -26,6 +27,11 @@ class StrategyInstanceManager:
         self._reconcilers: Dict[str, Reconciler] = {}
         self._running = False
         self._reconcile_thread: Optional[threading.Thread] = None
+        self._heartbeat_thread: Optional[threading.Thread] = None
+        self._instance_meta: Dict[str, dict] = {}
+        self._heartbeat_interval: int = 60
+        self._max_restart_attempts: int = 3
+        self._restart_counts: Dict[str, int] = defaultdict(int)
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
 
     def load_config(self, config_path: str):
@@ -146,10 +152,13 @@ class StrategyInstanceManager:
 
         self._running = True
         self._start_reconcile_timer()
+        self._register_all_instances()
+        self._start_heartbeat()
 
     def stop_all(self):
-        """停止所有策略实例"""
         self._running = False
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+            self._heartbeat_thread.join(timeout=10)
         if self._reconcile_thread and self._reconcile_thread.is_alive():
             self._reconcile_thread.join(timeout=10)
         for account_key, api in self._apis.items():
@@ -292,3 +301,142 @@ class StrategyInstanceManager:
         self._reconcile_thread = threading.Thread(target=_reconcile_loop, daemon=True)
         self._reconcile_thread.start()
         self.logger.info('定时对账线程已启动')
+
+    def _register_all_instances(self):
+        for config in self._configs:
+            instance_id = config['instance_id']
+            self._instance_meta[instance_id] = {
+                'pid': os.getpid(),
+                'start_time': time.time(),
+                'start_time_str': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'strategy_name': config.get('strategy_name', ''),
+                'status': 'running',
+            }
+            self._write_heartbeat(instance_id)
+        self.logger.info(f'已注册 {len(self._instance_meta)} 个实例的心跳信息')
+
+    def _write_heartbeat(self, instance_id: str):
+        heartbeat_dir = os.path.join('logs', 'instances', instance_id)
+        os.makedirs(heartbeat_dir, exist_ok=True)
+        heartbeat_file = os.path.join(heartbeat_dir, 'heartbeat.json')
+        meta = self._instance_meta.get(instance_id, {})
+        data = {
+            'instance_id': instance_id,
+            'pid': meta.get('pid'),
+            'start_time': meta.get('start_time_str', ''),
+            'last_heartbeat': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'status': meta.get('status', 'unknown'),
+        }
+        try:
+            with open(heartbeat_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except IOError as e:
+            self.logger.warning(f'写入心跳文件失败: {instance_id}, {e}')
+
+    def _check_instance_alive(self, instance_id: str) -> bool:
+        meta = self._instance_meta.get(instance_id)
+        if not meta:
+            return False
+        pid = meta.get('pid')
+        if not pid:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+    def _restart_instance(self, instance_id: str):
+        if self._restart_counts[instance_id] >= self._max_restart_attempts:
+            self.logger.error(
+                f'实例 {instance_id} 已达最大重试次数 '
+                f'({self._max_restart_attempts})，停止重启'
+            )
+            if instance_id in self._instance_meta:
+                self._instance_meta[instance_id]['status'] = 'failed'
+            return
+
+        self._restart_counts[instance_id] += 1
+        self.logger.info(
+            f'尝试重启实例 {instance_id} '
+            f'(第{self._restart_counts[instance_id]}次)'
+        )
+
+        config = None
+        for c in self._configs:
+            if c['instance_id'] == instance_id:
+                config = c
+                break
+        if not config:
+            return
+
+        try:
+            strategy_name = config['strategy_name']
+            strategy_class = get_strategy(strategy_name)
+            kwargs = dict(get_strategy_default_kwargs(strategy_name))
+            kwargs.update(config.get('kwargs', {}))
+
+            account_id = config.get('account_id', 'default')
+            mode = config.get('mode', 'sim')
+            account_key = f"{account_id}_{mode}"
+            api = self._apis.get(account_key)
+
+            if api:
+                book = self._books.get(instance_id)
+                if book:
+                    api.add_strategy(
+                        strategy_class,
+                        instance_id=instance_id,
+                        virtual_book=book,
+                        **kwargs
+                    )
+                    self._instance_meta[instance_id]['status'] = 'running'
+                    self._instance_meta[instance_id]['start_time'] = time.time()
+                    self._instance_meta[instance_id]['start_time_str'] = time.strftime('%Y-%m-%d %H:%M:%S')
+                    self._write_heartbeat(instance_id)
+                    self.logger.info(f'实例 {instance_id} 重启成功')
+        except Exception as e:
+            self.logger.error(f'实例 {instance_id} 重启失败: {e}')
+            if instance_id in self._instance_meta:
+                self._instance_meta[instance_id]['status'] = 'failed'
+
+    def _start_heartbeat(self):
+        def _heartbeat_loop():
+            while self._running:
+                for instance_id in list(self._instance_meta.keys()):
+                    meta = self._instance_meta[instance_id]
+                    if meta.get('status') != 'running':
+                        continue
+                    self._write_heartbeat(instance_id)
+                    if not self._check_instance_alive(instance_id):
+                        self.logger.warning(f'实例 {instance_id} 心跳检测异常，尝试重启')
+                        meta['status'] = 'dead'
+                        self._restart_instance(instance_id)
+                time.sleep(self._heartbeat_interval)
+
+        self._heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+        self._heartbeat_thread.start()
+        self.logger.info(f'心跳检测线程已启动 (间隔{self._heartbeat_interval}秒)')
+
+    def get_instance_health(self) -> List[dict]:
+        result = []
+        for instance_id, meta in self._instance_meta.items():
+            heartbeat_dir = os.path.join('logs', 'instances', instance_id)
+            heartbeat_file = os.path.join(heartbeat_dir, 'heartbeat.json')
+            heartbeat_data = {}
+            if os.path.isfile(heartbeat_file):
+                try:
+                    with open(heartbeat_file, 'r', encoding='utf-8') as f:
+                        heartbeat_data = json.load(f)
+                except (json.JSONDecodeError, IOError):
+                    pass
+            result.append({
+                'instance_id': instance_id,
+                'strategy_name': meta.get('strategy_name', ''),
+                'pid': meta.get('pid'),
+                'start_time': meta.get('start_time_str', ''),
+                'status': meta.get('status', 'unknown'),
+                'restart_count': self._restart_counts.get(instance_id, 0),
+                'last_heartbeat': heartbeat_data.get('last_heartbeat', ''),
+            })
+        return result

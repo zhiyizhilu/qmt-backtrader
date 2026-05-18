@@ -1,6 +1,28 @@
 import logging
 import os
+import json
 from datetime import datetime
+
+
+class StructuredFormatter(logging.Formatter):
+    """结构化 JSON 日志格式化器
+
+    通过环境变量 QMT_LOG_FORMAT=json 启用，
+    输出 JSON 格式日志: {"timestamp": "...", "level": "INFO", "module": "...", "message": "..."}
+    """
+
+    def format(self, record):
+        log_entry = {
+            'timestamp': datetime.fromtimestamp(record.created).isoformat(),
+            'level': record.levelname,
+            'module': record.name,
+            'message': record.getMessage(),
+        }
+        if hasattr(record, 'instance_id') and record.instance_id != '-':
+            log_entry['instance_id'] = record.instance_id
+        if record.exc_info and record.exc_info[0] is not None:
+            log_entry['exception'] = self.formatException(record.exc_info)
+        return json.dumps(log_entry, ensure_ascii=False)
 
 
 class InstanceLogFilter(logging.Filter):
@@ -42,6 +64,12 @@ class Logger:
     _instance_filters: dict = {}
 
     @staticmethod
+    def _get_formatter():
+        if os.environ.get('QMT_LOG_FORMAT', '').lower() == 'json':
+            return StructuredFormatter()
+        return InstanceFormatter()
+
+    @staticmethod
     def get_logger(name: str, log_file: str = None, instance_id: str = None) -> logging.Logger:
         """获取日志记录器（带缓存，避免重复创建）
 
@@ -68,7 +96,7 @@ class Logger:
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
 
-        formatter = InstanceFormatter()
+        formatter = Logger._get_formatter()
         console_handler.setFormatter(formatter)
 
         logger.addHandler(console_handler)
@@ -138,7 +166,7 @@ class Logger:
 
         file_handler = logging.FileHandler(log_file, encoding='utf-8')
         file_handler.setLevel(logging.DEBUG)
-        formatter = InstanceFormatter()
+        formatter = Logger._get_formatter()
         file_handler.setFormatter(formatter)
 
         root_logger = logging.getLogger()

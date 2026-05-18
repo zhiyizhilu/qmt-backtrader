@@ -2,6 +2,8 @@ import copy
 from typing import Dict, List, Optional, Any
 import datetime as dt_module
 import logging
+from collections import deque
+import numpy as np
 from core.executor import StrategyExecutor
 from core.data_adapter import MarketDataAdapter
 
@@ -910,14 +912,26 @@ class RiskController:
         stop_loss_ratio: float = 0.1,
         max_single_order_ratio: float = 0.3,
         peak_value: float = 0.0,
+        max_industry_ratio: float = 1.0,
+        max_var_limit: float = 0.0,
+        max_volume_ratio: float = 0.0,
+        var_window: int = 252,
+        var_confidence: float = 0.95,
     ):
         self.max_position_ratio = max_position_ratio
         self.max_drawdown_limit = max_drawdown_limit
         self.stop_loss_ratio = stop_loss_ratio
         self.max_single_order_ratio = max_single_order_ratio
+        self.max_industry_ratio = max_industry_ratio
+        self.max_var_limit = max_var_limit
+        self.max_volume_ratio = max_volume_ratio
+        self.var_window = var_window
+        self.var_confidence = var_confidence
         self._peak_value = peak_value
         self._entry_prices: Dict[str, float] = {}
         self._triggered = False
+        self._daily_returns: deque = deque(maxlen=var_window)
+        self._prev_portfolio_value: Optional[float] = None
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
 
     def check_buy(self, strategy: StrategyLogic, symbol: str, price: float, volume: int) -> bool:
@@ -946,6 +960,19 @@ class RiskController:
                 f'总仓位占比超限: {(current_pos_value + order_value) / account_value:.2%} > {self.max_position_ratio:.2%}, {symbol}'
             )
             return False
+
+        if self.max_industry_ratio < 1.0:
+            if not self._check_industry_concentration(strategy, symbol, order_value, account_value):
+                return False
+
+        if self.max_var_limit > 0:
+            self._update_daily_return(strategy)
+            if not self._check_var(strategy, order_value, account_value):
+                return False
+
+        if self.max_volume_ratio > 0:
+            if not self._check_liquidity(strategy, symbol, volume):
+                return False
 
         self._entry_prices[symbol] = price
         return True
@@ -1004,7 +1031,69 @@ class RiskController:
                     total += pos_size * price
         return total
 
+    def _check_industry_concentration(self, strategy: StrategyLogic, symbol: str,
+                                       order_value: float, account_value: float) -> bool:
+        industry = strategy.get_industry(symbol)
+        if industry is None:
+            return True
+        industry_value = 0.0
+        symbols = strategy.get_symbols()
+        for s in symbols:
+            pos_size = strategy.get_position_size(s)
+            if pos_size > 0:
+                s_industry = strategy.get_industry(s)
+                if s_industry == industry:
+                    price = strategy.get_current_price(s)
+                    if price:
+                        industry_value += pos_size * price
+        industry_value += order_value
+        if account_value > 0 and industry_value / account_value > self.max_industry_ratio:
+            self.logger.warning(
+                f'行业集中度超限: {industry} 占比 {industry_value / account_value:.2%} > {self.max_industry_ratio:.2%}, {symbol}'
+            )
+            return False
+        return True
+
+    def _update_daily_return(self, strategy: StrategyLogic) -> None:
+        current_value = self._get_account_value(strategy)
+        if self._prev_portfolio_value is not None and self._prev_portfolio_value > 0:
+            daily_ret = (current_value - self._prev_portfolio_value) / self._prev_portfolio_value
+            self._daily_returns.append(daily_ret)
+        self._prev_portfolio_value = current_value
+
+    def _check_var(self, strategy: StrategyLogic, order_value: float, account_value: float) -> bool:
+        if len(self._daily_returns) < 20:
+            return True
+        returns_arr = np.array(self._daily_returns)
+        sorted_returns = np.sort(returns_arr)
+        index = int((1 - self.var_confidence) * len(sorted_returns))
+        var_value = abs(sorted_returns[index])
+        projected_var = var_value * (account_value + order_value)
+        if projected_var / account_value > self.max_var_limit:
+            self.logger.warning(
+                f'VaR超限: 预估VaR {projected_var / account_value:.2%} > 限制 {self.max_var_limit:.2%}'
+            )
+            return False
+        return True
+
+    def _check_liquidity(self, strategy: StrategyLogic, symbol: str, volume: int) -> bool:
+        ohlcv_data = strategy.get_ohlcv_data(symbol, period=20)
+        if not ohlcv_data:
+            return True
+        volumes = [bar.get('volume', 0) for bar in ohlcv_data if bar.get('volume', 0) > 0]
+        if not volumes:
+            return True
+        avg_volume = sum(volumes) / len(volumes)
+        if avg_volume > 0 and volume / avg_volume > self.max_volume_ratio:
+            self.logger.warning(
+                f'流动性风控超限: 买入量 {volume} / 日均成交量 {avg_volume:.0f} = {volume / avg_volume:.2%} > {self.max_volume_ratio:.2%}, {symbol}'
+            )
+            return False
+        return True
+
     def reset(self) -> None:
         self._triggered = False
         self._peak_value = 0.0
         self._entry_prices.clear()
+        self._daily_returns.clear()
+        self._prev_portfolio_value = None

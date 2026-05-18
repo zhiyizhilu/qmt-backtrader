@@ -1,19 +1,29 @@
 import json
 import os
+import sys
 import glob
 import re
-import pickle
+import time
+import uuid
+import threading
+from datetime import datetime, timedelta
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from flask import Flask, jsonify, send_from_directory, request
+from core.cache import _safe_pickle_load
 
 app = Flask(__name__)
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_DIR = os.path.join(PROJECT_ROOT, '.cache')
 STRATEGY_DIRS = [
     os.path.join(PROJECT_ROOT, 'strategies'),
     os.path.join(PROJECT_ROOT, 'strategies_for_vip'),
 ]
+
+_backtest_tasks = {}
 
 # 策略显示名称映射文件路径
 _DISPLAY_NAMES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'strategy_display_names.json')
@@ -429,7 +439,7 @@ def api_cache_dates():
             df = pd.read_parquet(abs_path)
         else:
             with open(abs_path, 'rb') as f:
-                data = pickle.load(f)
+                data = _safe_pickle_load(f)
             if not isinstance(data, pd.DataFrame):
                 return jsonify({'error': 'Not a DataFrame'}), 400
             df = data
@@ -578,7 +588,7 @@ def api_cache_view():
             try:
                 import pandas as pd
                 with open(abs_path, 'rb') as f:
-                    data = pickle.load(f)
+                    data = _safe_pickle_load(f)
                 if isinstance(data, pd.DataFrame):
                     if date_filter:
                         data = _filter_by_date(data, date_filter)
@@ -640,6 +650,206 @@ def api_cache_view():
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/cache/stats')
+def api_cache_stats():
+    if not os.path.isdir(CACHE_DIR):
+        return jsonify({'total_files': 0, 'total_size_mb': 0, 'by_type': {}})
+
+    by_type = {
+        'parquet': {'count': 0, 'size_mb': 0},
+        'pkl': {'count': 0, 'size_mb': 0},
+        'json': {'count': 0, 'size_mb': 0},
+        'other': {'count': 0, 'size_mb': 0},
+    }
+    total_files = 0
+    total_size = 0
+
+    for root, dirs, files in os.walk(CACHE_DIR):
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            try:
+                size = os.path.getsize(fpath)
+            except OSError:
+                continue
+            total_files += 1
+            total_size += size
+            ext = os.path.splitext(fname)[1].lower()
+            if ext == '.parquet':
+                by_type['parquet']['count'] += 1
+                by_type['parquet']['size_mb'] += size
+            elif ext == '.pkl':
+                by_type['pkl']['count'] += 1
+                by_type['pkl']['size_mb'] += size
+            elif ext == '.json':
+                by_type['json']['count'] += 1
+                by_type['json']['size_mb'] += size
+            else:
+                by_type['other']['count'] += 1
+                by_type['other']['size_mb'] += size
+
+    for t in by_type:
+        by_type[t]['size_mb'] = round(by_type[t]['size_mb'] / (1024 * 1024), 2)
+
+    return jsonify({
+        'total_files': total_files,
+        'total_size_mb': round(total_size / (1024 * 1024), 2),
+        'by_type': by_type,
+    })
+
+
+@app.route('/api/cache/cleanup', methods=['DELETE'])
+def api_cache_cleanup():
+    data = request.get_json(silent=True) or {}
+    max_age_days = data.get('max_age_days')
+    namespace = data.get('namespace')
+
+    if not os.path.isdir(CACHE_DIR):
+        return jsonify({'deleted_count': 0, 'freed_size_mb': 0})
+
+    deleted_count = 0
+    freed_size = 0
+    now = time.time()
+
+    for root, dirs, files in os.walk(CACHE_DIR):
+        if namespace:
+            rel = os.path.relpath(root, CACHE_DIR)
+            parts = rel.replace('\\', '/').split('/')
+            if parts and parts[0] != namespace:
+                continue
+
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            try:
+                mtime = os.path.getmtime(fpath)
+                size = os.path.getsize(fpath)
+            except OSError:
+                continue
+
+            should_delete = False
+            if max_age_days is not None:
+                age_days = (now - mtime) / 86400
+                if age_days > max_age_days:
+                    should_delete = True
+            elif namespace is not None:
+                should_delete = True
+
+            if should_delete:
+                try:
+                    os.remove(fpath)
+                    deleted_count += 1
+                    freed_size += size
+                except OSError:
+                    pass
+
+    if namespace and deleted_count > 0:
+        for root, dirs, files in os.walk(CACHE_DIR, topdown=False):
+            if not os.listdir(root):
+                try:
+                    os.rmdir(root)
+                except OSError:
+                    pass
+
+    return jsonify({
+        'deleted_count': deleted_count,
+        'freed_size_mb': round(freed_size / (1024 * 1024), 2),
+    })
+
+
+def _run_backtest_task(task_id, strategy, start_date, end_date, pool, period, **kwargs):
+    task = _backtest_tasks[task_id]
+    task['status'] = 'running'
+    try:
+        import strategies
+        from main import run_backtest as _run_backtest
+
+        task['progress'] = start_date or ''
+        _run_backtest(
+            strategy_name=strategy,
+            period=period or '1d',
+            pool=pool,
+            start_date=start_date,
+            end_date=end_date,
+            ai_mode=True,
+            **{k: v for k, v in kwargs.items() if k in (
+                'proxy', 'no_record', 'slippage', 'data_source'
+            )}
+        )
+
+        strategy_dir = _find_strategy_dir(strategy)
+        if strategy_dir:
+            bt_dir = os.path.join(strategy_dir, 'backtest_results')
+            if os.path.isdir(bt_dir):
+                json_files = sorted(
+                    glob.glob(os.path.join(bt_dir, '*.json')),
+                    key=lambda x: os.path.getmtime(x),
+                    reverse=True
+                )
+                if json_files:
+                    try:
+                        with open(json_files[0], 'r', encoding='utf-8') as f:
+                            result_data = json.load(f)
+                        task['result'] = result_data
+                    except (json.JSONDecodeError, IOError):
+                        pass
+
+        task['status'] = 'completed'
+        task['progress'] = end_date or ''
+    except Exception as e:
+        task['status'] = 'failed'
+        task['result'] = {'error': str(e)}
+
+
+@app.route('/api/backtest/run', methods=['POST'])
+def api_backtest_run():
+    data = request.get_json()
+    if not data or not data.get('strategy'):
+        return jsonify({'error': 'strategy is required'}), 400
+
+    task_id = str(uuid.uuid4())[:8]
+    _backtest_tasks[task_id] = {
+        'status': 'running',
+        'progress': data.get('start_date', ''),
+        'result': None,
+        'started_at': datetime.now().isoformat(),
+        'params': data,
+    }
+
+    thread = threading.Thread(
+        target=_run_backtest_task,
+        kwargs={
+            'task_id': task_id,
+            'strategy': data['strategy'],
+            'start_date': data.get('start_date'),
+            'end_date': data.get('end_date'),
+            'pool': data.get('pool'),
+            'period': data.get('period', '1d'),
+            'slippage': data.get('slippage'),
+            'data_source': data.get('data_source', 'qmt'),
+        },
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({'task_id': task_id, 'status': 'running'})
+
+
+@app.route('/api/backtest/status/<task_id>')
+def api_backtest_status(task_id):
+    task = _backtest_tasks.get(task_id)
+    if not task:
+        return jsonify({'error': f'Task {task_id} not found'}), 404
+
+    response = {
+        'status': task['status'],
+        'progress': task.get('progress', ''),
+    }
+    if task['status'] == 'completed' and task.get('result'):
+        response['result'] = task['result']
+    elif task['status'] == 'failed' and task.get('result'):
+        response['result'] = task['result']
+    return jsonify(response)
 
 
 if __name__ == '__main__':

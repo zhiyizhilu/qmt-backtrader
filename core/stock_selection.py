@@ -3,6 +3,7 @@ from abc import abstractmethod
 from typing import Dict, List, Optional, Any
 from core.strategy_logic import StrategyLogic, BarData, OrderInfo
 from core.data_adapter import get_trade_unit, validate_trade_volume
+from core.weight_allocator import WeightAllocator
 
 
 class StockSelectionStrategy(StrategyLogic):
@@ -61,7 +62,7 @@ class StockSelectionStrategy(StrategyLogic):
     PHASE_SELLING = 1
     PHASE_BUYING = 2
 
-    def __init__(self, executor=None, **kwargs):
+    def __init__(self, executor=None, weight_allocator: Optional[WeightAllocator] = None, **kwargs):
         super().__init__(executor, **kwargs)
         self._current_holdings: Dict[str, int] = {}
         self._last_rebalance_date: Optional[dt_module.date] = None
@@ -71,6 +72,7 @@ class StockSelectionStrategy(StrategyLogic):
         self._pending_sell_symbols: set = set()
         self._rebalance_target_stocks: List[str] = []
         self._per_stock_target: float = 0.0
+        self._weight_allocator = weight_allocator
 
     def _is_live_trading(self) -> bool:
         from core.executor import QMTExecutor
@@ -133,7 +135,8 @@ class StockSelectionStrategy(StrategyLogic):
 
         if not self._pending_sell_symbols:
             self.log('所有卖出订单已确认，进入买入阶段')
-            self._rebalance_buy_phase(self._rebalance_target_stocks, self._per_stock_target)
+            stock_targets = getattr(self, '_rebalance_stock_targets', None)
+            self._rebalance_buy_phase(self._rebalance_target_stocks, stock_targets)
 
     def is_rebalance_day(self, current_date: dt_module.date) -> bool:
         """判断当前日期是否为调仓日"""
@@ -200,13 +203,13 @@ class StockSelectionStrategy(StrategyLogic):
         self.rebalance_to(target_stocks)
 
     def rebalance_to(self, target_stocks: List[str]):
-        """调仓到目标持仓 - 等权重部分再平衡
+        """调仓到目标持仓 - 支持等权或自定义权重分配
 
         与全仓清仓再买入不同，此方法只调整偏差：
         - 不在目标列表的股票：全部清仓
         - 超出目标市值的持仓：卖出超出部分（减仓）
         - 低于目标市值的持仓：买入不足部分（补仓）
-        - 新入选的股票：等权建仓
+        - 新入选的股票：按权重建仓
 
         回测模式：同步执行，卖出和买入在同一 bar 内完成
           （需配合 broker.set_checksubmit(False)，让卖出回款可用于买入）
@@ -230,14 +233,23 @@ class StockSelectionStrategy(StrategyLogic):
         total_assets = cash + position_value
         position_ratio = getattr(self.params, 'position_ratio', 0.95)
         investable = total_assets * position_ratio
-        per_stock_target = investable / len(target_stocks) if target_stocks else 0
 
-        self._per_stock_target = per_stock_target
+        if self._weight_allocator is not None:
+            weights = self._weight_allocator.allocate(target_stocks, strategy=self)
+            stock_targets = {}
+            for symbol in target_stocks:
+                w = weights.get(symbol, 0.0)
+                stock_targets[symbol] = investable * w
+        else:
+            per_stock_target = investable / len(target_stocks) if target_stocks else 0
+            stock_targets = {s: per_stock_target for s in target_stocks}
+
+        self._per_stock_target = stock_targets.get(target_stocks[0], 0) if target_stocks else 0
 
         self.log(
             f'调仓计算: 总资产={total_assets:.0f}, '
             f'可投资={investable:.0f}, '
-            f'每只目标={per_stock_target:.0f}'
+            f'权重模式={"自定义" if self._weight_allocator else "等权"}'
         )
 
         full_sell_symbols = current_symbols - target_symbols
@@ -282,8 +294,9 @@ class StockSelectionStrategy(StrategyLogic):
                 price = self.get_current_price(symbol)
                 if price and price > 0:
                     current_value = price * pos_size
-                    if current_value > per_stock_target * 1.01:
-                        excess_value = current_value - per_stock_target
+                    sym_target = stock_targets.get(symbol, 0)
+                    if current_value > sym_target * 1.01:
+                        excess_value = current_value - sym_target
                         sell_volume = int(excess_value / price / get_trade_unit(symbol)) * get_trade_unit(symbol)
                         sell_volume = min(sell_volume, sellable)
                         is_valid, _ = validate_trade_volume(symbol, sell_volume)
@@ -311,25 +324,39 @@ class StockSelectionStrategy(StrategyLogic):
             self._rebalance_phase = self.PHASE_SELLING
             self._pending_sell_symbols = pending_sell_symbols
             self._rebalance_target_stocks = list(target_stocks)
+            self._rebalance_stock_targets = stock_targets
             self.log(f'再平衡阶段1: 等待 {len(pending_sell_symbols)} 只股票卖出确认')
         else:
-            self._rebalance_buy_phase(target_stocks, per_stock_target)
+            self._rebalance_buy_phase(target_stocks, stock_targets)
 
-    def _rebalance_buy_phase(self, target_stocks: List[str], per_stock_target: float = None):
+    def _rebalance_buy_phase(self, target_stocks: List[str], stock_targets: Dict[str, float] = None):
         """调仓买入阶段 - 补仓至目标市值
 
         对于已持有但低于目标市值的股票，买入不足部分；
-        对于新入选的股票，按目标市值等权建仓。
+        对于新入选的股票，按目标市值建仓。
 
         Args:
             target_stocks: 目标持仓股票列表
-            per_stock_target: 每只股票的目标市值（由 rebalance_to 预计算）
+            stock_targets: 每只股票的目标市值字典 {symbol: target_value}
         """
         if self._is_live_trading():
             self._sync_holdings_from_executor()
 
-        if per_stock_target is None:
-            per_stock_target = getattr(self, '_per_stock_target', None)
+        if stock_targets is None:
+            stock_targets = getattr(self, '_rebalance_stock_targets', None)
+
+        if stock_targets is None:
+            cash = self.get_cash()
+            position_value = 0.0
+            for symbol, volume in self._current_holdings.items():
+                price = self.get_current_price(symbol)
+                if price and price > 0:
+                    position_value += price * volume
+            total_assets = cash + position_value
+            position_ratio = getattr(self.params, 'position_ratio', 0.95)
+            investable = total_assets * position_ratio
+            per_stock_target = investable / len(target_stocks) if target_stocks else 0
+            stock_targets = {s: per_stock_target for s in target_stocks}
 
         tradeable_symbols = []
         skipped_symbols = []
@@ -358,27 +385,20 @@ class StockSelectionStrategy(StrategyLogic):
             self._rebalance_phase = self.PHASE_IDLE
             return
 
-        if per_stock_target is None:
-            cash = self.get_cash()
-            position_value = 0.0
-            for symbol, volume in self._current_holdings.items():
-                price = self.get_current_price(symbol)
-                if price and price > 0:
-                    position_value += price * volume
-            total_assets = cash + position_value
-            position_ratio = getattr(self.params, 'position_ratio', 0.95)
-            investable = total_assets * position_ratio
-            per_stock_target = investable / len(tradeable_symbols)
-        elif len(tradeable_symbols) < len(target_stocks):
-            per_stock_target = per_stock_target * len(target_stocks) / len(tradeable_symbols)
+        if len(tradeable_symbols) < len(target_stocks):
+            scale = len(target_stocks) / len(tradeable_symbols)
+            adjusted_targets = {s: stock_targets.get(s, 0) * scale for s in tradeable_symbols}
+        else:
+            adjusted_targets = {s: stock_targets.get(s, 0) for s in tradeable_symbols}
 
         for symbol in tradeable_symbols:
             current_volume = self._current_holdings.get(symbol, 0)
             price = self.get_current_price(symbol)
-            if price and price > 0:
+            sym_target = adjusted_targets.get(symbol, 0)
+            if price and price > 0 and sym_target > 0:
                 current_value = current_volume * price
-                deficit = per_stock_target - current_value
-                if deficit > per_stock_target * 0.01:
+                deficit = sym_target - current_value
+                if deficit > sym_target * 0.01:
                     buy_volume = int(deficit / price / get_trade_unit(symbol)) * get_trade_unit(symbol)
                     is_valid, _ = validate_trade_volume(symbol, buy_volume)
                     if is_valid:

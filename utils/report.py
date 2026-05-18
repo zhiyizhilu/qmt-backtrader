@@ -1455,6 +1455,7 @@ class BacktestReportWindow(QMainWindow):
             "风险评估": {
                 "最大回撤": f"{self.result.max_drawdown():.2%}",
                 "夏普比率": f"{self.result.sharpe_ratio():.2f}",
+                "Sortino比率": f"{self.result.sortino_ratio():.2f}",
             },
             "交易统计": {
                 "总成交额": f"{self.result.turnover:,.2f}",
@@ -1465,6 +1466,16 @@ class BacktestReportWindow(QMainWindow):
                 "亏损天数": f"{self.result.pnl_days[1]}",
             },
         }
+
+        if self.result.benchmark_df is not None and not self.result.benchmark_df.empty:
+            benchmark_symbol = self.result.benchmark_symbol or "000300.SH"
+            benchmark_display_name = self.BENCHMARK_NAME_MAP.get(benchmark_symbol, benchmark_symbol)
+            all_metrics["基准分析"] = {
+                "Alpha(年化)": f"{self.result.alpha(self.result.benchmark_df):.4f}",
+                "Beta": f"{self.result.beta(self.result.benchmark_df):.4f}",
+                "信息比率": f"{self.result.information_ratio(self.result.benchmark_df):.4f}",
+                "跟踪误差": f"{self.result.tracking_error(self.result.benchmark_df):.4f}",
+            }
 
         print("\n" + "="*60)
         print("回测结果汇总")
@@ -1946,6 +1957,7 @@ class BacktestReportWindow(QMainWindow):
             "收益风险比": f"{risk_reward_ratio:.2f}",
             "期望值": f"{expectancy:,.2f}",
             "夏普比率(近似)": f"{sharpe_approx:.2f}",
+            "Sortino比率": f"{self.result.sortino_ratio():.2f}",
             " ": "",
             "平均每次盈利": f"{avg_profit:,.2f}",
             "平均每次亏损": f"{avg_loss:,.2f}",

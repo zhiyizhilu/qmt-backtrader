@@ -13,6 +13,7 @@ from core.virtual_book import VirtualBook
 from strategies import (get_strategy, get_strategy_default_kwargs,
                         get_strategy_choices, get_strategy_backtest_config)
 from utils.logger import Logger
+from utils.config import load_config
 
 
 def _setup_debug_logging():
@@ -266,14 +267,23 @@ def main():
     parser.add_argument('--data-source', type=str, default='qmt',
                         choices=['qmt', 'futu'],
                         help='数据源: qmt=QMT+OpenData(默认), futu=富途本地数据(.cache/FutuData)')
+    parser.add_argument('--config', type=str, default=None,
+                        help='YAML 配置文件路径，配置覆盖默认值，命令行参数覆盖 YAML 配置')
 
     args = parser.parse_args()
 
-    # 设置调试模式
+    yaml_config = load_config(args.config)
+
     if args.debug:
         os.environ['QMT_LOG_LEVEL'] = 'DEBUG'
 
-    # 配置缓存
+    if not args.cache_dir:
+        args.cache_dir = yaml_config.get('cache', {}).get('dir')
+    if not args.mem_limit or args.mem_limit == 500:
+        yaml_mem = yaml_config.get('cache', {}).get('mem_limit')
+        if yaml_mem and args.mem_limit == 500:
+            args.mem_limit = yaml_mem
+
     if args.cache_dir:
         cache_manager.configure(cache_dir=args.cache_dir, mem_limit=args.mem_limit)
 
