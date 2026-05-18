@@ -1,1 +1,0 @@
-from .high_dividend_strategy import HighDividendStrategy
