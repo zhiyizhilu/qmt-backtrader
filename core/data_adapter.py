@@ -127,6 +127,50 @@ class MarketDataAdapter(ABC):
         """
         return []
 
+    def get_return_over_days(self, symbol: str, num_days: int) -> Optional[Dict[str, Any]]:
+        """基于统一时间轴计算N个交易日的收益率
+
+        确保不同数据源对比的是同一个日历日期的收盘价。
+        默认实现使用 get_close_prices 的行偏移，子类可覆盖以实现日期对齐。
+
+        Args:
+            symbol: 标的代码
+            num_days: 交易日数
+
+        Returns:
+            {'rate': 收益率, 'start_price': 起始价, 'end_price': 结束价, 'start_date': 起始日期}
+            数据不足时返回 None
+        """
+        close_prices = self.get_close_prices(symbol)
+        if len(close_prices) <= num_days:
+            return None
+        start_price = close_prices[-(num_days + 1)]
+        end_price = close_prices[-1]
+        return {
+            'rate': (end_price - start_price) / start_price,
+            'start_price': start_price,
+            'end_price': end_price,
+            'start_date': None,
+        }
+
+    def get_close_prices_for_days(self, symbol: str, num_days: int) -> List[float]:
+        """基于统一时间轴获取最近N个交易日的收盘价序列
+
+        确保不同数据源返回的是同一组日历日期的收盘价。
+        默认实现使用 get_close_prices 的行偏移，子类可覆盖以实现日期对齐。
+
+        Args:
+            symbol: 标的代码
+            num_days: 交易日数
+
+        Returns:
+            收盘价列表，长度为 num_days + 1（包含当前日）
+        """
+        prices = self.get_close_prices(symbol)
+        if len(prices) <= num_days:
+            return prices
+        return prices[-(num_days + 1):]
+
 
 class BacktraderDataAdapter(MarketDataAdapter):
     """Backtrader数据适配器 - 回测模式下使用

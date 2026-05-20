@@ -557,6 +557,39 @@ class StrategyLogic:
             return self._data_adapter.get_close_prices(symbol, period)
         return []
 
+    def get_return_over_days(self, symbol: str, num_days: int) -> Optional[Dict[str, Any]]:
+        """基于统一时间轴计算N个交易日的收益率
+
+        确保不同数据源对比的是同一个日历日期的收盘价。
+
+        Args:
+            symbol: 标的代码
+            num_days: 交易日数
+
+        Returns:
+            {'rate': 收益率, 'start_price': 起始价, 'end_price': 结束价, 'start_date': 起始日期}
+            数据不足时返回 None
+        """
+        if self._data_adapter and hasattr(self._data_adapter, 'get_return_over_days'):
+            return self._data_adapter.get_return_over_days(symbol, num_days)
+        return None
+
+    def get_close_prices_for_days(self, symbol: str, num_days: int) -> List[float]:
+        """基于统一时间轴获取最近N个交易日的收盘价序列
+
+        确保不同数据源返回的是同一组日历日期的收盘价。
+
+        Args:
+            symbol: 标的代码
+            num_days: 交易日数
+
+        Returns:
+            收盘价列表，长度为 num_days + 1（包含当前日）
+        """
+        if self._data_adapter and hasattr(self._data_adapter, 'get_close_prices_for_days'):
+            return self._data_adapter.get_close_prices_for_days(symbol, num_days)
+        return []
+
     def get_ohlcv_data(self, symbol: str, period: int = None) -> List[Dict[str, float]]:
         """获取指定标的的OHLCV数据序列
 

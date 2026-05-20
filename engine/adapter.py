@@ -221,6 +221,82 @@ class EngineDataAdapter(MarketDataAdapter):
             return data_list[-period:] if len(data_list) >= period else data_list
         return data_list
 
+    def get_return_over_days(self, symbol: str, num_days: int) -> Optional[Dict[str, Any]]:
+        """基于统一时间轴计算N个交易日收益率
+
+        使用 Timeline 确定参考日期，再从数据源查找该日期的收盘价，
+        保证不同数据源对比的是同一个日历日期。
+        """
+        current_idx = self._current_global_idx
+        ref_idx = current_idx - num_days
+        if ref_idx < 0:
+            return None
+
+        current_price = self.get_current_price(symbol)
+        if current_price is None:
+            return None
+
+        feed_idx = self._timeline.get_feed_index_by_symbol(symbol)
+        if feed_idx < 0:
+            return None
+
+        feed = self._data_feeds.get(symbol)
+        if feed is None:
+            return None
+
+        ref_price = None
+        ref_date = None
+        for idx in range(ref_idx, -1, -1):
+            local_idx = self._timeline.get_feed_bar_index(feed_idx, idx)
+            if local_idx >= 0:
+                close = feed.get_close(local_idx)
+                if not math.isnan(close) and close > 0:
+                    ref_price = close
+                    ref_date = self._timeline.get_date(idx)
+                    break
+
+        if ref_price is None:
+            return None
+
+        return {
+            'rate': (current_price - ref_price) / ref_price,
+            'start_price': ref_price,
+            'end_price': current_price,
+            'start_date': ref_date,
+        }
+
+    def get_close_prices_for_days(self, symbol: str, num_days: int) -> List[float]:
+        """基于统一时间轴获取最近N个交易日的收盘价序列
+
+        使用 Timeline 确定日期范围，再从数据源逐日查找收盘价，
+        保证不同数据源返回的是同一组日历日期的收盘价。
+        缺失数据的日期使用最近可用价格前向填充。
+        """
+        feed_idx = self._timeline.get_feed_index_by_symbol(symbol)
+        if feed_idx < 0:
+            return []
+
+        feed = self._data_feeds.get(symbol)
+        if feed is None:
+            return []
+
+        prices = []
+        last_valid_price = None
+
+        start_idx = max(0, self._current_global_idx - num_days)
+        for idx in range(start_idx, self._current_global_idx + 1):
+            local_idx = self._timeline.get_feed_bar_index(feed_idx, idx)
+            if local_idx >= 0:
+                close = feed.get_close(local_idx)
+                if not math.isnan(close) and close > 0:
+                    prices.append(close)
+                    last_valid_price = close
+                    continue
+            if last_valid_price is not None:
+                prices.append(last_valid_price)
+
+        return prices
+
 
 class EngineExecutor(StrategyExecutor):
     """自研引擎执行器 - 通过 SimulatedBroker 执行交易
