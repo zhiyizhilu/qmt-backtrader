@@ -346,11 +346,447 @@ python read_parquet.py
 #### Q11: 富途数据源如何使用？
 1. 安装依赖：`pip install futu-api`
 2. 下载并启动富途 OpenD 行情网关
-3. 使用 `download_futu_data.py` 下载数据，或在回测时指定 `--data-source futu`
+3. 使用 `download_futu_data.py` 下载数据（详见下方章节），或在回测时指定 `--data-source futu`
 4. 富途 API 限制：每30秒最多60次请求，框架内置了 `FutuRateLimiter` 自动控制频率
 
 #### Q12: QMT 数据如何预下载？
-使用 `download_qmt_data.py` 脚本：
+使用 `download_qmt_data.py` 脚本（详见下方章节）：
 ```bash
-python download_qmt_data.py --pool 中证1000 --start 2020-01-01 --end 2026-04-28
+python download_qmt_data.py --pool 中证1000 --type all
 ```
+
+## 分钟级后复权数据转换（convert_minute_hfq.py）
+
+QMT 本地只保留约 1 年的分钟线历史数据，无法满足长期回测需求。`convert_minute_hfq.py` 通过线性变换法，将聚宽下载的不复权分钟数据转换为后复权数据，并与 QMT 分钟数据合并，补足历史缺失部分。
+
+### 核心原理
+
+QMT 后复权价格与不复权价格是线性关系：
+
+```
+后复权价格 = 不复权价格 × a + b
+```
+
+- **a**：在非除权区间恒定；送股/转增时跳变（乘以 1+送股+转增）
+- **b**：在除权除息日跳变，非除权日不变
+- **volume/amount** 等非价格字段无需调整
+
+通过日线 OHLC 四个数据点做最小二乘拟合，即可得到每天的 a 和 b，然后应用到分钟级数据上。
+
+### 数据合并策略
+
+| 区间 | 不复权数据 | 后复权数据 |
+|------|-----------|-----------|
+| QMT 有分钟数据的区间 | 直接使用 QMT 原始数据 | 直接使用 QMT 后复权数据 |
+| QMT 无分钟数据的区间 | 使用聚宽 CSV 不复权数据 | 聚宽不复权 × a + b 转换 |
+
+合并时 QMT 优先，聚宽仅补足 QMT 缺失的历史部分，两者在交接点因子完全一致，无缝衔接。
+
+### 聚宽 CSV 文件要求
+
+文件放置在 `.cache/JQData/market_raw/` 目录下，命名格式为 `{股票代码}_1m_{起始日期}_{结束日期}.csv`，例如：
+
+```
+.cache/JQData/market_raw/
+├── 000001_SZ_1m_1990-01-01_2026-05-19.csv
+├── 601398_SH_1m_1990-01-01_2026-05-19.csv
+├── 601288_SH_1m_1990-01-01_2026-05-19.csv
+└── ...
+```
+
+CSV 列格式要求：`datetime,code,open,close,high,low,volume,money`（聚宽标准格式），脚本会自动处理：
+- `money` 列重命名为 `amount`
+- `volume` 列从股转换为手（÷100），与 QMT 单位对齐
+- `code` 列自动移除
+
+### 请求参数
+
+```bash
+python convert_minute_hfq.py [OPTIONS]
+```
+
+| 参数 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--stocks` | 是 | — | 股票代码，逗号分隔，如 `000001.SZ,600519.SH` |
+| `--start` | 否 | `19900101` | 数据起始日期 |
+| `--end` | 否 | `20991231` | 数据结束日期 |
+| `--force` | 否 | `False` | 强制覆盖已有缓存 |
+| `--jq` | 否 | `False` | 启用聚宽 CSV 补足历史数据 |
+| `--jq-dir` | 否 | `.cache/JQData/market_raw` | 聚宽 CSV 文件目录 |
+| `--info` | 否 | `False` | 仅查看缓存信息，不转换 |
+| `-v` / `--verbose` | 否 | `False` | 启用详细日志 |
+
+### 存储位置
+
+转换后的数据保存到 QMT 缓存目录，与日线数据使用相同的按年份分片格式：
+
+```
+.cache/QMTData/
+├── market/                          # 后复权分钟线
+│   └── {symbol}/
+│       ├── 2005_1m.parquet
+│       ├── 2006_1m.parquet
+│       └── ...
+└── market_raw/                      # 不复权分钟线
+    └── {symbol}/
+        ├── 2005_1m.parquet
+        ├── 2006_1m.parquet
+        └── ...
+```
+
+### 使用示例
+
+```bash
+# 1. 仅使用 QMT 数据转换（不补足历史）
+python convert_minute_hfq.py --stocks 000001.SZ
+
+# 2. 使用聚宽 CSV 补足历史（推荐）
+python convert_minute_hfq.py --stocks 000001.SZ --jq
+
+# 3. 批量转换多只股票
+python convert_minute_hfq.py --stocks 000001.SZ,601398.SH,601288.SH,601939.SH,601988.SH --jq
+
+# 4. 强制覆盖已有缓存（重新生成）
+python convert_minute_hfq.py --stocks 000001.SZ --jq --force
+
+# 5. 指定聚宽 CSV 目录
+python convert_minute_hfq.py --stocks 000001.SZ --jq --jq-dir /path/to/csv
+
+# 6. 指定日期范围
+python convert_minute_hfq.py --stocks 000001.SZ --jq --start 2020-01-01 --end 2026-05-20
+
+# 7. 查看缓存信息
+python convert_minute_hfq.py --stocks 000001.SZ --info
+
+# 8. Python API 调用
+python -c "from convert_minute_hfq import convert_minute_data; convert_minute_data('000001.SZ', jq=True, force=True)"
+```
+
+### 数据精度验证
+
+经 12 只股票（含仅派息、送股转增、创业板、科创板等不同类型）约 70 万根分钟 K 线验证：
+
+| 对比项 | 结果 |
+|--------|------|
+| QMT 数据区间后复权 vs QMT 直接获取 | 100% 精确匹配（误差在浮点精度级别） |
+| 聚宽转换后复权 close vs QMT 后复权 | 100% 匹配（<0.01） |
+| 聚宽转换后复权 open/high/low vs QMT | 99.5%+ 匹配，微小差异来源于数据源撮合精度不同 |
+| volume（聚宽÷100后）vs QMT | 94%~97% 相同 |
+| amount vs QMT | 87%~90% 相同 |
+| 交接点因子一致性 | 差异为 0，无缝衔接 |
+
+### 常见问题
+
+#### Q1: 不使用聚宽 CSV 可以吗？
+可以。不加 `--jq` 参数时，仅转换 QMT 自身的分钟数据（约 1 年历史），不补足历史。
+
+#### Q2: 聚宽 CSV 的 volume 单位与 QMT 不同怎么办？
+脚本已自动处理。聚宽 volume 单位是股，QMT 是手（1手=100股），读取时会自动 ÷100 转换。
+
+#### Q3: 如何确认转换结果正确？
+使用 `--info` 查看缓存年份范围，或在 Python 中读取缓存数据与 QMT 直接获取的数据对比。
+
+#### Q4: 重新运行会覆盖已有数据吗？
+默认跳过已有年份文件。使用 `--force` 强制覆盖所有年份。
+
+#### Q5: 转换一只股票需要多长时间？
+取决于数据量。约 120 万根 K 线（20年分钟数据）转换+写入约需 60~90 秒。
+
+## QMT 数据下载（download_qmt_data.py）
+
+`download_qmt_data.py` 用于从 QMT（迅投 MiniQMT）预下载行情和财务数据到本地缓存。QMT 提供实时行情和交易接口，但本地只保留约 1 年的分钟线历史，日线历史完整。
+
+### 前置条件
+
+1. 安装 MiniQMT 客户端并登录
+2. 安装 Python 依赖：`pip install xtquant`
+
+### 数据类型
+
+| 类型 | 参数值 | 说明 | 缓存目录 |
+|------|--------|------|----------|
+| 后复权行情 | `market` | 日线/分钟线后复权数据 | `.cache/QMTData/market/{symbol}/` |
+| 不复权行情 | `market_raw` | 日线/分钟线不复权数据 | `.cache/QMTData/market_raw/{symbol}/` |
+| 财务数据 | `financial` | 利润表、资产负债表、现金流量表等 | `.cache/QMTData/financial/{symbol}/` |
+| 全部 | `all` | 同时下载上述三种 | — |
+
+### 请求参数
+
+```bash
+python download_qmt_data.py [OPTIONS]
+```
+
+| 参数 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--pool` | 否* | — | 股票池：`沪深300`、`中证500`、`中证1000`、`上证50`、`全部A股` |
+| `--stocks` | 否* | — | 手动指定股票代码，逗号分隔，如 `000001.SZ,600000.SH` |
+| `--start` | 否 | `1990-01-01` | 数据起始日期，格式 `YYYY-MM-DD` |
+| `--end` | 否 | 当前日期 | 数据结束日期，格式 `YYYY-MM-DD` |
+| `--type` | 否 | `all` | 数据类型：`market`、`market_raw`、`financial`、`all` |
+| `--period` | 否 | `1d` | 行情周期：`1d`（日线）、`1m`（分钟线） |
+| `--force` | 否 | `False` | 强制重新下载，忽略已有缓存 |
+| `--info` | 否 | `False` | 仅显示缓存信息，不下载 |
+| `-v` / `--verbose` | 否 | `False` | 启用详细日志 |
+
+> *`--pool` 和 `--stocks` 二选一，都不指定则下载全部 A 股。
+
+### 下载流程
+
+1. **解析股票列表**：根据 `--pool` 或 `--stocks` 获取目标股票代码
+2. **数据就绪检查**：`_check_data_ready()` 调用 `xtdata.download_history_data()` 确保数据已下载到本地
+3. **逐年分片获取**：通过 `xtdata.get_market_data_ex()` 按年份获取数据
+4. **缓存写入**：通过 `smart_cache` 装饰器自动按年份分片写入 Parquet 文件
+5. **增量更新**：已有年份的缓存自动跳过，仅获取缺失部分
+
+### 存储位置
+
+```
+.cache/QMTData/
+├── market/                          # 后复权行情
+│   └── {symbol}/
+│       ├── 2020_1d.parquet
+│       ├── 2020_1m.parquet
+│       └── ...
+├── market_raw/                      # 不复权行情
+│   └── {symbol}/
+│       └── ...
+└── financial/                       # 财务数据
+    └── {symbol}/
+        ├── 2020_income.parquet
+        ├── 2020_balance_sheet.parquet
+        ├── 2020_cash_flow.parquet
+        └── ...
+```
+
+### 使用示例
+
+```bash
+# 1. 下载沪深300全部数据（行情+财务）
+python download_qmt_data.py --pool 沪深300 --type all
+
+# 2. 仅下载后复权日线行情
+python download_qmt_data.py --pool 中证1000 --type market --period 1d
+
+# 3. 下载指定股票的分钟线数据
+python download_qmt_data.py --stocks 000001.SZ,600519.SH --type market --period 1m
+
+# 4. 仅下载财务数据
+python download_qmt_data.py --pool 沪深300 --type financial
+
+# 5. 强制重新下载
+python download_qmt_data.py --stocks 000001.SZ --type all --force
+
+# 6. 查看缓存信息
+python download_qmt_data.py --stocks 000001.SZ --info
+
+# 7. 指定日期范围
+python download_qmt_data.py --pool 沪深300 --type market --start 2020-01-01 --end 2026-05-20
+```
+
+### 常见问题
+
+#### Q1: QMT 客户端需要一直运行吗？
+下载时需要 MiniQMT 客户端在线。下载完成后数据缓存在本地，回测时无需客户端。
+
+#### Q2: QMT 分钟线数据只有约 1 年，如何获取更长历史？
+配合 `convert_minute_hfq.py` 使用聚宽 CSV 补足历史（详见上方章节）。
+
+#### Q3: 下载速度慢怎么办？
+QMT 数据通过本地接口获取，速度取决于 MiniQMT 客户端的数据同步状态。首次下载可能较慢，后续增量更新较快。
+
+## 财务数据下载（download_financial_data.py）
+
+`download_financial_data.py` 用于从 OpenData（akshare）批量下载 A 股财务数据，包括利润表、资产负债表、现金流量表等，按年份分片缓存到本地。
+
+### 数据来源
+
+| 数据表 | akshare 接口 | 说明 |
+|--------|-------------|------|
+| 利润表 | `stock_profit_sheet_by_report_em` | 营收、净利润、EPS 等 |
+| 资产负债表 | `stock_balance_sheet_by_report_em` | 资产、负债、股东权益等 |
+| 现金流量表 | `stock_cash_flow_sheet_by_report_em` | 经营/投资/筹资现金流等 |
+| 业绩预告 | `stock_profit_forecast_em` | 业绩预告数据 |
+| 业绩快报 | `stock_profit_express_em` | 业绩快报数据 |
+
+### 请求参数
+
+```bash
+python download_financial_data.py [OPTIONS]
+```
+
+| 参数 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--pool` | 否* | 沪深A股 | 股票池：`沪深300`、`中证500`、`中证1000`、`上证50`、`沪深A股` |
+| `--stocks` | 否* | — | 手动指定股票代码，逗号分隔 |
+| `--start` | 否 | `2015-01-01` | 数据起始日期，格式 `YYYY-MM-DD` |
+| `--end` | 否 | 当前日期 | 数据结束日期，格式 `YYYY-MM-DD` |
+| `--workers` | 否 | `3` | 并发线程数（建议不超过 5，避免触发限频） |
+| `--force` | 否 | `False` | 强制重新下载，忽略已有缓存 |
+| `--verify` | 否 | `False` | 下载后校验数据完整性 |
+| `--verify-only` | 否 | `False` | 仅校验已有数据，不执行新下载 |
+| `-v` / `--verbose` | 否 | `False` | 启用详细日志 |
+| `--log` | 否 | `False` | 将日志同时写入文件 |
+
+> *`--pool` 和 `--stocks` 二选一，都不指定则默认下载沪深A股全部股票。
+
+### 存储位置
+
+```
+.cache/OpenData/financial/
+└── {symbol}/
+    ├── 2020_income.parquet          # 利润表
+    ├── 2020_balance_sheet.parquet   # 资产负债表
+    ├── 2020_cash_flow.parquet       # 现金流量表
+    └── ...
+```
+
+### 使用示例
+
+```bash
+# 1. 下载沪深300全部财务数据
+python download_financial_data.py --pool 沪深300 --start 2015-01-01
+
+# 2. 下载指定股票的财务数据
+python download_financial_data.py --stocks 000001.SZ,600519.SH --start 2020-01-01
+
+# 3. 下载并校验
+python download_financial_data.py --pool 中证1000 --start 2015-01-01 --verify
+
+# 4. 仅校验已有数据
+python download_financial_data.py --pool 沪深300 --start 2015-01-01 --verify-only
+
+# 5. 强制重新下载
+python download_financial_data.py --pool 沪深300 --start 2015-01-01 --force
+
+# 6. 写入日志文件
+python download_financial_data.py --pool 沪深A股 --start 2015-01-01 --workers 5 --log
+```
+
+### 常见问题
+
+#### Q1: 财务数据下载报错 "akshare 未安装"
+**解决**：安装依赖 `pip install akshare pyarrow`
+
+#### Q2: 下载速度慢怎么办？
+akshare 数据源有频率限制，建议 `--workers` 不超过 5。全市场下载可能需要数小时，建议配合 `--log` 使用。
+
+#### Q3: 财务数据更新频率？
+财务数据按季度发布，建议每季度末更新一次。使用 `--force` 可强制刷新。
+
+#### Q4: QMT 财务数据和 OpenData 财务数据有什么区别？
+两者来源不同（QMT 来自交易所原始数据，OpenData 来自东方财富），字段名称和口径可能略有差异。回测框架默认优先使用 QMT 财务数据，OpenData 作为补充。
+
+## 富途数据下载（download_futu_data.py）
+
+`download_futu_data.py` 用于从富途 OpenD 行情网关下载 A 股、港股、美股行情数据，支持自动增量下载和频率限制。
+
+### 前置条件
+
+1. 开通富途证券账户
+2. 安装依赖：`pip install futu-api`
+3. 下载并启动 [富途 OpenD 行情网关](https://www.futunn.com/download/openAPI)
+4. OpenD 启动后默认监听 `127.0.0.1:33333`
+
+### 数据类型
+
+| 类型 | 参数值 | 说明 | 支持市场 |
+|------|--------|------|----------|
+| 后复权行情 | `adjusted` | 日线后复权数据 | A股、港股、美股 |
+| 不复权行情 | `raw` | 日线不复权数据 | A股、港股、美股 |
+| 全部 | `all` | 同时下载上述两种 | — |
+
+### 请求参数
+
+```bash
+python download_futu_data.py [OPTIONS]
+```
+
+| 参数 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--pool` | 否* | — | 股票池：`沪深300`、`中证500`、`中证1000`、`上证50`、`港股成分`、`美股成分` |
+| `--stocks` | 否* | — | 手动指定股票代码，逗号分隔，如 `HK.00700,US.AAPL` |
+| `--start` | 否 | `2020-01-01` | 数据起始日期，格式 `YYYY-MM-DD` |
+| `--end` | 否 | 当前日期 | 数据结束日期，格式 `YYYY-MM-DD` |
+| `--type` | 否 | `all` | 数据类型：`adjusted`、`raw`、`all` |
+| `--force` | 否 | `False` | 强制重新下载，忽略已有缓存 |
+| `--host` | 否 | `127.0.0.1` | OpenD 网关地址 |
+| `--port` | 否 | `33333` | OpenD 网关端口 |
+| `-v` / `--verbose` | 否 | `False` | 启用详细日志 |
+
+> *`--pool` 和 `--stocks` 二选一。
+
+### 频率限制
+
+富途 API 限制：每 30 秒最多 60 次请求。框架内置 `FutuRateLimiter` 自动控制请求频率，无需手动处理。
+
+### 存储位置
+
+```
+.cache/FutuData/
+├── market/                          # 后复权行情
+│   └── {symbol}/
+│       ├── 2020_1d.parquet
+│       └── ...
+└── market_raw/                      # 不复权行情
+    └── {symbol}/
+        └── ...
+```
+
+### 使用示例
+
+```bash
+# 1. 下载沪深300行情数据
+python download_futu_data.py --pool 沪深300 --start 2020-01-01
+
+# 2. 下载港股数据
+python download_futu_data.py --stocks HK.00700,HK.09988 --start 2020-01-01
+
+# 3. 下载美股数据
+python download_futu_data.py --stocks US.AAPL,US.TSLA --start 2020-01-01
+
+# 4. 指定 OpenD 地址
+python download_futu_data.py --pool 沪深300 --start 2020-01-01 --host 192.168.1.100 --port 33333
+
+# 5. 强制重新下载
+python download_futu_data.py --stocks HK.00700 --start 2020-01-01 --force
+
+# 6. 仅下载后复权数据
+python download_futu_data.py --pool 中证1000 --start 2020-01-01 --type adjusted
+```
+
+### 常见问题
+
+#### Q1: 报错 "FutuOpenD 连接失败"
+确认富途 OpenD 行情网关已启动，默认监听 `127.0.0.1:33333`。可通过 `--host` 和 `--port` 指定地址。
+
+#### Q2: 港股/美股代码格式？
+- 港股：`HK.00700`（腾讯控股）、`HK.09988`（阿里巴巴）
+- 美股：`US.AAPL`（苹果）、`US.TSLA`（特斯拉）
+
+#### Q3: 富途数据与 QMT/OpenData 数据有什么区别？
+- **数据范围**：富途支持 A股+港股+美股，QMT 仅 A股，OpenData 仅 A股
+- **数据精度**：富途和 QMT 均来自交易所原始数据，精度高于 OpenData
+- **使用门槛**：富途需开户+OpenD 网关，QMT 需开户+客户端，OpenData 免费
+
+#### Q4: 下载速度慢怎么办？
+富途 API 有频率限制（30秒60次），框架已内置限速器。大批量下载建议分批进行。
+
+## 数据下载脚本总览
+
+| 脚本 | 数据源 | 数据类型 | 支持市场 | 认证方式 |
+|------|--------|----------|----------|----------|
+| `download_market_data.py` | OpenData（腾讯财经）+ QMT 补充 | 日线行情（后复权/不复权） | A股 | 免费（akshare） |
+| `download_qmt_data.py` | QMT（MiniQMT） | 日线/分钟线行情 + 财务数据 | A股 | 需开户+客户端 |
+| `download_financial_data.py` | OpenData（东方财富） | 财务报表（利润表/资产负债表/现金流等） | A股 | 免费（akshare） |
+| `download_futu_data.py` | 富途（OpenD） | 日线行情（后复权/不复权） | A股+港股+美股 | 需开户+OpenD |
+| `convert_minute_hfq.py` | QMT + 聚宽CSV | 分钟线行情（后复权/不复权） | A股 | QMT需开户+客户端 |
+
+### 典型使用场景
+
+| 场景 | 推荐脚本 | 命令 |
+|------|---------|------|
+| 首次搭建日线回测环境 | `download_market_data.py` | `--pool 沪深300 --start 2020-01-01 --end 2026-12-31 --type all --verify` |
+| 补充 QMT 实时数据 | `download_qmt_data.py` | `--pool 沪深300 --type all` |
+| 获取分钟线历史数据 | `convert_minute_hfq.py` | `--stocks 000001.SZ --jq` |
+| 下载财务数据 | `download_financial_data.py` | `--pool 沪深300 --start 2015-01-01` |
+| 获取港股/美股数据 | `download_futu_data.py` | `--stocks HK.00700,US.AAPL --start 2020-01-01` |
