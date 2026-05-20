@@ -180,15 +180,31 @@ class SmartCacheManager:
             return []
 
     def _get_post_delist_years(self, symbol: str, req_years: List[int]) -> set:
-        """获取退市日期之后的年份集合（这些年份无需获取数据）"""
+        """获取退市日期之后的年份集合（这些年份无需获取数据）
+
+        优先使用 lifecycle 的退市日期，其次使用缓存索引的 latest_data_date。
+        """
         try:
             from core.stock_lifecycle import get_lifecycle_manager
             lifecycle = get_lifecycle_manager()
+
+            # 优先：有明确退市日期
             delist_date = lifecycle.get_delist_date(symbol)
-            if not delist_date:
-                return set()
-            delist_year = pd.Timestamp(delist_date).year
-            return {y for y in req_years if y > delist_year}
+            if delist_date:
+                delist_year = pd.Timestamp(delist_date).year
+                return {y for y in req_years if y > delist_year}
+
+            # 兜底：已退市但日期未知，用缓存索引的 latest_data_date 推断
+            if lifecycle.is_delisted(symbol):
+                idx = self.index_manager
+                latest = idx.get_latest_data_date(symbol, '1d')
+                if not latest:
+                    latest = idx.get_latest_raw_data_date(symbol, '1d')
+                if latest:
+                    latest_year = pd.Timestamp(latest).year
+                    return {y for y in req_years if y > latest_year}
+
+            return set()
         except Exception:
             return set()
 

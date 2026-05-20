@@ -93,6 +93,13 @@ class OpenDataProcessor(DataProcessor):
         if delist_date and start_date > delist_date:
             self.logger.debug(f"{symbol} 已于 {delist_date} 退市，请求范围 {start_date}~{end_date} 无数据")
             raise ValueError(f"{symbol} 在 {start_date} 到 {end_date} 期间没有数据")
+        # 兜底：已退市但日期未知，用缓存索引的 latest_data_date 推断
+        if lifecycle.is_delisted(symbol) and not delist_date:
+            from core.cache import cache_manager
+            latest = cache_manager.index_manager.get_latest_data_date(symbol, period)
+            if latest and start_date > latest:
+                self.logger.debug(f"{symbol} 已退市(日期未知)，最晚数据={latest}，请求范围 {start_date}~{end_date} 无数据")
+                raise ValueError(f"{symbol} 在 {start_date} 到 {end_date} 期间没有数据")
 
         # 使用腾讯财经获取个股数据
         df = self._get_data_from_tx(symbol, start_date, end_date)
