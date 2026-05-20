@@ -10,7 +10,7 @@ logs/*
 
 .codebuddy
 
-test.*
+
 
 backtest_results
 
@@ -23,6 +23,8 @@ web/strategy_display_names.json
 
 *days_report.html
 
+test_minute_hfq_inference.py
+
 *debug*
 *compare*
 *fix*
@@ -32,3 +34,5 @@ web/strategy_display_names.json
 
 *promo*
 *my*
+
+*test*

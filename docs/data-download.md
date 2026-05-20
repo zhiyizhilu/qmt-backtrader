@@ -6,9 +6,12 @@
 |--------|--------|----------|----------|------|
 | OpenData | 延迟 | A股全市场（历史数据丰富，包含行情、财务、QVIX 等） | 免费，需 akshare | 主数据源 |
 | QMT | 实时 | A股全市场（行情约1年） | 需开户+客户端 | 补充数据源 + 交易接口 |
+| 富途 | 实时 | A股+港股+美股（需 OpenD 网关） | 需开户+futu-api | 补充数据源 |
 | CSV | - | 自定义 | 无 | 自定义数据源 |
 
-**数据获取策略**：OpenData 提供丰富的历史行情数据，覆盖完整回测区间；QMT 数据用于补充缺口，同时提供实时交易接口。
+**数据源选择**：通过 `--data-source` 参数切换，可选 `qmt`（默认）、`open`、`futu`。
+
+**数据获取策略**：OpenData 提供丰富的历史行情数据，覆盖完整回测区间；QMT 数据用于补充缺口，同时提供实时交易接口；富途 OpenD 提供高质量行情数据，支持自动增量下载。
 
 **历史成分股**：基于聚宽下载的 CSV 文件，支持沪深300、中证500、中证1000、上证50及31个申万一级行业的历史成分股查询，回测时使用对应时点的真实成分股，超出范围时自动从 QMT 获取最新数据并更新文件。
 
@@ -126,6 +129,7 @@ python download_market_data.py [OPTIONS]
 
 - **OpenData（腾讯财经/AkShare）**：无需认证，安装 akshare 后直接使用
 - **QMT**：需安装 MiniQMT 客户端并登录，脚本通过 `xtdata` 本地接口访问数据，无需 API Key
+- **富途**：需安装 futu-api 并启动富途 OpenD 行情网关，脚本通过 `FutuOpenD` 本地接口访问数据
 
 ### 数据格式转换
 
@@ -222,6 +226,7 @@ python download_market_data.py [OPTIONS]
 | akshare 未安装 | 启动时警告，调用时抛出 `RuntimeError` |
 | 网络请求失败 | 腾讯财经 → 东方财富 → 新浪财经三级降级 |
 | QMT 初始化失败 | 警告但不退出，使用 OpenData 作为唯一数据源 |
+| 富途 OpenD 未启动 | 抛出 `FutuServiceError`，回测终止 |
 | 股票数据为空 | 记录为 `empty`，跳过并更新已检查索引（30天有效） |
 | 下载异常 | 记录为 `failed`，不影响其他股票下载 |
 | 缓存文件损坏 | 自动删除损坏文件，重新下载 |
@@ -337,3 +342,15 @@ python read_parquet.py
 - 默认仅输出到控制台
 - 使用 `--log` 参数，日志文件保存在 `logs/` 目录下，命名格式：`{时间戳}_download_market_data.log`
 - 使用 `--log-file` 自定义日志文件路径
+
+#### Q11: 富途数据源如何使用？
+1. 安装依赖：`pip install futu-api`
+2. 下载并启动富途 OpenD 行情网关
+3. 使用 `download_futu_data.py` 下载数据，或在回测时指定 `--data-source futu`
+4. 富途 API 限制：每30秒最多60次请求，框架内置了 `FutuRateLimiter` 自动控制频率
+
+#### Q12: QMT 数据如何预下载？
+使用 `download_qmt_data.py` 脚本：
+```bash
+python download_qmt_data.py --pool 中证1000 --start 2020-01-01 --end 2026-04-28
+```

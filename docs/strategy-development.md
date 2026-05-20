@@ -7,7 +7,7 @@
 3. 使用 `@register_strategy` 装饰器注册策略
 4. 实现相应的策略逻辑方法
 
-> **注意**：策略文件放入 `strategies/` 目录后会自动被发现和注册，无需手动导入。
+> **注意**：策略文件放入 `strategies/` 目录后会自动被发现和注册，无需手动导入。框架也会自动发现 `strategies_for_vip/` 和 `strategies_my/` 目录下的策略。
 
 ## 策略目录结构（推荐）
 
@@ -71,6 +71,7 @@ class MyStrategy(StrategyLogic):
 
 ```python
 from core.stock_selection import StockSelectionStrategy
+from core.weight_allocator import RiskParityAllocator
 from strategies import register_strategy
 
 @register_strategy('my_selection_strategy', default_kwargs={'max_stocks': 10},
@@ -84,6 +85,9 @@ class MySelectionStrategy(StockSelectionStrategy):
         ('max_stocks', 10),
         ('position_ratio', 0.95),
     )
+
+    def __init__(self, executor=None, **kwargs):
+        super().__init__(executor, weight_allocator=RiskParityAllocator(lookback=60), **kwargs)
 
     def select_stocks(self):
         """选股逻辑"""
@@ -102,15 +106,7 @@ class MySelectionStrategy(StockSelectionStrategy):
 
 ## 内置策略
 
-### 1. 高股息策略 (high_dividend)
-- 基于股息率选股，行业分散配置
-- 规避高股息陷阱，要求 ROE>0、归母净利润增速>0、经营现金流>0
-- 支持近3年平均股息率模式，提升稳定性
-- 双周调仓（`biweekly`），等权重持仓
-- **防未来数据**：财务数据按公告日期索引，回测时只使用已披露数据
-- 优化记录：波动率过滤、止损机制、ROE阈值、现金流阈值、双周调仓等
-
-### 2. 小市值策略 (small_cap)
+### 1. 小市值策略 (small_cap)
 - 基本面过滤 + 行业分散 + 动量确认 + 波动率过滤 + 止损机制的小市值选股策略
 - 四重基本面过滤：ROE>0、营收增速>0、经营现金流>0、资产负债率<阈值
 - 每个申万一级行业选市值最小的1只，避免行业集中暴露
@@ -119,6 +115,27 @@ class MySelectionStrategy(StockSelectionStrategy):
 - 止损机制：持仓亏损>=8%时在调仓时止损卖出（事后风控）
 - 月度调仓，等权重持仓
 - 优化记录：波动率过滤（夏普+14.5%）、止损机制（夏普+12.8%）、组合优化（夏普+22.5%）
+
+### 2. 特质波动率因子策略 (ivff3)
+- 基于 Fama-French 三因子模型的特质波动率选股策略，复现东方证券研报
+- 构建 MKT、SMB、HML 三因子，对每只股票回归得到残差
+- 残差的年化标准差即为特质波动率 IVFF3
+- 选择 IVFF3 最低的股票构建等权组合（特质波动率之谜）
+- 支持基本面筛选（ROE、净利润增长率、资产负债率）
+- 月度调仓，最多50只股票
+
+### 3. 低估价值策略 (undervalued)
+- 基于迈克尔·普莱斯与本杰明·格雷厄姆的价值选股法
+- PB < 1.8（严格低估）、资产负债率 > 市场均值（逆向指标）、流动比率 >= 1.2
+- 20日动量过滤：跌幅不超过-8%
+- 月度调仓（优化后，原季度调仓），等权重持仓
+- 优化记录：月度调仓（夏普+10.2%），样本外验证通过
+
+### 4. 聚宽小市值策略 (jq_small_cap)
+- 克隆自聚宽文章，按流通市值升序选股
+- 每日调仓，等权持仓，最多5只股票
+- 股票池：中小综指
+- 回测年化收益率 40.85%，夏普比率 1.4135
 
 ## 策略优化工作流
 
@@ -133,6 +150,29 @@ class MySelectionStrategy(StockSelectionStrategy):
 5. **组合有效优化**：测试所有有效优化的组合效果，检测参数冲突
 6. **清理与文档**：删除无效优化代码，更新策略文档，生成 HTML 优化报告
 
+### Walk-Forward 样本外验证
+
+使用 `WalkForwardSplitter` 进行样本外验证，防止过拟合：
+
+```python
+from utils.walk_forward import WalkForwardSplitter
+
+splitter = WalkForwardSplitter(
+    total_start='2015-01-01',
+    total_end='2026-04-28',
+    train_months=60,
+    test_months=12,
+    step_months=12,
+    anchor=False,
+)
+
+for train_start, train_end, test_start, test_end in splitter.split():
+    print(f"训练: {train_start}~{train_end}, 测试: {test_start}~{test_end}")
+```
+
+- **滚动模式**（anchor=False）：训练窗口固定长度向前滑动
+- **锚定模式**（anchor=True）：训练窗口起点固定，终点向前扩展
+
 ### 已验证的优化经验
 
 | 优化方案 | 适用策略类型 | 典型影响 | 说明 |
@@ -140,6 +180,7 @@ class MySelectionStrategy(StockSelectionStrategy):
 | 波动率过滤 | 选股策略 | 夏普+10~15% | 过滤日波动率超过阈值的标的，首选优化方向 |
 | 止损机制 | 选股策略 | 夏普+10~15% | 调仓时剔除亏损超过阈值的股票 |
 | 波动率+止损组合 | 选股策略 | 夏普+20~25% | 两项优化互补叠加 |
+| 月度调仓 | 价值策略 | 夏普+10% | 价值回归需要时间，月度是"捕捉机会"与"耐心等待"的平衡点 |
 
 ### 优化输出目录
 

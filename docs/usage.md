@@ -2,14 +2,28 @@
 
 ## 1. 运行回测
 
-**高股息策略回测：**
-```bash
-python main.py --mode backtest --strategy high_dividend --period 1d --pool 中证1000 --start 2020-04-28 --end 2026-04-28 --debug
-```
-
 **小市值策略回测：**
 ```bash
 python main.py --mode backtest --strategy small_cap --period 1d --pool 中证1000 --start 2020-04-28 --end 2026-04-28 --debug
+```
+
+**特质波动率因子策略回测：**
+```bash
+python main.py --mode backtest --strategy ivff3 --period 1d --pool 中证1000 --start 2015-01-01 --end 2026-04-28 --debug
+```
+
+**低估价值策略回测：**
+```bash
+python main.py --mode backtest --strategy undervalued --period 1d --pool 沪深300 --start 2020-04-28 --end 2026-04-28 --debug
+```
+
+**指定数据源回测：**
+```bash
+# OpenData 数据源（免费，无需 QMT）
+python main.py --mode backtest --strategy small_cap --period 1d --pool 中证1000 --start 2020-04-28 --end 2026-04-28 --data-source open
+
+# 富途数据源（需安装 futu-api 并启动 OpenD）
+python main.py --mode backtest --strategy small_cap --period 1d --pool 中证1000 --start 2020-04-28 --end 2026-04-28 --data-source futu
 ```
 
 **AI 模式回测（跳过图形界面，适用于自动化优化）：**
@@ -17,13 +31,20 @@ python main.py --mode backtest --strategy small_cap --period 1d --pool 中证100
 python main.py --mode backtest --strategy small_cap --period 1d --pool 中证1000 --start 2020-04-28 --end 2026-04-28 --ai-mode --no-record
 ```
 
+**使用 YAML 配置文件：**
+```bash
+python main.py --mode backtest --strategy small_cap --config config/backtest.yaml
+```
+
 **参数说明**：
 - `--mode`：运行模式，可选值：`backtest`（回测）、`sim`（模拟交易）、`real`（实盘交易）、`instances`（多策略实例）
-- `--strategy`：策略类型，可选值：`high_dividend`、`small_cap` 等
+- `--strategy`：策略类型，可选值：`small_cap`、`ivff3`、`undervalued`、`jq_small_cap` 等
 - `--period`：数据周期，可选值：`1d`（日线）、`1m`、`5m`、`15m`、`30m`、`60m`、`tick`
-- `--pool`：股票池板块名称，如 `沪深300`、`沪深A股`、`上证50`、`中证500`、`中证1000`
+- `--pool`：股票池板块名称，如 `沪深300`、`沪深A股`、`上证50`、`中证500`、`中证1000`、`中小综指`
 - `--start`：回测起始日期，格式：`YYYY-MM-DD`
 - `--end`：回测结束日期，格式：`YYYY-MM-DD`
+- `--data-source`：行情数据源，可选值：`qmt`（默认）、`open`（OpenData）、`futu`（富途）
+- `--config`：YAML 配置文件路径，配置覆盖默认值，命令行参数覆盖 YAML 配置
 - `--qmt-path`：QMT userdata_mini 路径（默认 `D:\qmt\userdata_mini`）
 - `--account`：QMT 资金账号，不传则自动获取第一个
 - `--instances`：策略实例配置文件路径（JSON），用于 `--mode instances` 模式
@@ -37,13 +58,13 @@ python main.py --mode backtest --strategy small_cap --period 1d --pool 中证100
 ## 2. 运行模拟交易
 
 ```bash
-python main.py --mode sim --strategy high_dividend --qmt-path D:\qmt\userdata_mini
+python main.py --mode sim --strategy small_cap --qmt-path D:\qmt\userdata_mini
 ```
 
 ## 3. 运行实盘交易
 
 ```bash
-python main.py --mode real --strategy high_dividend --qmt-path D:\qmt\userdata_mini --account 12345678
+python main.py --mode real --strategy small_cap --qmt-path D:\qmt\userdata_mini --account 12345678
 ```
 
 ## 4. 运行多策略实例
@@ -65,8 +86,8 @@ python main.py --mode real --strategy high_dividend --qmt-path D:\qmt\userdata_m
       "kwargs": {}
     },
     {
-      "instance_id": "high_div_sim",
-      "strategy_name": "high_dividend",
+      "instance_id": "undervalued_sim",
+      "strategy_name": "undervalued",
       "mode": "sim",
       "account_id": "12345678",
       "initial_capital": 500000,
@@ -98,19 +119,24 @@ python main.py --mode instances --instances config/instances.json
 
 在运行回测前，可以预先下载行情和财务数据到本地缓存，避免回测时逐只下载导致等待过长：
 
-**下载行情数据：**
+**下载行情数据（OpenData 数据源）：**
 ```bash
 python download_market_data.py --pool 中证1000 --start 2020-01-01 --end 2026-04-28
+```
+
+**下载行情数据（QMT 数据源）：**
+```bash
+python download_qmt_data.py --pool 中证1000 --start 2020-01-01 --end 2026-04-28
+```
+
+**下载行情数据（富途数据源）：**
+```bash
+python download_futu_data.py --pool 中证1000 --start 2020-01-01 --end 2026-04-28
 ```
 
 **下载财务数据：**
 ```bash
 python download_financial_data.py --pool 中证1000 --start 2020-01-01
-```
-
-**查看缓存文件内容：**
-```bash
-python read_parquet.py
 ```
 
 **清理过期日志：**
