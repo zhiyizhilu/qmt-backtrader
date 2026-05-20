@@ -16,7 +16,7 @@ backtest_results
 
 config/
 
-strategies_for_vip
+./strategies_for_vip
 strategies_my
 
 web/strategy_display_names.json
