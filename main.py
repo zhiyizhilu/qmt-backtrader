@@ -265,8 +265,8 @@ def main():
     parser.add_argument('--slippage', type=float, default=None,
                         help='滑点百分比，如0.001表示0.1%，不传则使用策略默认值')
     parser.add_argument('--data-source', type=str, default='qmt',
-                        choices=['qmt', 'futu'],
-                        help='数据源: qmt=QMT+OpenData(默认), futu=富途本地数据(.cache/FutuData)')
+                        choices=['qmt', 'open', 'futu'],
+                        help='行情数据源: qmt=QMT(默认), open=OpenData, futu=富途本地数据')
     parser.add_argument('--config', type=str, default=None,
                         help='YAML 配置文件路径，配置覆盖默认值，命令行参数覆盖 YAML 配置')
 

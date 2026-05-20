@@ -12,8 +12,9 @@ from core.data.base import DataProcessor, _merged_dict_to_parquet, _parquet_to_m
 class QMTDataProcessor(DataProcessor):
     """QMT数据处理器
     
-    以QMT为主数据源。行情数据不足时可用OpenData补充（通过 use_opendata 参数控制）。
-    财务数据统一由QMT提供，不再使用OpenData作为补充源。
+    纯QMT数据源，行情数据通过smart_cache缓存到本地parquet。
+    缓存命中时直接读取，不调用QMT API；缓存缺失时才下载并保存。
+    非行情数据（成分股、行业映射等）的OpenData兜底仍保留。
     """
     
     FINANCIAL_TABLES = [
@@ -29,11 +30,10 @@ class QMTDataProcessor(DataProcessor):
             self.xtdata = None
             logging.getLogger(__name__).warning("xtquant not installed, using simulated data")
         self._fallback_to_simulated = fallback_to_simulated
-        self._use_opendata = use_opendata
         self._financial_data_cache: Dict[str, Any] = {}
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
         
-        # 增加 OpenData 处理器用于行情数据补充（非财务数据）
+        # 非行情数据的OpenData兜底（成分股、行业映射等），行情数据不再使用OpenData补充
         if use_opendata:
             try:
                 from core.data.opendata import OpenDataProcessor
@@ -56,9 +56,6 @@ class QMTDataProcessor(DataProcessor):
             self._industry_constituent_mgr = IndustryConstituentManager(xtdata=self.xtdata)
         except Exception:
             self._industry_constituent_mgr = None
-
-        # 不复权数据获取器（独立命名空间缓存）
-        self._raw_fetcher = QMTDataProcessor_Raw(self)
     
     def check_connection(self) -> bool:
         """检查QMT数据服务是否可用"""
@@ -71,64 +68,67 @@ class QMTDataProcessor(DataProcessor):
         except Exception:
             return False
 
+    @smart_cache(cache_type='market', incremental=True)
     def get_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> pd.DataFrame:
-        """从QMT获取数据，当QMT数据不足时自动用OpenData补充
+        """从QMT获取后复权行情数据（带缓存）
         
-        不使用smart_cache：QMT的download_history_data已将数据下载到本地，
-        get_market_data_ex从本地读取，无需额外的parquet缓存层。
+        smart_cache 自动处理：内存缓存 → 磁盘缓存(年份分片parquet) → 缺失年份才调此函数体。
+        命名空间 QMTDataProcessor → .cache/QMTData/market/{symbol}/{year}_{period}.parquet
+        
+        缓存命中时不调用QMT API，直接返回缓存数据；
+        缓存缺失时调用 download_history_data + get_market_data_ex，下载后保存到缓存。
         """
-        
-        # 1. 先尝试从 QMT 获取数据
-        qmt_df = self._get_data_from_qmt(symbol, start_date, end_date, period, **kwargs)
-        
-        # 2. 检查 QMT 数据是否完整
-        if qmt_df is not None and not qmt_df.empty:
-            qmt_start = qmt_df.index.min()
-            requested_start = pd.Timestamp(start_date)
-            
-            # 如果 QMT 数据覆盖了整个请求范围，直接返回
-            if qmt_start <= requested_start + pd.Timedelta(days=7):  # 允许 7 天缓冲
-                return qmt_df
-            
-            # 3. QMT 数据不足，用 OpenData 补充早期数据
-            self.logger.info(f"QMT数据不足，使用OpenData补充: {symbol} "
-                            f"QMT最早={qmt_start.date()}, 请求起始={requested_start.date()}")
-            
-            if self._opendata:
-                try:
-                    # 计算需要补充的时间范围
-                    opendata_end = (qmt_start - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
-                    opendata_df = self._opendata.get_data(symbol, start_date, opendata_end, period, **kwargs)
-                    
-                    # 合并数据
-                    if opendata_df is not None and not opendata_df.empty:
-                        combined = pd.concat([opendata_df, qmt_df])
-                        combined = combined[~combined.index.duplicated(keep='last')]
-                        combined = combined.sort_index()
-                        
-                        self.logger.info(f"数据合并完成: {symbol} "
-                                        f"OpenData={len(opendata_df)}条, QMT={len(qmt_df)}条, "
-                                        f"合并后={len(combined)}条")
-                        return combined
-                except Exception as e:
-                    self.logger.warning(f"OpenData补充失败: {e}，仅使用QMT数据")
-            
-            # OpenData 失败，返回 QMT 数据（部分）
-            return qmt_df
-        
-        # 4. QMT 完全失败，尝试用 OpenData 兜底
-        if self._opendata:
-            self.logger.warning(f"QMT数据获取失败，尝试使用OpenData: {symbol}")
+        if not self.xtdata:
+            raise RuntimeError("QMT (xtquant) 未安装或未连接")
+
+        start_time = start_date.replace('-', '')
+        end_time = end_date.replace('-', '')
+
+        self.logger.debug(f"正在下载 {symbol} 行情数据 ({start_date} ~ {end_date}, {period})...")
+        self.xtdata.download_history_data(
+            stock_code=symbol, period=period,
+            start_time='19900101', end_time='',
+            incrementally=False
+        )
+        self.logger.debug(f"{symbol} 行情数据下载完成，正在读取...")
+
+        history_data = self.xtdata.get_market_data_ex(
+            [], [symbol], period=period,
+            start_time=start_time, end_time=end_time,
+            count=-1, dividend_type="back"
+        )
+
+        if symbol not in history_data:
+            raise RuntimeError(f"QMT无数据: {symbol} ({start_date}~{end_date})")
+
+        df = history_data[symbol]
+
+        if df.empty:
+            raise RuntimeError(f"QMT无数据: {symbol} ({start_date}~{end_date})")
+
+        if not isinstance(df.index, pd.DatetimeIndex):
             try:
-                return self._opendata.get_data(symbol, start_date, end_date, period, **kwargs)
-            except Exception as e:
-                self.logger.warning(f"OpenData兜底也失败: {e}")
-        
-        # 5. 全部失败
-        raise RuntimeError(f"无法获取数据: {symbol}")
+                df.index = pd.to_datetime(df.index, format='%Y%m%d%H%M%S')
+            except (ValueError, TypeError):
+                try:
+                    df.index = pd.to_datetime(df.index, format='%Y%m%d')
+                except (ValueError, TypeError):
+                    raise RuntimeError(f"QMT日期解析失败: {symbol}")
+
+        df = df[(df.index >= start_date) & (df.index <= end_date)]
+
+        if df.empty:
+            raise RuntimeError(f"QMT无数据: {symbol} ({start_date}~{end_date})")
+
+        return self.preprocess_data(df)
 
     def _get_data_from_qmt(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> Optional[pd.DataFrame]:
-        """从QMT获取数据（内部方法），失败返回None而非抛异常"""
+        """从QMT直接获取数据（内部方法，不走缓存）
+        
+        仅用于诊断/对比场景（如 verify_hfq_consistency）。
+        正常回测请使用 get_data()，它会走 smart_cache 缓存。
+        失败返回None而非抛异常。
+        """
         if not self.xtdata:
             return None
 
@@ -137,13 +137,17 @@ class QMTDataProcessor(DataProcessor):
             end_time = end_date.replace('-', '')
 
             self.logger.debug(f"正在下载 {symbol} 行情数据 ({start_date} ~ {end_date}, {period})...")
-            self.xtdata.download_history_data(stock_code=symbol, period=period, start_time='', end_time='', incrementally=True)
+            self.xtdata.download_history_data(
+                stock_code=symbol, period=period,
+                start_time='19900101', end_time='',
+                incrementally=False
+            )
             self.logger.debug(f"{symbol} 行情数据下载完成，正在读取...")
 
             history_data = self.xtdata.get_market_data_ex(
                 [], [symbol], period=period,
                 start_time=start_time, end_time=end_time,
-                count=-1, dividend_type="back"  # 后复权，与OpenData(akshare hfq)保持一致，避免混合数据源时价格断裂
+                count=-1, dividend_type="back"
             )
 
             if symbol in history_data:
@@ -1639,105 +1643,53 @@ class QMTDataProcessor(DataProcessor):
         except Exception:
             return None
 
+    @smart_cache(cache_type='market', incremental=True, namespace_suffix='_Raw')
     def get_raw_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> pd.DataFrame:
-        """获取不复权行情数据，用于股息率等需要实际价格的计算
+        """获取不复权行情数据（带缓存），用于股息率等需要实际价格的计算
 
         与 get_data() 使用后复权数据不同，此方法获取不复权数据，
         独立缓存于 market_raw 命名空间，与后复权缓存互不干扰。
-
-        数据源优先级与 get_data() 一致：QMT → OpenData → 抛出异常
+        命名空间 QMTDataProcessor_Raw → .cache/QMTData/market_raw/{symbol}/{year}_{period}.parquet
         """
-        return self._raw_fetcher.get_data(symbol, start_date, end_date, period, **kwargs)
+        if not self.xtdata:
+            raise RuntimeError("QMT (xtquant) 未安装或未连接")
 
+        start_time = start_date.replace('-', '')
+        end_time = end_date.replace('-', '')
 
-class QMTDataProcessor_Raw:
-    """不复权行情数据获取器
+        self.xtdata.download_history_data(
+            stock_code=symbol, period=period,
+            start_time='19900101', end_time='',
+            incrementally=False
+        )
 
-    类名 QMTDataProcessor_Raw 原先被 smart_cache 装饰器用作命名空间，
-    映射到 .cache/QMTData/market_raw/ 目录。现已移除smart_cache，
-    QMT的download_history_data已将数据下载到本地，无需额外缓存层。
-    """
+        history_data = self.xtdata.get_market_data_ex(
+            [], [symbol], period=period,
+            start_time=start_time, end_time=end_time,
+            count=-1, dividend_type="none"
+        )
 
-    def __init__(self, processor: QMTDataProcessor):
-        self._processor = processor
+        if symbol not in history_data:
+            raise RuntimeError(f"QMT无不复权数据: {symbol} ({start_date}~{end_date})")
 
-    def get_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> pd.DataFrame:
-        """获取不复权行情数据（QMT → OpenData 降级）
-        
-        不使用smart_cache：QMT的download_history_data已将数据下载到本地，
-        get_market_data_ex从本地读取，无需额外的parquet缓存层。
-        """
-        qmt_df = self._get_raw_data_from_qmt(symbol, start_date, end_date, period)
+        df = history_data[symbol]
 
-        if qmt_df is not None and not qmt_df.empty:
-            qmt_start = qmt_df.index.min()
-            requested_start = pd.Timestamp(start_date)
+        if df.empty:
+            raise RuntimeError(f"QMT无不复权数据: {symbol} ({start_date}~{end_date})")
 
-            if qmt_start <= requested_start + pd.Timedelta(days=7):
-                return qmt_df
-
-            if self._processor._opendata:
-                try:
-                    opendata_end = (qmt_start - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
-                    opendata_df = self._processor._opendata.get_raw_data(symbol, start_date, opendata_end, period, **kwargs)
-                    if opendata_df is not None and not opendata_df.empty:
-                        combined = pd.concat([opendata_df, qmt_df])
-                        combined = combined[~combined.index.duplicated(keep='last')]
-                        combined = combined.sort_index()
-                        return combined
-                except Exception as e:
-                    self._processor.logger.warning(f"OpenData不复权补充失败: {e}")
-
-            return qmt_df
-
-        if self._processor._opendata:
+        if not isinstance(df.index, pd.DatetimeIndex):
             try:
-                return self._processor._opendata.get_raw_data(symbol, start_date, end_date, period, **kwargs)
-            except Exception as e:
-                self._processor.logger.warning(f"OpenData不复权兜底失败: {e}")
+                df.index = pd.to_datetime(df.index, format='%Y%m%d%H%M%S')
+            except (ValueError, TypeError):
+                try:
+                    df.index = pd.to_datetime(df.index, format='%Y%m%d')
+                except (ValueError, TypeError):
+                    raise RuntimeError(f"QMT日期解析失败: {symbol}")
 
-        raise RuntimeError(f"无法获取不复权数据: {symbol}")
+        df = df[(df.index >= start_date) & (df.index <= end_date)]
 
-    def _get_raw_data_from_qmt(self, symbol: str, start_date: str, end_date: str, period: str = "1d") -> Optional[pd.DataFrame]:
-        """从QMT获取不复权数据"""
-        if not self._processor.xtdata:
-            return None
+        if df.empty:
+            raise RuntimeError(f"QMT无不复权数据: {symbol} ({start_date}~{end_date})")
 
-        try:
-            start_time = start_date.replace('-', '')
-            end_time = end_date.replace('-', '')
+        return self.preprocess_data(df)
 
-            self._processor.xtdata.download_history_data(stock_code=symbol, period=period, start_time='', end_time='', incrementally=True)
-
-            history_data = self._processor.xtdata.get_market_data_ex(
-                [], [symbol], period=period,
-                start_time=start_time, end_time=end_time,
-                count=-1, dividend_type="none"
-            )
-
-            if symbol in history_data:
-                df = history_data[symbol]
-
-                if df.empty:
-                    return None
-
-                if not isinstance(df.index, pd.DatetimeIndex):
-                    try:
-                        df.index = pd.to_datetime(df.index, format='%Y%m%d%H%M%S')
-                    except (ValueError, TypeError):
-                        try:
-                            df.index = pd.to_datetime(df.index, format='%Y%m%d')
-                        except (ValueError, TypeError):
-                            return None
-
-                df = df[(df.index >= start_date) & (df.index <= end_date)]
-
-                if df.empty:
-                    return None
-
-                return self._processor.preprocess_data(df)
-            else:
-                return None
-        except Exception as e:
-            self._processor.logger.debug(f"QMT获取不复权数据失败: {e}")
-            return None

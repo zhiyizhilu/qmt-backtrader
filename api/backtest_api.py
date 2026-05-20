@@ -55,6 +55,9 @@ class BacktestAPI(BaseAPI):
         self.data_processor = create_data_processor(
             fallback_to_simulated=False, proxy=proxy, data_source=data_source
         )
+        self._market_data_processor = create_data_processor(
+            fallback_to_simulated=False, proxy=proxy, data_source=data_source
+        )
         self._financial_data_processor = create_data_processor(
             fallback_to_simulated=False, proxy=proxy, use_opendata=False
         )
@@ -121,23 +124,14 @@ class BacktestAPI(BaseAPI):
 
         data = None
 
-        if self._data_source == 'futu':
-            try:
-                data = self.data_processor.get_data(symbol, start_date, end_date, period)
-            except FutuServiceError:
-                raise
-            except Exception as e:
-                self.logger.warning(f'[add_data] {symbol}: FutuData获取失败({e})')
-        else:
-            try:
-                data = self._opendata_processor.get_data(
-                    symbol, start_date, end_date, period,
-                    skip_current_year_refresh=True
-                )
-            except Exception as e:
-                self.logger.warning(f'[add_data] {symbol}: OpenData获取失败({e})')
+        try:
+            data = self._market_data_processor.get_data(symbol, start_date, end_date, period)
+        except FutuServiceError:
+            raise
+        except Exception as e:
+            self.logger.warning(f'[add_data] {symbol}: 行情数据获取失败({e})')
 
-        if not data.empty:
+        if data is not None and not data.empty:
             self._engine.add_data(symbol, data)
             self._symbols.append(symbol)
             self._data_cache[symbol] = data
@@ -430,21 +424,12 @@ class BacktestAPI(BaseAPI):
                     return (symbol, None, None)
 
                 data = None
-                if self._data_source == 'futu':
-                    try:
-                        data = self.data_processor.get_data(symbol, effective_start, effective_end, self._period)
-                    except FutuServiceError:
-                        raise
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        data = self._opendata_processor.get_data(
-                            symbol, effective_start, effective_end, self._period,
-                            skip_current_year_refresh=True
-                        )
-                    except Exception:
-                        pass
+                try:
+                    data = self._market_data_processor.get_data(symbol, effective_start, effective_end, self._period)
+                except FutuServiceError:
+                    raise
+                except Exception:
+                    pass
                 return (symbol, data, None)
             except FutuServiceError:
                 raise
@@ -521,7 +506,7 @@ class BacktestAPI(BaseAPI):
 
             raw_download_future = None
             raw_executor = None
-            if self._opendata_processor:
+            if self._market_data_processor:
                 raw_executor = ThreadPoolExecutor(max_workers=4)
 
                 def _download_raw_data():
@@ -548,9 +533,8 @@ class BacktestAPI(BaseAPI):
 
                     def _fetch_one(sym):
                         try:
-                            df = self._opendata_processor.get_raw_data(
+                            df = self._market_data_processor.get_raw_data(
                                 sym, self._data_start_date, self._data_end_date, self._period,
-                                skip_current_year_refresh=True
                             )
                             if df is not None and not df.empty:
                                 return sym, True, False
@@ -613,7 +597,7 @@ class BacktestAPI(BaseAPI):
                 finally:
                     raw_executor.shutdown(wait=False)
 
-        elif self._opendata_processor:
+        elif self._market_data_processor:
             self._preload_raw_market_data(pool)
 
     def _preload_raw_market_data(self, pool: List[str]):
@@ -643,9 +627,8 @@ class BacktestAPI(BaseAPI):
 
         def _fetch_one(sym):
             try:
-                df = self._opendata_processor.get_raw_data(
+                df = self._market_data_processor.get_raw_data(
                     sym, self._data_start_date, self._data_end_date, self._period,
-                    skip_current_year_refresh=True
                 )
                 if df is not None and not df.empty:
                     return sym, True, False
@@ -755,8 +738,8 @@ class BacktestAPI(BaseAPI):
         if self._financial_adapter:
             strategy_logic.set_financial_data_adapter(self._financial_adapter)
 
-        if hasattr(self, '_opendata_processor') and self._opendata_processor:
-            strategy_logic.set_data_processor(self._opendata_processor)
+        if hasattr(self, '_market_data_processor') and self._market_data_processor:
+            strategy_logic.set_data_processor(self._market_data_processor)
 
         if self._data_start_date:
             strategy_logic._data_start_date = self._data_start_date
@@ -778,6 +761,7 @@ class BacktestAPI(BaseAPI):
                 strategy_params=strategy_params,
                 show_kline=True,
                 trade_start_date=self._trade_start_date,
+                build_close_prices=not self._ai_mode,
             )
 
             self._fetch_benchmark_data()
@@ -816,12 +800,11 @@ class BacktestAPI(BaseAPI):
         try:
             benchmark_data = None
             try:
-                benchmark_data = self._opendata_processor.get_data(
+                benchmark_data = self._market_data_processor.get_data(
                     self._benchmark,
                     self._data_start_date,
                     self._data_end_date,
                     "1d",
-                    skip_current_year_refresh=True,
                 )
             except Exception as e:
                 self.logger.warning(f"交易日历基准数据获取失败: {self._benchmark}, {e}")
@@ -858,17 +841,16 @@ class BacktestAPI(BaseAPI):
             if benchmark_data is None or benchmark_data.empty:
                 benchmark_data = None
                 try:
-                    benchmark_data = self._opendata_processor.get_data(
+                    benchmark_data = self._market_data_processor.get_data(
                         self._benchmark,
                         self._data_start_date,
                         self._data_end_date,
                         "1d",
-                        skip_current_year_refresh=True,
                     )
                     if benchmark_data is not None and not benchmark_data.empty:
-                        self.logger.info(f"基准数据从OpenData获取成功: {self._benchmark}, {len(benchmark_data)}条")
+                        self.logger.info(f"基准数据获取成功: {self._benchmark}, {len(benchmark_data)}条")
                 except Exception as e:
-                    self.logger.warning(f"基准数据OpenData获取失败: {self._benchmark}, {e}")
+                    self.logger.warning(f"基准数据获取失败: {self._benchmark}, {e}")
 
             if benchmark_data is None or benchmark_data.empty:
                 self.logger.warning(f"基准数据获取失败: {self._benchmark}")
@@ -899,12 +881,11 @@ class BacktestAPI(BaseAPI):
         compare_data = {}
         for symbol in compare_symbols:
             try:
-                df = self._opendata_processor.get_data(
+                df = self._market_data_processor.get_data(
                     symbol,
                     self._data_start_date,
                     self._data_end_date,
                     "1d",
-                    skip_current_year_refresh=True,
                 )
                 if df is not None and not df.empty:
                     if not isinstance(df.index, pd.DatetimeIndex):

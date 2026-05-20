@@ -139,15 +139,15 @@ except ImportError:
 - 使用小写英文 + 下划线
 - 2-3个词，简洁明确
 - 体现策略核心逻辑而非具体参数
-- 避免与已有策略重名（检查 `strategies/` 和 `strategies_for_vip/` 目录）
+- 避免与已有策略重名（检查 `strategies/`、`strategies_for_vip/` 和 `strategies_my/` 目录）
 
 #### 2.2 策略目录位置
 
 | 场景 | 目录 |
 |------|------|
-| 默认 | `strategies/<strategy_name>_strategy/` |
+| 默认 | `strategies_my/<strategy_name>_strategy/` |
+| 用户指定放系统目录 | `strategies/<strategy_name>_strategy/` |
 | 用户指定放 VIP 目录 | `strategies_for_vip/<strategy_name>_strategy/` |
-| 策略逻辑较复杂或涉及专有数据 | `strategies_for_vip/<strategy_name>_strategy/` |
 
 #### 2.3 StockSelectionStrategy 代码模板（选股调仓型）
 
@@ -257,7 +257,7 @@ class <StrategyName>Strategy(StrategyLogic):
 #### 2.5 输出目录结构
 
 ```
-strategies/<strategy_name>_strategy/     (或 strategies_for_vip/<strategy_name>_strategy/)
+strategies_my/<strategy_name>_strategy/     (或 strategies/<strategy_name>_strategy/、strategies_for_vip/<strategy_name>_strategy/)
 ├── __init__.py                          # 空文件
 ├── <strategy_name>_strategy.py          # 策略主文件
 └── readme.md                            # 策略说明文档

@@ -395,7 +395,7 @@ class SmartCacheManager:
                 else:
                     coverage_missing = self._verify_cache_date_coverage(
                         namespace, symbol, pd.concat(cached_frames), req_years, req_start, req_end, checked_years,
-                        skip_current_year_refresh
+                        skip_current_year_refresh, is_raw, period
                     )
                     if coverage_missing == set(req_years):
                         cached_frames = []
@@ -418,12 +418,16 @@ class SmartCacheManager:
                                      cached_df: pd.DataFrame, req_years: List[int],
                                      req_start: str, req_end: str,
                                      checked_years: set,
-                                     skip_current_year_refresh: bool = False) -> set:
+                                     skip_current_year_refresh: bool = False,
+                                     is_raw: bool = False,
+                                     period: str = '1d') -> set:
         """验证缓存数据是否覆盖请求的日期范围，返回仍需获取的年份集合
 
         返回空集表示缓存完全覆盖，无需增量获取。
         返回 set(req_years) 表示缓存不可用，需全量重新获取。
         """
+        idx = self.index_manager
+
         if not isinstance(cached_df.index, pd.DatetimeIndex):
             self.logger.info(f"[{namespace}] {symbol} 缓存索引非时间类型，重新获取: {sorted(req_years)}")
             return set(req_years)
@@ -431,10 +435,40 @@ class SmartCacheManager:
         disk_start = cached_df.index.min().strftime('%Y-%m-%d')
         disk_end = cached_df.index.max().strftime('%Y-%m-%d')
 
+        # 获取最早可用数据日期（上市日期），用于永久跳过上市前年份
+        earliest_date = (idx.get_earliest_raw_data_date(symbol, period) if is_raw
+                         else idx.get_earliest_data_date(symbol, period))
+
         missing = set()
         if disk_start > req_start:
             first_cached_year = cached_df.index.min().year
             start_missing = set(y for y in req_years if y < first_cached_year)
+
+            # 利用 earliest_data_date 永久跳过上市前年份（不受 checked_years 过期影响）
+            if earliest_date:
+                earliest_year = pd.Timestamp(earliest_date).year
+                pre_listing_years = set(y for y in start_missing if y < earliest_year)
+                if pre_listing_years:
+                    start_missing -= pre_listing_years
+                    self.logger.debug(
+                        f"[{namespace}] {symbol} 跳过上市前年份: "
+                        f"最早数据日期={earliest_date}, 跳过={sorted(pre_listing_years)}"
+                    )
+            else:
+                # earliest_data_date 尚未记录，但从 checked_years 推断：
+                # 如果上市前年份全部已检查且无数据，说明缓存起始日期就是最早数据日期
+                pre_checked = start_missing & checked_years
+                if pre_checked and pre_checked == start_missing:
+                    # 所有上市前年份都已检查过且无数据，记录 earliest_data_date
+                    if is_raw:
+                        idx.update_earliest_raw_data_date(symbol, period, disk_start)
+                    else:
+                        idx.update_earliest_data_date(symbol, period, disk_start)
+                    self.logger.debug(
+                        f"[{namespace}] {symbol} 推断并记录最早数据日期: {disk_start} "
+                        f"(上市前年份={sorted(start_missing)}均已检查)"
+                    )
+
             start_missing -= checked_years
             missing |= start_missing
             if start_missing:
@@ -451,9 +485,42 @@ class SmartCacheManager:
         if disk_end < req_end:
             last_cached_year = cached_df.index.max().year
             end_missing = set(y for y in req_years if y > last_cached_year)
+
+            # 获取最晚可用数据日期（退市日期），用于永久跳过退市后年份
+            latest_date = (idx.get_latest_raw_data_date(symbol, period) if is_raw
+                           else idx.get_latest_data_date(symbol, period))
+
+            # 利用 latest_data_date 永久跳过退市后年份（不受 checked_years 过期影响）
+            if latest_date:
+                latest_year = pd.Timestamp(latest_date).year
+                post_delist_years = set(y for y in end_missing if y > latest_year)
+                if post_delist_years:
+                    end_missing -= post_delist_years
+                    self.logger.debug(
+                        f"[{namespace}] {symbol} 跳过退市后年份: "
+                        f"最晚数据日期={latest_date}, 跳过={sorted(post_delist_years)}"
+                    )
+            else:
+                # latest_data_date 尚未记录，但从 checked_years 推断：
+                # 如果退市后年份全部已检查且无数据，说明缓存截止日期就是最晚数据日期
+                post_checked = end_missing & checked_years
+                if post_checked and post_checked == end_missing:
+                    if is_raw:
+                        idx.update_latest_raw_data_date(symbol, period, disk_end)
+                    else:
+                        idx.update_latest_data_date(symbol, period, disk_end)
+                    self.logger.debug(
+                        f"[{namespace}] {symbol} 推断并记录最晚数据日期: {disk_end} "
+                        f"(退市后年份={sorted(end_missing)}均已检查)"
+                    )
+
             end_missing -= checked_years
             if not end_missing and not skip_current_year_refresh:
                 end_missing = {max(req_years)} - checked_years
+                # 再次用 latest_data_date 过滤
+                if latest_date and end_missing:
+                    latest_year = pd.Timestamp(latest_date).year
+                    end_missing = set(y for y in end_missing if y <= latest_year)
             missing |= end_missing
             if end_missing:
                 self.logger.info(
@@ -572,6 +639,31 @@ class SmartCacheManager:
                 fetched_years_with_data = (set(new_data.index.year.unique())
                                            if isinstance(new_data.index, pd.DatetimeIndex)
                                            else set())
+                # 记录最早可用数据日期：数据起始晚于请求起始说明股票上市较晚
+                if isinstance(new_data.index, pd.DatetimeIndex) and not new_data.empty:
+                    actual_start = new_data.index.min().strftime('%Y-%m-%d')
+                    actual_end = new_data.index.max().strftime('%Y-%m-%d')
+                    if actual_start > inc_start:
+                        if is_raw:
+                            idx.update_earliest_raw_data_date(symbol, period, actual_start)
+                        else:
+                            idx.update_earliest_data_date(symbol, period, actual_start)
+                        self.logger.debug(
+                            f"[{namespace}] {symbol} 记录最早数据日期: {actual_start} "
+                            f"(请求起始={inc_start})"
+                        )
+                    # 记录最晚可用数据日期：数据截止早于请求截止说明股票可能退市
+                    if actual_end < inc_end:
+                        days_inactive = (pd.Timestamp.now() - new_data.index.max()).days
+                        if days_inactive > 60:
+                            if is_raw:
+                                idx.update_latest_raw_data_date(symbol, period, actual_end)
+                            else:
+                                idx.update_latest_data_date(symbol, period, actual_end)
+                            self.logger.debug(
+                                f"[{namespace}] {symbol} 记录最晚数据日期: {actual_end} "
+                                f"(请求截止={inc_end}, 已{days_inactive}天无新数据)"
+                            )
                 no_data_years = truly_missing - fetched_years_with_data
                 checked_gap_years = truly_missing & fetched_years_with_data
                 if checked_gap_years:
@@ -588,6 +680,28 @@ class SmartCacheManager:
                     idx.update_checked_market_years(symbol, period, sorted(no_data_years))
         except Exception as e:
             self.logger.warning(f"[{namespace}] {symbol} 增量获取失败: {e}")
+            # 检测退市：如果缺失年份全部在已有缓存年份之后，且获取失败，
+            # 说明股票可能已退市，记录最晚数据日期以避免重复尝试
+            if actual_cached:
+                last_cached_year = max(actual_cached)
+                if all(y > last_cached_year for y in truly_missing):
+                    last_df = self.disk_cache.get_yearly(
+                        namespace, symbol, last_cached_year, period
+                    )
+                    if (last_df is not None and isinstance(last_df, pd.DataFrame)
+                            and not last_df.empty and isinstance(last_df.index, pd.DatetimeIndex)):
+                        last_date = last_df.index.max().strftime('%Y-%m-%d')
+                        # 缓存最后日期距今天超过60天，大概率退市
+                        days_inactive = (pd.Timestamp.now() - last_df.index.max()).days
+                        if days_inactive > 60:
+                            if is_raw:
+                                idx.update_latest_raw_data_date(symbol, period, last_date)
+                            else:
+                                idx.update_latest_data_date(symbol, period, last_date)
+                            self.logger.info(
+                                f"[{namespace}] {symbol} 疑似退市，记录最晚数据日期: {last_date} "
+                                f"(已{days_inactive}天无新数据)"
+                            )
             if is_raw:
                 idx.update_checked_market_raw_years(symbol, period, sorted(truly_missing))
             else:
@@ -705,6 +819,15 @@ class SmartCacheManager:
             fetched_years_with_data = (set(new_data.index.year.unique())
                                        if isinstance(new_data.index, pd.DatetimeIndex)
                                        else set())
+            # 记录最早可用数据日期
+            if isinstance(new_data.index, pd.DatetimeIndex) and not new_data.empty:
+                actual_start = new_data.index.min().strftime('%Y-%m-%d')
+                if actual_start > inc_start:
+                    idx.update_earliest_data_date(symbol, period, actual_start)
+                    self.logger.debug(
+                        f"[{namespace}] {symbol} 记录最早数据日期: {actual_start} "
+                        f"(请求起始={inc_start})"
+                    )
             checked_gap_years = truly_missing & fetched_years_with_data
             if checked_gap_years:
                 idx.update_checked_market_years(symbol, period, sorted(checked_gap_years))
@@ -714,6 +837,23 @@ class SmartCacheManager:
 
         except Exception as e:
             self.logger.warning(f"[{namespace}] {symbol} 后复权增量更新失败: {e}")
+            # 检测退市：缺失年份在已有缓存之后且获取失败
+            if actual_cached:
+                last_cached_year = max(actual_cached)
+                if all(y > last_cached_year for y in truly_missing):
+                    last_df = self.disk_cache.get_yearly(
+                        namespace, symbol, last_cached_year, period
+                    )
+                    if (last_df is not None and isinstance(last_df, pd.DataFrame)
+                            and not last_df.empty and isinstance(last_df.index, pd.DatetimeIndex)):
+                        last_date = last_df.index.max().strftime('%Y-%m-%d')
+                        days_inactive = (pd.Timestamp.now() - last_df.index.max()).days
+                        if days_inactive > 60:
+                            idx.update_latest_data_date(symbol, period, last_date)
+                            self.logger.info(
+                                f"[{namespace}] {symbol} 疑似退市，记录最晚数据日期: {last_date} "
+                                f"(已{days_inactive}天无新数据)"
+                            )
             idx.update_checked_market_years(symbol, period, sorted(truly_missing))
 
         return new_frames
@@ -840,6 +980,15 @@ class SmartCacheManager:
                 fetched_years_with_data = (set(new_data.index.year.unique())
                                            if isinstance(new_data.index, pd.DatetimeIndex)
                                            else set())
+                # 记录最早可用数据日期：数据起始晚于请求起始说明股票上市较晚
+                if isinstance(new_data.index, pd.DatetimeIndex) and not new_data.empty:
+                    actual_start = new_data.index.min().strftime('%Y-%m-%d')
+                    if actual_start > inc_start:
+                        idx.update_earliest_data_date(symbol, period, actual_start)
+                        self.logger.debug(
+                            f"[{namespace}] {symbol} 记录最早数据日期: {actual_start} "
+                            f"(请求起始={inc_start})"
+                        )
                 no_data_years = truly_missing - fetched_years_with_data
                 checked_gap_years = truly_missing & fetched_years_with_data
                 if checked_gap_years:
@@ -851,6 +1000,23 @@ class SmartCacheManager:
                 idx.update_checked_market_years(symbol, period, sorted(truly_missing))
         except Exception as e:
             self.logger.warning(f"[{namespace}] {symbol} 后复权全量获取失败: {e}")
+            # 检测退市：从已有缓存推断最晚数据日期
+            actual_cached = sorted(set(req_years) - truly_missing)
+            if actual_cached:
+                last_cached_year = max(actual_cached)
+                last_df = self.disk_cache.get_yearly(
+                    namespace, symbol, last_cached_year, period
+                )
+                if (last_df is not None and isinstance(last_df, pd.DataFrame)
+                        and not last_df.empty and isinstance(last_df.index, pd.DatetimeIndex)):
+                    last_date = last_df.index.max().strftime('%Y-%m-%d')
+                    days_inactive = (pd.Timestamp.now() - last_df.index.max()).days
+                    if days_inactive > 60:
+                        idx.update_latest_data_date(symbol, period, last_date)
+                        self.logger.info(
+                            f"[{namespace}] {symbol} 疑似退市，记录最晚数据日期: {last_date} "
+                            f"(已{days_inactive}天无新数据)"
+                        )
             idx.update_checked_market_years(symbol, period, sorted(truly_missing))
 
         return new_frames
@@ -872,6 +1038,33 @@ class SmartCacheManager:
                     else:
                         idx.update_market_index(symbol, period, y)
                 self.mem_cache.put(mem_key, result)
+                # 记录最早可用数据日期：数据起始晚于请求起始说明股票上市较晚
+                if isinstance(result.index, pd.DatetimeIndex) and not result.empty:
+                    req_start_val = self._get_param_value(func, args, kwargs, 'start_date', '')
+                    req_end_val = self._get_param_value(func, args, kwargs, 'end_date', '')
+                    actual_start = result.index.min().strftime('%Y-%m-%d')
+                    actual_end = result.index.max().strftime('%Y-%m-%d')
+                    if req_start_val and actual_start > req_start_val:
+                        if is_raw:
+                            idx.update_earliest_raw_data_date(symbol, period, actual_start)
+                        else:
+                            idx.update_earliest_data_date(symbol, period, actual_start)
+                        self.logger.debug(
+                            f"[{namespace}] {symbol} 记录最早数据日期: {actual_start} "
+                            f"(请求起始={req_start_val})"
+                        )
+                    # 记录最晚可用数据日期：数据截止早于请求截止说明股票可能退市
+                    if req_end_val and actual_end < req_end_val:
+                        days_inactive = (pd.Timestamp.now() - result.index.max()).days
+                        if days_inactive > 60:
+                            if is_raw:
+                                idx.update_latest_raw_data_date(symbol, period, actual_end)
+                            else:
+                                idx.update_latest_data_date(symbol, period, actual_end)
+                            self.logger.debug(
+                                f"[{namespace}] {symbol} 记录最晚数据日期: {actual_end} "
+                                f"(请求截止={req_end_val}, 已{days_inactive}天无新数据)"
+                            )
             return result
         except Exception as e:
             self.logger.error(f"[{namespace}] 获取数据失败: {e}")
@@ -931,16 +1124,21 @@ class SmartCacheManager:
 cache_manager = SmartCacheManager()
 
 
-def smart_cache(cache_type: str = 'market', incremental: bool = False):
+def smart_cache(cache_type: str = 'market', incremental: bool = False, namespace_suffix: str = ''):
     """智能数据缓存装饰器
 
     Args:
         cache_type: 'market' (行情数据) 或 'financial' (财务数据), 均优先使用Parquet
         incremental: 是否开启智能增量合并（仅针对带有 start_date, end_date 参数且返回 DataFrame 的函数有效）
+        namespace_suffix: 命名空间后缀，如 '_Raw'，用于区分同一类中不同缓存路径
 
     使用示例:
         @smart_cache(cache_type='market', incremental=True)
         def get_data(self, symbol, start_date, end_date):
+            ...
+
+        @smart_cache(cache_type='market', incremental=True, namespace_suffix='_Raw')
+        def get_raw_data(self, symbol, start_date, end_date):
             ...
     """
     def decorator(func):
@@ -949,6 +1147,8 @@ def smart_cache(cache_type: str = 'market', incremental: bool = False):
             namespace = self.__class__.__name__
             if cache_type == 'financial':
                 namespace = f"{namespace}_Financial"
+            if namespace_suffix:
+                namespace = f"{namespace}{namespace_suffix}"
             return cache_manager.execute_with_cache(
                 namespace=namespace,
                 cache_type=cache_type,

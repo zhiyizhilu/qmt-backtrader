@@ -4,6 +4,7 @@ __pycache__/
 logs/*
 
 .cache
+.workbuddy
 
 *.txt
 
@@ -26,6 +27,8 @@ web/strategy_display_names.json
 *compare*
 *fix*
 *check*
+*verify*
+*reverse*
 
 *promo*
 *my*

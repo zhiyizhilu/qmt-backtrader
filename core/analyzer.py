@@ -340,6 +340,7 @@ class PerformanceAnalyzer:
         strategy_params: Optional[Dict[str, Any]] = None,
         show_kline: bool = True,
         trade_start_date: Optional[str] = None,
+        build_close_prices: bool = True,
     ) -> BacktestingResult:
         from engine.result import EngineResult
 
@@ -348,7 +349,10 @@ class PerformanceAnalyzer:
         trade_log = self._build_trade_log_from_engine(engine_result)
         klines = self._build_klines_from_engine(engine_result)
         instruments_data = self._build_instruments_data_from_engine(engine_result)
-        instrument_close_prices = self._build_instrument_close_prices_from_engine(engine_result)
+        instrument_close_prices = (
+            self._build_instrument_close_prices_from_engine(engine_result)
+            if build_close_prices else {}
+        )
 
         result = BacktestingResult(
             account=account,

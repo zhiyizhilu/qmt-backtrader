@@ -172,6 +172,54 @@ class CacheIndexManager:
                     del self._market_index[symbol]
                 self._dirty_flags['market'] = True
 
+    def update_earliest_data_date(self, symbol: str, period: str, date: str) -> None:
+        """记录股票的最早可用数据日期（通常是上市日期）
+
+        一旦记录，缓存覆盖检查将永久跳过该日期之前的年份，
+        不再因 checked_years 过期而重复尝试获取不存在的数据。
+        只在已知日期比现有记录更早时更新。
+        """
+        with self.lock:
+            if symbol not in self._market_index:
+                self._market_index[symbol] = {}
+            if period not in self._market_index[symbol]:
+                self._market_index[symbol][period] = {'years': [], 'last_update': ''}
+            existing = self._market_index[symbol][period].get('earliest_data_date')
+            if existing and existing <= date:
+                return  # 已有更早的记录，不更新
+            self._market_index[symbol][period]['earliest_data_date'] = date
+            self._dirty_flags['market'] = True
+
+    def get_earliest_data_date(self, symbol: str, period: str) -> Optional[str]:
+        """获取股票的最早可用数据日期"""
+        with self.lock:
+            entry = self._market_index.get(symbol, {}).get(period, {})
+            return entry.get('earliest_data_date')
+
+    def update_latest_data_date(self, symbol: str, period: str, date: str) -> None:
+        """记录股票的最晚可用数据日期（通常是退市日期）
+
+        一旦记录，缓存覆盖检查将永久跳过该日期之后的年份，
+        不再因 checked_years 过期而重复尝试获取不存在的数据。
+        只在已知日期比现有记录更晚时更新。
+        """
+        with self.lock:
+            if symbol not in self._market_index:
+                self._market_index[symbol] = {}
+            if period not in self._market_index[symbol]:
+                self._market_index[symbol][period] = {'years': [], 'last_update': ''}
+            existing = self._market_index[symbol][period].get('latest_data_date')
+            if existing and existing >= date:
+                return  # 已有更晚的记录，不更新
+            self._market_index[symbol][period]['latest_data_date'] = date
+            self._dirty_flags['market'] = True
+
+    def get_latest_data_date(self, symbol: str, period: str) -> Optional[str]:
+        """获取股票的最晚可用数据日期"""
+        with self.lock:
+            entry = self._market_index.get(symbol, {}).get(period, {})
+            return entry.get('latest_data_date')
+
     def get_checked_market_years(self, symbol: str, period: str, max_age_days: int = 30) -> List[int]:
         with self.lock:
             entry = self._market_index.get(symbol, {}).get(period, {})
@@ -211,6 +259,44 @@ class CacheIndexManager:
         with self.lock:
             entry = self._market_raw_index.get(symbol, {}).get(period, {})
             return list(entry.get('years', []))
+
+    def update_earliest_raw_data_date(self, symbol: str, period: str, date: str) -> None:
+        """记录不复权数据的最早可用数据日期（通常是上市日期）"""
+        with self.lock:
+            if symbol not in self._market_raw_index:
+                self._market_raw_index[symbol] = {}
+            if period not in self._market_raw_index[symbol]:
+                self._market_raw_index[symbol][period] = {'years': [], 'last_update': ''}
+            existing = self._market_raw_index[symbol][period].get('earliest_data_date')
+            if existing and existing <= date:
+                return
+            self._market_raw_index[symbol][period]['earliest_data_date'] = date
+            self._dirty_flags['market_raw'] = True
+
+    def get_earliest_raw_data_date(self, symbol: str, period: str) -> Optional[str]:
+        """获取不复权数据的最早可用数据日期"""
+        with self.lock:
+            entry = self._market_raw_index.get(symbol, {}).get(period, {})
+            return entry.get('earliest_data_date')
+
+    def update_latest_raw_data_date(self, symbol: str, period: str, date: str) -> None:
+        """记录不复权数据的最晚可用数据日期（通常是退市日期）"""
+        with self.lock:
+            if symbol not in self._market_raw_index:
+                self._market_raw_index[symbol] = {}
+            if period not in self._market_raw_index[symbol]:
+                self._market_raw_index[symbol][period] = {'years': [], 'last_update': ''}
+            existing = self._market_raw_index[symbol][period].get('latest_data_date')
+            if existing and existing >= date:
+                return
+            self._market_raw_index[symbol][period]['latest_data_date'] = date
+            self._dirty_flags['market_raw'] = True
+
+    def get_latest_raw_data_date(self, symbol: str, period: str) -> Optional[str]:
+        """获取不复权数据的最晚可用数据日期"""
+        with self.lock:
+            entry = self._market_raw_index.get(symbol, {}).get(period, {})
+            return entry.get('latest_data_date')
 
     def update_checked_market_raw_years(self, symbol: str, period: str, years: List[int]) -> None:
         with self.lock:
