@@ -1,0 +1,12 @@
+{
+  "label": "opt07_max_stocks_15",
+  "extra_params": {
+    "max_stocks": 15
+  },
+  "sharpe_ratio": 0.6590929676416386,
+  "max_drawdown_pct": -26.810165336952963,
+  "total_return_pct": 58.17577902242705,
+  "annual_return_pct": 8.27144790963239,
+  "trading_days": 1454,
+  "timestamp": "2026-05-19T08:41:24.303412"
+}

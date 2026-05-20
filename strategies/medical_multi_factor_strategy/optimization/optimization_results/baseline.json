@@ -1,0 +1,10 @@
+{
+  "label": "baseline",
+  "extra_params": null,
+  "sharpe_ratio": 0.7183096878965395,
+  "max_drawdown_pct": -24.97405482417472,
+  "total_return_pct": 64.39520704472177,
+  "annual_return_pct": 8.997572748787874,
+  "trading_days": 1454,
+  "timestamp": "2026-05-18T18:52:32.360251"
+}

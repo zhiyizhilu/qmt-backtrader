@@ -1,0 +1,12 @@
+{
+  "label": "opt09_quality_score",
+  "extra_params": {
+    "min_quality_score": 2
+  },
+  "sharpe_ratio": 0.8078882839959435,
+  "max_drawdown_pct": -24.55804503655646,
+  "total_return_pct": 76.65872101064217,
+  "annual_return_pct": 10.365215342964484,
+  "trading_days": 1454,
+  "timestamp": "2026-05-19T09:24:38.415552"
+}

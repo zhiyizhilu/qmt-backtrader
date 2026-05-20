@@ -1,0 +1,12 @@
+{
+  "label": "opt05_momentum_confirm",
+  "extra_params": {
+    "min_momentum": 0.02
+  },
+  "sharpe_ratio": 0.6212918727459393,
+  "max_drawdown_pct": -22.010159737698494,
+  "total_return_pct": 59.43811547706951,
+  "annual_return_pct": 8.420712633988959,
+  "trading_days": 1454,
+  "timestamp": "2026-05-18T21:17:45.743668"
+}

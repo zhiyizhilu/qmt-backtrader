@@ -1,0 +1,1 @@
+from .medical_multi_factor_strategy import MedicalMultiFactorStrategy

@@ -1,0 +1,12 @@
+{
+  "label": "opt06_min_roe",
+  "extra_params": {
+    "min_roe": 0.05
+  },
+  "sharpe_ratio": 0.7203095162916123,
+  "max_drawdown_pct": -23.73375465187009,
+  "total_return_pct": 63.40222418475049,
+  "annual_return_pct": 8.883181579532252,
+  "trading_days": 1454,
+  "timestamp": "2026-05-19T08:13:41.623715"
+}

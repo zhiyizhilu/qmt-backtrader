@@ -1,0 +1,13 @@
+{
+  "label": "opt10_combined_vol_stoploss",
+  "extra_params": {
+    "max_volatility": 0.02,
+    "stop_loss": -0.05
+  },
+  "sharpe_ratio": 0.29860091848644316,
+  "max_drawdown_pct": -34.46988704471441,
+  "total_return_pct": 22.043702041935326,
+  "annual_return_pct": 3.5128846003946057,
+  "trading_days": 1454,
+  "timestamp": "2026-05-19T09:43:49.198957"
+}

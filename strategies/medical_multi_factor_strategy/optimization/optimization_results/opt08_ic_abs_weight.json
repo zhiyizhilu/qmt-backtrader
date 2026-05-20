@@ -1,0 +1,12 @@
+{
+  "label": "opt08_ic_abs_weight",
+  "extra_params": {
+    "use_ic_abs_weight": true
+  },
+  "sharpe_ratio": 0.8092752796016129,
+  "max_drawdown_pct": -10.928599895070104,
+  "total_return_pct": 67.96935730700004,
+  "annual_return_pct": 9.404641253732017,
+  "trading_days": 1454,
+  "timestamp": "2026-05-19T09:02:31.432660"
+}
