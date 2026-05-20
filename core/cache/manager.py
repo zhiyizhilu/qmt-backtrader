@@ -179,6 +179,19 @@ class SmartCacheManager:
         except Exception:
             return []
 
+    def _get_post_delist_years(self, symbol: str, req_years: List[int]) -> set:
+        """获取退市日期之后的年份集合（这些年份无需获取数据）"""
+        try:
+            from core.stock_lifecycle import get_lifecycle_manager
+            lifecycle = get_lifecycle_manager()
+            delist_date = lifecycle.get_delist_date(symbol)
+            if not delist_date:
+                return set()
+            delist_year = pd.Timestamp(delist_date).year
+            return {y for y in req_years if y > delist_year}
+        except Exception:
+            return set()
+
     def execute_with_cache(self, namespace: str, cache_type: str, incremental: bool,
                            func: Callable, args: tuple, kwargs: dict) -> Any:
         """缓存执行入口 - 优先使用按年份分片的新逻辑"""
@@ -357,6 +370,13 @@ class SmartCacheManager:
         """
         idx = self.index_manager
 
+        # 退市校验：跳过退市日期之后的年份
+        post_delist_years = self._get_post_delist_years(symbol, req_years)
+        if post_delist_years:
+            self.logger.debug(
+                f"[{namespace}] {symbol} 跳过退市后年份: {sorted(post_delist_years)}"
+            )
+
         available_years = (idx.get_available_market_raw_years(symbol, period) if is_raw
                           else idx.get_available_market_years(symbol, period))
         if not available_years:
@@ -367,7 +387,7 @@ class SmartCacheManager:
 
         checked_years = set((idx.get_checked_market_raw_years(symbol, period) if is_raw
                              else idx.get_checked_market_years(symbol, period)))
-        truly_missing = missing_years - checked_years
+        truly_missing = missing_years - checked_years - post_delist_years
 
         cached_frames = []
         actually_cached_years = set()

@@ -86,6 +86,14 @@ class OpenDataProcessor(DataProcessor):
                 return df
             raise ValueError(f"{symbol} 在 {start_date} 到 {end_date} 期间没有数据")
 
+        # 退市校验：如果请求范围完全在退市日期之后，直接返回空
+        from core.stock_lifecycle import get_lifecycle_manager
+        lifecycle = get_lifecycle_manager()
+        delist_date = lifecycle.get_delist_date(symbol)
+        if delist_date and start_date > delist_date:
+            self.logger.debug(f"{symbol} 已于 {delist_date} 退市，请求范围 {start_date}~{end_date} 无数据")
+            raise ValueError(f"{symbol} 在 {start_date} 到 {end_date} 期间没有数据")
+
         # 使用腾讯财经获取个股数据
         df = self._get_data_from_tx(symbol, start_date, end_date)
         if df is not None and not df.empty:

@@ -61,7 +61,9 @@ class StockLifecycleManager:
         info = self._data.get(symbol)
         if not info:
             return False
-        return info.get('delist_date') is not None
+        dd = info.get('delist_date')
+        # "unknown" 表示确认退市但日期未知，仍应视为已退市
+        return dd is not None
 
     def is_listed_after(self, symbol: str, date: str) -> bool:
         """判断股票是否在指定日期之后上市"""
