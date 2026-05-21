@@ -381,9 +381,47 @@ class BacktestAPI(BaseAPI):
         self._strategy_logic_class = strategy_class
         self._strategy_kwargs = kwargs
 
+        self._load_auxiliary_symbols(strategy_class, kwargs)
+
         loaded_count, failed_count, skipped_count = self._load_pool_market_data(pool)
 
         self._preload_auxiliary_data(pool)
+
+    def _load_auxiliary_symbols(self, strategy_class, kwargs):
+        """自动检测策略params中的辅助标的（指数ETF等）并加载行情数据"""
+        auxiliary_symbols = set()
+        params = getattr(strategy_class, 'params', ())
+        for item in params:
+            if len(item) >= 2:
+                key = item[0]
+                value = item[1]
+                if isinstance(value, str) and (
+                    key.startswith('index_') or
+                    key.startswith('benchmark') or
+                    key.endswith('_index') or
+                    key.endswith('_etf') or
+                    key == 'market_benchmark'
+                ):
+                    if '.' in value and any(value.endswith(suf) for suf in ('.SH', '.SZ', '.BJ')):
+                        auxiliary_symbols.add(value)
+
+        temp_kwargs = dict(kwargs)
+        temp_kwargs.pop('stock_pool', None)
+        try:
+            temp_logic = strategy_class(**temp_kwargs)
+            extra_symbols = temp_logic.get_symbols()
+            if extra_symbols:
+                auxiliary_symbols.update(extra_symbols)
+        except Exception:
+            pass
+
+        if not auxiliary_symbols:
+            return
+
+        for symbol in sorted(auxiliary_symbols):
+            if symbol not in self._symbols:
+                self.logger.info(f"[辅助标的] 自动加载 {symbol} 行情数据")
+                self.add_data(symbol, self._data_start_date, self._data_end_date, self._period)
 
     def _load_pool_market_data(self, pool: List[str]):
         import time as _time
