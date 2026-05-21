@@ -260,41 +260,11 @@ class <StrategyName>Strategy(StrategyLogic):
 strategies_my/<strategy_name>_strategy/     (或 strategies/<strategy_name>_strategy/、strategies_for_vip/<strategy_name>_strategy/)
 ├── __init__.py                          # 空文件
 ├── <strategy_name>_strategy.py          # 策略主文件
-└── readme.md                            # 策略说明文档
-```
-
-**readme.md 模板**：
-
-```markdown
-# <策略中文名>
-
-## 策略概述
-
-<策略的核心思想和目标>
-
-## 选股/交易逻辑
-
-1. <步骤1>
-2. <步骤2>
-3. <步骤3>
-
-## 参数说明
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| rebalance_freq | monthly | 调仓频率 |
-| max_stocks | 10 | 最大持仓数量 |
-
-## 回测配置
-
-- 初始资金: 1,000,000
-- 股票池: 中证1000
-- 回测区间: 2020-04-28 ~ 2026-04-28
-- 佣金: 0.01%
-
-## 数据来源
-
-- <数据来源说明>
+├── generate_report.py                   # HTML报告生成脚本（阶段五创建）
+├── readme.md                            # 策略说明文档（阶段四生成，含回测结果）
+├── backtest_report.html                 # HTML回测报告（阶段五生成，可视化展示）
+└── backtest_results/                    # 回测结果目录（回测时自动生成）
+    └── <timestamp>_<strategy_name>.json # 回测记录JSON（含meta/config/metrics/trade_log/equity_curve）
 ```
 
 ### 阶段三：回测配置与执行
@@ -314,109 +284,49 @@ strategies_my/<strategy_name>_strategy/     (或 strategies/<strategy_name>_stra
 
 #### 3.2 回测执行
 
-**命令行方式**：
+使用 `main.py` 命令行方式执行回测，**不要创建独立的 `run_backtest.py` 脚本**。
 
-```bash
+**命令格式**：
+
+```powershell
 $pythonPath = "$env:USERPROFILE\AppData\Local\Programs\Python\Python312\python.exe"
-& "$pythonPath" main.py --mode backtest --strategy <strategy_name> --period 1d --pool <股票池> --start <起始日期> --end <结束日期> --ai-mode --debug
+& "$pythonPath" main.py --mode backtest --strategy <strategy_name> --period 1d --pool <股票池> --start <起始日期> --end <结束日期> --ai-mode
 ```
 
-**程序化方式**（推荐，可获取详细指标）：
+**参数说明**：
 
-StockSelectionStrategy 子类：
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `--mode backtest` | 回测模式（固定） | `--mode backtest` |
+| `--strategy` | 策略名称（注册名） | `--strategy twenty_eight_rotation` |
+| `--period` | 数据周期 | `--period 1d` |
+| `--pool` | 股票池板块名称 | `--pool 中证全指` |
+| `--start` | 回测起始日期 | `--start 2020-04-28` |
+| `--end` | 回测结束日期 | `--end 2026-04-28` |
+| `--ai-mode` | AI模式，跳过图形界面（必须加） | `--ai-mode` |
+| `--debug` | 调试模式（可选，输出详细日志） | `--debug` |
+| `--no-record` | 禁用回测记录（**不要加**，需要记录结果） | - |
 
-```python
-import os
-import sys
+**选股策略示例**：
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, PROJECT_ROOT)
-
-os.environ['QMT_LOG_LEVEL'] = 'WARNING'
-
-from api.backtest_api import BacktestAPI
-from strategies import get_strategy, get_strategy_default_kwargs, get_strategy_backtest_config
-from core.data.index_constituent import IndexConstituentManager
-
-strategy_name = '<strategy_name>'
-strategy_class = get_strategy(strategy_name)
-default_kwargs = get_strategy_default_kwargs(strategy_name)
-backtest_config = get_strategy_backtest_config(strategy_name)
-
-config = dict(backtest_config)
-config['period'] = '1d'
-benchmark = IndexConstituentManager.SECTOR_TO_INDEX.get(config.get('pool', ''), '000300.SH')
-config.setdefault('benchmark', benchmark)
-
-api = BacktestAPI()
-api.set_ai_mode(True)
-api.set_no_record(True)
-api.configure(**config)
-api.load_financial_data(sector=config.get('pool', '沪深A股'))
-api.add_stock_selection_strategy(strategy_class, **default_kwargs)
-results = api.run()
-
-if results:
-    result = api.get_result()
-    sr = result.sharpe_ratio()
-    dd = result.max_drawdown()
-    acc = result.account
-    print(f"夏普比率: {sr:.4f}")
-    print(f"最大回撤: {dd*100:.2f}%")
-    print(f"总收益率: {acc.rate*100:.2f}%")
-    print(f"最终权益: {acc.dynamic_rights:.2f}")
-else:
-    print("回测未产生结果")
+```powershell
+$pythonPath = "$env:USERPROFILE\AppData\Local\Programs\Python\Python312\python.exe"
+& "$pythonPath" main.py --mode backtest --strategy undervalued --period 1d --pool 中证1000 --start 2020-04-28 --end 2026-04-28 --ai-mode
 ```
 
-StrategyLogic 子类：
+**择时/轮动策略示例**：
 
-```python
-import os
-import sys
-
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, PROJECT_ROOT)
-
-os.environ['QMT_LOG_LEVEL'] = 'WARNING'
-
-from api.backtest_api import BacktestAPI
-from strategies import get_strategy, get_strategy_default_kwargs, get_strategy_backtest_config
-
-strategy_name = '<strategy_name>'
-strategy_class = get_strategy(strategy_name)
-default_kwargs = get_strategy_default_kwargs(strategy_name)
-backtest_config = get_strategy_backtest_config(strategy_name)
-
-config = dict(backtest_config)
-config['period'] = '1d'
-config.setdefault('benchmark', '000300.SH')
-
-api = BacktestAPI()
-api.set_ai_mode(True)
-api.set_no_record(True)
-api.configure(**config)
-api.add_strategy(strategy_class, **default_kwargs)
-results = api.run()
-
-if results:
-    result = api.get_result()
-    sr = result.sharpe_ratio()
-    dd = result.max_drawdown()
-    acc = result.account
-    print(f"夏普比率: {sr:.4f}")
-    print(f"最大回撤: {dd*100:.2f}%")
-    print(f"总收益率: {acc.rate*100:.2f}%")
-    print(f"最终权益: {acc.dynamic_rights:.2f}")
-else:
-    print("回测未产生结果")
+```powershell
+$pythonPath = "$env:USERPROFILE\AppData\Local\Programs\Python\Python312\python.exe"
+& "$pythonPath" main.py --mode backtest --strategy twenty_eight_rotation --period 1d --pool 中证全指 --start 2020-04-28 --end 2026-04-28 --ai-mode
 ```
 
-**关键差异**：
-- StockSelectionStrategy：`api.load_financial_data(sector=pool)` + `api.add_stock_selection_strategy()`
-- StrategyLogic：`api.add_strategy()`（无 load_financial_data）
-- 两种模板都应调用 `api.set_no_record(True)` 避免回测写入正式结果目录
-- 两种模板都应调用 `api.set_ai_mode(True)` 跳过图形界面渲染
+**关键规则**：
+- **必须加 `--ai-mode`**，跳过图形界面渲染
+- **不要加 `--no-record`**，让回测结果自动保存到策略目录下的 `backtest_results/` 文件夹
+- 回测完成后，`backtest_results/` 目录下会自动生成 `<timestamp>_<strategy_name>.json`，包含完整的 `meta`、`config`、`metrics`、`trade_log`、`equity_curve` 数据
+- 阶段四和阶段五的报告生成均从 `backtest_results/` 中读取最新的回测记录
+- 命令必须在项目根目录 `e:\jupyter notebook\automatic\qmt_backtrader` 下执行
 
 #### 3.3 回测结果报告
 
@@ -428,7 +338,617 @@ else:
 | 总收益率 | 策略总回报 |
 | 年化收益率 | 年化后的收益率 |
 | 最大回撤 | 最大峰谷回撤 |
+| 索提诺比率 | 下行风险调整后收益 |
 | 最终权益 | 回测结束时的账户权益 |
+
+### 阶段四：自动生成 readme.md
+
+回测完成后，**必须**自动生成策略目录下的 `readme.md` 文件，包含策略说明和回测结果。
+
+#### 4.1 生成时机
+
+- 回测执行完成后，从 `backtest_results/` 目录读取最新的回测记录 JSON
+- 使用最新 JSON 中的 `metrics` 和 `config` 数据填充回测结果部分
+- 如果 `backtest_results/` 目录不存在或为空，仍生成 readme.md 但标注"回测未完成"
+
+#### 4.2 读取最新回测记录
+
+```python
+import os
+import json
+import glob
+
+def get_latest_backtest_result(strategy_dir):
+    """从 backtest_results/ 目录读取最新的回测结果JSON"""
+    results_dir = os.path.join(strategy_dir, 'backtest_results')
+    if not os.path.isdir(results_dir):
+        return None
+    json_files = sorted(glob.glob(os.path.join(results_dir, '*.json')))
+    if not json_files:
+        return None
+    latest_file = json_files[-1]  # 按文件名排序，最新的在最后
+    with open(latest_file, 'r', encoding='utf-8') as f:
+        return json.load(f)
+```
+
+#### 4.3 readme.md 模板（选股调仓型）
+
+```markdown
+# <策略中文名>
+
+## 策略概述
+
+<策略的核心思想和目标>
+
+## 选股逻辑
+
+1. <步骤1>
+2. <步骤2>
+3. <步骤3>
+
+## 调仓规则
+
+- <调仓频率>调仓，等权重持仓
+- 最多持仓 <N> 只股票
+- 仓位比例 <ratio>%
+
+## 参数说明
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| rebalance_freq | <freq> | 调仓频率 |
+| max_stocks | <N> | 最大持仓数量 |
+| position_ratio | <ratio> | 仓位比例 |
+
+## 回测结果（<股票池>，<起始日期> ~ <结束日期>）
+
+| 指标 | 数值 |
+|------|------|
+| 初始资金 | <initial_capital> |
+| 最终权益 | <final_value> |
+| 总收益率 | <total_return_pct>% |
+| 年化收益率 | <annual_return_pct>% |
+| 夏普比率 | <sharpe_ratio> |
+| 索提诺比率 | <sortino_ratio> |
+| 最大回撤 | <max_drawdown_pct>% |
+| 交易天数 | <total_trading_days> |
+| 盈利天数 / 亏损天数 | <win_days> / <loss_days> |
+| 胜率（日） | <win_rate_pct>% |
+| 总手续费 | <fee> |
+| 换手额 | <turnover> |
+
+## 回测配置
+
+- 初始资金: <initial_capital>
+- 股票池: <pool>
+- 回测区间: <start_date> ~ <end_date>
+- 基准指数: <benchmark>
+- 佣金: <commission>
+
+## 快速开始
+
+```bash
+python main.py --mode backtest --strategy <strategy_name> --period 1d --pool <股票池> --start <起始日期> --end <结束日期> --ai-mode --no-record
+```
+
+## 数据来源
+
+- <数据来源说明>
+```
+
+#### 4.4 readme.md 模板（择时/轮动型）
+
+```markdown
+# <策略中文名>
+
+## 策略概述
+
+<策略的核心思想和目标>
+
+## 交易逻辑
+
+1. <条件1>时买入
+2. <条件2>时卖出
+
+## 参数说明
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| <param1> | <default1> | <说明1> |
+| <param2> | <default2> | <说明2> |
+
+## 回测结果（<起始日期> ~ <结束日期>）
+
+| 指标 | 数值 |
+|------|------|
+| 初始资金 | <initial_capital> |
+| 最终权益 | <final_value> |
+| 总收益率 | <total_return_pct>% |
+| 年化收益率 | <annual_return_pct>% |
+| 夏普比率 | <sharpe_ratio> |
+| 索提诺比率 | <sortino_ratio> |
+| 最大回撤 | <max_drawdown_pct>% |
+| 交易天数 | <total_trading_days> |
+| 盈利天数 / 亏损天数 | <win_days> / <loss_days> |
+| 胜率（日） | <win_rate_pct>% |
+| 总手续费 | <fee> |
+| 换手额 | <turnover> |
+
+## 回测配置
+
+- 初始资金: <initial_capital>
+- 回测区间: <start_date> ~ <end_date>
+- 基准指数: <benchmark>
+- 佣金: <commission>
+
+## 快速开始
+
+```bash
+python main.py --mode backtest --strategy <strategy_name> --period 1d --start <起始日期> --end <结束日期> --ai-mode --no-record
+```
+
+## 数据来源
+
+- <数据来源说明>
+```
+
+#### 4.5 生成方式
+
+读取 `backtest_results/` 目录下最新的回测记录 JSON，从中提取 `metrics` 和 `config` 字段替换模板中的占位符，写入策略目录下的 `readme.md`。
+
+**回测记录 JSON 结构参考**：
+
+```json
+{
+  "meta": {
+    "run_id": "20260516_175424_undervalued",
+    "strategy_name": "undervalued",
+    "timestamp": "2026-05-16T17:54:24",
+    "framework_version": "1.0"
+  },
+  "config": {
+    "cash": 1000000,
+    "commission": 0.0013,
+    "start_date": "2020-04-28",
+    "end_date": "2026-04-28",
+    "period": "1d",
+    "pool": "中证1000",
+    "benchmark": "000852.SH"
+  },
+  "metrics": {
+    "initial_capital": 1000000,
+    "final_value": 1866891.37,
+    "total_profit": 866891.37,
+    "total_return_pct": 86.69,
+    "fee": 37099.86,
+    "sharpe_ratio": 0.677,
+    "max_drawdown_pct": -29.63,
+    "annual_return_pct": 11.43,
+    "total_trading_days": 1454,
+    "win_days": 770,
+    "loss_days": 683,
+    "turnover": 28538353.83,
+    "total_volume": 3302500
+  },
+  "trade_log": [...],
+  "equity_curve": [...]
+}
+```
+
+**字段映射**：
+
+| readme.md 占位符 | JSON 路径 | 说明 |
+|-----------------|----------|------|
+| `<initial_capital>` | `metrics.initial_capital` | 初始资金 |
+| `<final_value>` | `metrics.final_value` | 最终权益 |
+| `<total_return_pct>` | `metrics.total_return_pct` | 总收益率(%) |
+| `<annual_return_pct>` | `metrics.annual_return_pct` | 年化收益率(%) |
+| `<sharpe_ratio>` | `metrics.sharpe_ratio` | 夏普比率 |
+| `<max_drawdown_pct>` | `metrics.max_drawdown_pct` | 最大回撤(%) |
+| `<total_trading_days>` | `metrics.total_trading_days` | 交易天数 |
+| `<win_days>` | `metrics.win_days` | 盈利天数 |
+| `<loss_days>` | `metrics.loss_days` | 亏损天数 |
+| `<fee>` | `metrics.fee` | 总手续费 |
+| `<turnover>` | `metrics.turnover` | 换手额 |
+| `<pool>` | `config.pool` | 股票池 |
+| `<start_date>` | `config.start_date` | 回测起始日期 |
+| `<end_date>` | `config.end_date` | 回测结束日期 |
+| `<benchmark>` | `config.benchmark` | 基准指数 |
+| `<commission>` | `config.commission` | 佣金 |
+
+**关键规则**：
+- 所有 `<placeholder>` 必须用实际数据替换，不得留空
+- 回测结果表格中的数值直接从最新回测记录 JSON 的 `metrics` 和 `config` 读取
+- 如果 `backtest_results/` 目录不存在或为空，标注"回测未完成"
+- readme.md 写入策略目录根级，与策略 `.py` 文件同级
+
+### 阶段五：自动生成 HTML 回测报告
+
+回测完成后，**必须**自动生成策略目录下的 `backtest_report.html` 文件，提供可视化的策略回测结果展示。
+
+#### 5.1 生成时机
+
+- 紧接 readme.md 生成之后执行
+- 从 `backtest_results/` 目录读取最新的回测记录 JSON
+- 如果 `backtest_results/` 目录不存在或为空，跳过此阶段
+
+#### 5.2 HTML 报告内容
+
+报告包含以下模块：
+
+| 模块 | 内容 | 数据来源 |
+|------|------|---------|
+| 策略概览 | 策略名称、回测区间、股票池 | `meta` + `config` 字段 |
+| 核心指标卡片 | 总收益率、年化收益率、夏普比率、最大回撤、胜率等 | `metrics` 字段 |
+| 权益曲线图 | 策略净值随时间变化 | `equity_curve` 数组 |
+| 月度收益热力图 | 按年月展示月度收益率 | 从 `equity_curve` 计算 |
+| 交易记录表 | 最近50条交易明细 | `trade_log` 数组 |
+| 策略参数表 | 策略使用的参数 | `config` + `strategy_params` 字段 |
+
+#### 5.3 HTML 报告生成脚本
+
+在策略目录下创建 `generate_report.py`，内容如下：
+
+```python
+import os
+import sys
+import json
+import glob
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, PROJECT_ROOT)
+
+
+def get_latest_backtest_result(strategy_dir):
+    """从 backtest_results/ 目录读取最新的回测结果JSON"""
+    results_dir = os.path.join(strategy_dir, 'backtest_results')
+    if not os.path.isdir(results_dir):
+        return None
+    json_files = sorted(glob.glob(os.path.join(results_dir, '*.json')))
+    if not json_files:
+        return None
+    latest_file = json_files[-1]
+    with open(latest_file, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _heatmap_color(value):
+    """根据月度收益率返回背景色"""
+    if value is None:
+        return 'rgba(148, 163, 184, 0.05)'
+    if value > 5:
+        return 'rgba(52, 211, 153, 0.7)'
+    if value > 2:
+        return 'rgba(52, 211, 153, 0.4)'
+    if value > 0:
+        return 'rgba(52, 211, 153, 0.2)'
+    if value > -2:
+        return 'rgba(248, 113, 113, 0.2)'
+    if value > -5:
+        return 'rgba(248, 113, 113, 0.4)'
+    return 'rgba(248, 113, 113, 0.7)'
+
+
+def _heatmap_text_color(value):
+    """根据月度收益率返回文字色"""
+    if value is None:
+        return 'transparent'
+    if abs(value) > 2:
+        return '#fff'
+    return '#94a3b8'
+
+
+def generate_report():
+    strategy_dir = os.path.dirname(os.path.abspath(__file__))
+    data = get_latest_backtest_result(strategy_dir)
+
+    if not data:
+        print(f"未找到回测结果，跳过报告生成")
+        return
+
+    # 从回测记录JSON中提取数据
+    meta = data.get('meta', {})
+    config = data.get('config', {})
+    metrics = data.get('metrics', {})
+    trade_log = data.get('trade_log', [])
+    equity_curve = data.get('equity_curve', [])
+    strategy_params = data.get('strategy_params', {})
+
+    strategy_name = meta.get('strategy_name', 'unknown')
+    strategy_cn_name = '<策略中文名>'
+    start_date = config.get('start_date', '')
+    end_date = config.get('end_date', '')
+    pool = config.get('pool', '')
+    benchmark = config.get('benchmark', '000300.SH')
+    commission = config.get('commission', 0)
+
+    initial_capital = metrics.get('initial_capital', 0)
+    final_value = metrics.get('final_value', 0)
+    total_return_pct = metrics.get('total_return_pct', 0)
+    annual_return_pct = metrics.get('annual_return_pct', 0)
+    sharpe_ratio = metrics.get('sharpe_ratio', 0)
+    max_drawdown_pct = metrics.get('max_drawdown_pct', 0)
+    total_trading_days = metrics.get('total_trading_days', 0)
+    win_days = metrics.get('win_days', 0)
+    loss_days = metrics.get('loss_days', 0)
+    win_rate_pct = round(win_days / (win_days + loss_days) * 100, 1) if (win_days + loss_days) > 0 else 0
+    turnover = metrics.get('turnover', 0)
+    fee = metrics.get('fee', 0)
+    total_profit = metrics.get('total_profit', 0)
+
+    # 计算月度收益率（从 equity_curve）
+    monthly_returns = {}
+    if equity_curve:
+        monthly_values = {}
+        for item in equity_curve:
+            ym = item['date'][:7]
+            monthly_values[ym] = item['portfolio_value']
+        sorted_months = sorted(monthly_values.keys())
+        for i in range(1, len(sorted_months)):
+            prev_val = monthly_values[sorted_months[i - 1]]
+            curr_val = monthly_values[sorted_months[i]]
+            if prev_val > 0:
+                ret = (curr_val - prev_val) / prev_val * 100
+                monthly_returns[sorted_months[i]] = round(ret, 2)
+
+    # 月度热力图数据
+    heatmap_years = sorted(set(ym[:4] for ym in monthly_returns.keys()))
+    heatmap_months_labels = [f'{i}月' for i in range(1, 13)]
+    heatmap_data = []
+    for year in heatmap_years:
+        row = []
+        for month in range(1, 13):
+            ym = f'{year}-{month:02d}'
+            row.append(monthly_returns.get(ym, None))
+        heatmap_data.append(row)
+
+    # 交易记录表格（最近50条）
+    recent_trades = trade_log[-50:] if len(trade_log) > 50 else trade_log
+    trade_rows = ""
+    for t in recent_trades:
+        direction = '买入' if t.get('direction') == '0' else '卖出'
+        dir_class = 'trade-buy' if direction == '买入' else 'trade-sell'
+        pnl_val = t.get('pnl', 0)
+        pnl_class = 'up' if pnl_val > 0 else ('down' if pnl_val < 0 else '')
+        pnl_str = f'{pnl_val:+.2f}' if pnl_val != 0 else '-'
+        trade_time = t.get('trade_time', '')[:10]
+        trade_rows += f'''<tr>
+            <td>{trade_time}</td>
+            <td>{t.get('instrument_id', '')}</td>
+            <td class="{dir_class}">{direction}</td>
+            <td>{t.get('trade_price', 0):.2f}</td>
+            <td>{t.get('volume', 0)}</td>
+            <td class="{pnl_class}">{pnl_str}</td>
+            <td>{t.get('memo', '')}</td>
+        </tr>'''
+
+    # 权益曲线数据
+    equity_dates = json.dumps([d['date'] for d in equity_curve], ensure_ascii=False)
+    equity_values = json.dumps([d['portfolio_value'] for d in equity_curve], ensure_ascii=False)
+
+    # 热力图HTML片段（预先计算）
+    heatmap_header_html = " ".join(f'<div class="heatmap-header">{m}</div>' for m in heatmap_months_labels)
+    heatmap_body_html = ""
+    for y, row in zip(heatmap_years, heatmap_data):
+        heatmap_body_html += f'<div class="heatmap-label">{y}</div>'
+        for v in row:
+            bg = _heatmap_color(v)
+            tc = _heatmap_text_color(v)
+            text = f'{v:.1f}' if v is not None else ''
+            heatmap_body_html += f'<div class="heatmap-cell" style="background:{bg};color:{tc}">{text}</div>'
+
+    # 策略参数展示
+    params_html = ""
+    for k, v in strategy_params.items():
+        if k in ('stock_pool', 'instrument_id', 'exchange', 'kline_style'):
+            continue
+        params_html += f'<div class="param-item"><span class="param-key">{k}</span><span class="param-val">{v}</span></div>'
+
+    # 收益率颜色判断
+    return_color = '#34d399' if total_return_pct > 0 else '#f87171'
+    sharpe_color = '#34d399' if sharpe_ratio > 0 else '#f87171'
+
+    html = f'''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{strategy_cn_name} - 回测报告</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif; background: #0f172a; color: #e2e8f0; line-height: 1.6; }}
+.container {{ max-width: 1200px; margin: 0 auto; padding: 40px 20px; }}
+h1 {{ font-size: 2.2em; text-align: center; background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
+h2 {{ font-size: 1.4em; color: #60a5fa; margin: 40px 0 20px; border-bottom: 1px solid #1e293b; padding-bottom: 10px; }}
+.subtitle {{ text-align: center; color: #94a3b8; margin-bottom: 40px; }}
+.summary-cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin: 30px 0; }}
+.card {{ background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; }}
+.card-label {{ font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }}
+.card-value {{ font-size: 1.8em; font-weight: 700; margin: 6px 0; }}
+.up {{ color: #34d399; }}
+.down {{ color: #f87171; }}
+.chart-box {{ background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; margin: 24px 0; }}
+table {{ width: 100%; border-collapse: collapse; margin: 16px 0; background: #1e293b; border-radius: 12px; overflow: hidden; }}
+th {{ background: #0f172a; color: #94a3b8; font-weight: 600; font-size: 0.85em; text-transform: uppercase; padding: 12px 14px; text-align: left; }}
+td {{ padding: 10px 14px; border-top: 1px solid #334155; font-size: 0.9em; }}
+.trade-buy {{ color: #34d399; font-weight: 600; }}
+.trade-sell {{ color: #f87171; font-weight: 600; }}
+.heatmap-grid {{ display: grid; grid-template-columns: 60px repeat(12, 1fr); gap: 3px; margin: 16px 0; }}
+.heatmap-label {{ font-size: 0.75em; color: #94a3b8; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; }}
+.heatmap-header {{ font-size: 0.7em; color: #94a3b8; text-align: center; padding: 4px; }}
+.heatmap-cell {{ border-radius: 4px; text-align: center; font-size: 0.7em; font-weight: 600; padding: 6px 2px; min-height: 28px; display: flex; align-items: center; justify-content: center; }}
+.params-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 8px; }}
+.param-item {{ background: #0f172a; border-radius: 8px; padding: 10px 14px; display: flex; justify-content: space-between; }}
+.param-key {{ color: #94a3b8; font-size: 0.85em; }}
+.param-val {{ color: #60a5fa; font-weight: 600; font-size: 0.85em; }}
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>{strategy_cn_name}</h1>
+<p class="subtitle">回测区间: {start_date} 至 {end_date} | 股票池: {pool or "默认"} | 基准: {benchmark}</p>
+
+<h2>一、核心指标</h2>
+<div class="summary-cards">
+  <div class="card">
+    <div class="card-label">总收益率</div>
+    <div class="card-value" style="color:{return_color}">{total_return_pct:.2f}%</div>
+  </div>
+  <div class="card">
+    <div class="card-label">年化收益率</div>
+    <div class="card-value" style="color:{return_color}">{annual_return_pct:.2f}%</div>
+  </div>
+  <div class="card">
+    <div class="card-label">夏普比率</div>
+    <div class="card-value" style="color:{sharpe_color}">{sharpe_ratio:.4f}</div>
+  </div>
+  <div class="card">
+    <div class="card-label">最大回撤</div>
+    <div class="card-value down">{max_drawdown_pct:.2f}%</div>
+  </div>
+  <div class="card">
+    <div class="card-label">日胜率</div>
+    <div class="card-value">{win_rate_pct:.1f}%</div>
+  </div>
+</div>
+
+<div class="summary-cards">
+  <div class="card">
+    <div class="card-label">初始资金</div>
+    <div class="card-value" style="font-size:1.2em">{initial_capital:,.0f}</div>
+  </div>
+  <div class="card">
+    <div class="card-label">最终权益</div>
+    <div class="card-value" style="font-size:1.2em;color:{return_color}">{final_value:,.2f}</div>
+  </div>
+  <div class="card">
+    <div class="card-label">总利润</div>
+    <div class="card-value" style="font-size:1.2em;color:{return_color}">{total_profit:+,.2f}</div>
+  </div>
+  <div class="card">
+    <div class="card-label">交易天数</div>
+    <div class="card-value" style="font-size:1.2em">{total_trading_days}</div>
+  </div>
+  <div class="card">
+    <div class="card-label">盈利/亏损天数</div>
+    <div class="card-value" style="font-size:1.2em"><span class="up">{win_days}</span> / <span class="down">{loss_days}</span></div>
+  </div>
+  <div class="card">
+    <div class="card-label">总手续费</div>
+    <div class="card-value" style="font-size:1.2em">{fee:,.2f}</div>
+  </div>
+</div>
+
+<h2>二、权益曲线</h2>
+<div class="chart-box">
+  <canvas id="chartEquity"></canvas>
+</div>
+
+<h2>三、月度收益热力图</h2>
+<div class="chart-box">
+  <div class="heatmap-grid">
+    <div class="heatmap-header"></div>
+    {heatmap_header_html}
+    {heatmap_body_html}
+  </div>
+</div>
+
+<h2>四、交易记录（最近50条）</h2>
+<table>
+  <thead>
+    <tr><th>日期</th><th>标的</th><th>方向</th><th>价格</th><th>数量</th><th>盈亏</th><th>备注</th></tr>
+  </thead>
+  <tbody>{trade_rows or '<tr><td colspan="7" style="text-align:center;color:#94a3b8">暂无交易记录</td></tr>'}</tbody>
+</table>
+
+<h2>五、策略参数</h2>
+<div class="params-grid">
+  {params_html or '<div style="color:#94a3b8">无自定义参数</div>'}
+</div>
+
+</div>
+
+<script>
+Chart.defaults.color = '#94a3b8';
+const gridColor = 'rgba(148, 163, 184, 0.1)';
+
+new Chart(document.getElementById('chartEquity'), {{
+  type: 'line',
+  data: {{
+    labels: {equity_dates},
+    datasets: [{{
+      label: '账户权益',
+      data: {equity_values},
+      borderColor: '#60a5fa',
+      backgroundColor: 'rgba(96, 165, 250, 0.1)',
+      borderWidth: 2,
+      fill: true,
+      pointRadius: 0,
+      tension: 0.1
+    }}]
+  }},
+  options: {{
+    responsive: true,
+    plugins: {{
+      title: {{ display: true, text: '策略权益曲线' }},
+      tooltip: {{
+        callbacks: {{
+          label: function(ctx) {{ return '权益: ' + ctx.parsed.y.toLocaleString(); }}
+        }}
+      }}
+    }},
+    scales: {{
+      y: {{
+        grid: {{ color: gridColor }},
+        ticks: {{
+          callback: function(v) {{ return (v/10000).toFixed(0) + '万'; }}
+        }}
+      }},
+      x: {{
+        grid: {{ display: false }},
+        ticks: {{ maxTicksLimit: 12 }}
+      }}
+    }}
+  }}
+}});
+</script>
+</body>
+</html>'''
+
+    output_file = os.path.join(strategy_dir, 'backtest_report.html')
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(html)
+    print(f'HTML报告已生成: {output_file}')
+
+
+if __name__ == '__main__':
+    generate_report()
+```
+
+#### 5.4 HTML 报告生成执行
+
+回测完成后（`main.py --mode backtest` 执行结束），使用以下命令生成报告：
+
+```powershell
+$pythonPath = "$env:USERPROFILE\AppData\Local\Programs\Python\Python312\python.exe"
+& "$pythonPath" "<策略目录>/generate_report.py"
+```
+
+**注意**：
+- `generate_report.py` 会自动从 `backtest_results/` 目录读取最新的回测记录 JSON，无需手动指定文件路径
+- 必须在回测完成后再执行此脚本，否则 `backtest_results/` 目录中没有数据
+
+#### 5.5 HTML 报告设计规范
+
+| 规范 | 说明 |
+|------|------|
+| 配色 | 深色主题（#0f172a 背景），与项目现有优化报告风格一致 |
+| 图表库 | Chart.js 4.x（CDN加载） |
+| 响应式 | 支持不同屏幕宽度，卡片网格自适应 |
+| 数据来源 | 全部从 `backtest_results/` 目录最新 JSON 读取，不硬编码 |
+| 文件大小 | 控制在 500KB 以内（权益曲线数据采样如果超过1000点则降采样） |
 
 ## 数据接口映射
 
@@ -588,4 +1108,4 @@ ranked = self.rank_stocks(
 | `strategy-generator`（本技能） | 从文档生成新策略 | "从0到1" |
 | `strategy-optimizer` | 优化已有策略性能 | "从1到优" |
 
-典型工作流：用户用 `strategy-generator` 生成策略 → 回测验证 → 用 `strategy-optimizer` 优化性能。
+典型工作流：用户用 `strategy-generator` 生成策略 → 回测验证 → 自动生成 readme.md + HTML报告 → 用 `strategy-optimizer` 优化性能。

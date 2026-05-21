@@ -600,22 +600,25 @@ class FinancialDataCache:
             return stock_code
 
         max_workers = min(8, len(stock_list))
+        batch_size = 200  # 分批处理，避免一次性创建过多锁导致 RuntimeError: can't allocate lock
         if max_workers <= 1 or len(stock_list) <= 10:
             for stock_code in stock_list:
                 self.preload_stock(stock_code, tables, extended_start_time, extended_end_time)
         else:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(_load_one, s): s for s in stock_list}
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                        completed += 1
-                        if completed % 100 == 0 or completed == total:
-                            self.logger.info(f"财务数据预加载进度: {completed}/{total}")
-                    except Exception as e:
-                        completed += 1
-                        symbol = futures[future]
-                        self.logger.warning(f"预加载 {symbol} 失败: {e}")
+            for batch_start in range(0, total, batch_size):
+                batch = stock_list[batch_start:batch_start + batch_size]
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(_load_one, s): s for s in batch}
+                    for future in as_completed(futures):
+                        try:
+                            future.result()
+                            completed += 1
+                            if completed % 100 == 0 or completed == total:
+                                self.logger.info(f"财务数据预加载进度: {completed}/{total}")
+                        except Exception as e:
+                            completed += 1
+                            symbol = futures[future]
+                            self.logger.warning(f"预加载 {symbol} 失败: {e}")
 
     def get_latest_batch(self, stock_list: List[str], table_name: str,
                          date: datetime.date, fields: List[str]) -> Dict[str, Dict[str, Any]]:
