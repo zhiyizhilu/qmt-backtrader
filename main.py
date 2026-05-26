@@ -79,9 +79,45 @@ def _init_virtual_book_from_account(api: QMTAPI, book: VirtualBook):
     book.initialize_from_account(actual_positions, actual_cash, set())
 
 
+def _parse_strategy_params(params_str: str) -> dict:
+    """解析策略参数字符串，格式: key=value,key=value
+
+    支持自动类型推断:
+    - 整数: 100, -5
+    - 浮点数: 0.5, -0.003, 1e-4
+    - 布尔值: true/false
+    - 字符串: 其他值
+    """
+    if not params_str:
+        return {}
+    result = {}
+    for pair in params_str.split(','):
+        pair = pair.strip()
+        if '=' not in pair:
+            continue
+        key, value = pair.split('=', 1)
+        key = key.strip()
+        value = value.strip()
+
+        if value.lower() == 'true':
+            result[key] = True
+        elif value.lower() == 'false':
+            result[key] = False
+        else:
+            try:
+                if '.' in value or 'e' in value.lower():
+                    result[key] = float(value)
+                else:
+                    result[key] = int(value)
+            except ValueError:
+                result[key] = value
+    return result
+
+
 def run_backtest(strategy_name='double_ma', period='1d', pool=None,
                  start_date=None, end_date=None, proxy='', ai_mode=False,
-                 no_record=False, slippage=None, data_source='qmt'):
+                 no_record=False, slippage=None, data_source='qmt',
+                 strategy_params=None):
     """运行回测"""
     _setup_debug_logging()
     log_file = Logger.setup_global_file_handler(strategy_name)
@@ -95,6 +131,14 @@ def run_backtest(strategy_name='double_ma', period='1d', pool=None,
 
     strategy_class, default_kwargs, backtest_config = _resolve_strategy(strategy_name)
 
+    if strategy_params:
+        default_kwargs.update(strategy_params)
+        if 'symbol' in strategy_params:
+            symbol = strategy_params['symbol']
+            backtest_config = dict(backtest_config)
+            backtest_config['benchmark'] = symbol
+            backtest_config['compare_symbols'] = [symbol]
+
     config = dict(backtest_config)
     config['period'] = period
     if start_date:
@@ -107,8 +151,9 @@ def run_backtest(strategy_name='double_ma', period='1d', pool=None,
     pool = pool if pool is not None else backtest_config.get('pool', '沪深A股')
     config['pool'] = pool
 
-    benchmark = IndexConstituentManager.SECTOR_TO_INDEX.get(pool, '000300.SH')
-    config.setdefault('benchmark', benchmark)
+    if 'benchmark' not in config:
+        benchmark = IndexConstituentManager.SECTOR_TO_INDEX.get(pool, '000300.SH')
+        config['benchmark'] = benchmark
 
     try:
         import time as _time
@@ -263,12 +308,14 @@ def main():
     parser.add_argument('--no-record', action='store_true', default=False,
                         help='禁用回测结果自动记录到本地文件')
     parser.add_argument('--slippage', type=float, default=None,
-                        help='滑点百分比，如0.001表示0.1%，不传则使用策略默认值')
+                        help='滑点百分比, 如0.001表示0.1%%, 不传则使用策略默认值')
     parser.add_argument('--data-source', type=str, default='qmt',
                         choices=['qmt', 'open', 'futu'],
                         help='行情数据源: qmt=QMT(默认), open=OpenData, futu=富途本地数据')
     parser.add_argument('--config', type=str, default=None,
                         help='YAML 配置文件路径，配置覆盖默认值，命令行参数覆盖 YAML 配置')
+    parser.add_argument('--strategy-params', type=str, default=None,
+                        help='策略参数覆盖, 格式: key=value,key=value, 如 symbol=000001.SZ,base_position_ratio=0.3')
 
     args = parser.parse_args()
 
@@ -288,7 +335,8 @@ def main():
         cache_manager.configure(cache_dir=args.cache_dir, mem_limit=args.mem_limit)
 
     if args.mode == 'backtest':
-        run_backtest(args.strategy, args.period, args.pool, args.start, args.end, args.proxy, args.ai_mode, args.no_record, args.slippage, args.data_source)
+        sp = _parse_strategy_params(args.strategy_params) if args.strategy_params else None
+        run_backtest(args.strategy, args.period, args.pool, args.start, args.end, args.proxy, args.ai_mode, args.no_record, args.slippage, args.data_source, sp)
     elif args.mode == 'sim':
         run_sim_trade(args.strategy, args.qmt_path, args.account)
     elif args.mode == 'real':
