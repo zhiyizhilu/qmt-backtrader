@@ -557,6 +557,20 @@ class SmartCacheManager:
                 if latest_date and end_missing:
                     latest_year = pd.Timestamp(latest_date).year
                     end_missing = set(y for y in end_missing if y <= latest_year)
+
+            # 如果缓存截止日期 < 请求截止日期，但 checked_years 导致 end_missing 为空，
+            # 说明缓存确实不够新，应强制刷新请求截止日期所在年份
+            if not end_missing:
+                req_end_year = pd.Timestamp(req_end).year
+                # 仅当该年份在缓存中已有数据时才强制刷新（排除已确认无数据的年份）
+                cached_years_in_df = set(cached_df.index.year.unique())
+                if req_end_year in cached_years_in_df:
+                    end_missing = {req_end_year}
+                    self.logger.info(
+                        f"[{namespace}] {symbol} 缓存截止日期({disk_end})早于请求截止日期({req_end})，"
+                        f"强制刷新 {req_end_year} 年数据"
+                    )
+
             missing |= end_missing
             if end_missing:
                 self.logger.info(
