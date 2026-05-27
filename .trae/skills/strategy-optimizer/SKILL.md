@@ -169,6 +169,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 os.environ['QMT_LOG_LEVEL'] = 'WARNING'
+os.environ['QMT_CACHE_DIR'] = os.path.join(PROJECT_ROOT, '.cache')
 
 from api.backtest_api import BacktestAPI
 from core.stock_selection import StockSelectionStrategy
@@ -258,6 +259,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(o
 sys.path.insert(0, PROJECT_ROOT)
 
 os.environ['QMT_LOG_LEVEL'] = 'WARNING'
+os.environ['QMT_CACHE_DIR'] = os.path.join(PROJECT_ROOT, '.cache')
 
 from api.backtest_api import BacktestAPI
 from strategies import get_strategy, get_strategy_default_kwargs, get_strategy_backtest_config, get_strategy_dir
@@ -963,6 +965,7 @@ if __name__ == '__main__':
 10. **过度拟合防范**：每项有效优化必须通过样本外验证、参数敏感性分析和时间稳定性测试，三项中任何一项不通过即放弃
 11. **目录隔离**：所有优化过程中新增的文件（脚本、报告、结果）必须严格放置在被优化策略所在的目录内，不得在策略目录外创建任何文件
 12. **训练验证分离**：测试集（2020-04-28~2024-04-28）用于参数优化，验证集（2024-04-28~2026-04-28）仅用于最终检验，禁止在验证集上调参
+13. **缓存路径固定**：所有优化脚本必须在 `import` 框架模块之前设置 `os.environ['QMT_CACHE_DIR'] = os.path.join(PROJECT_ROOT, '.cache')`，确保缓存数据写入项目根目录的 `.cache/` 而非脚本运行目录下的 `.cache/`
 
 ## 策略文件结构
 
