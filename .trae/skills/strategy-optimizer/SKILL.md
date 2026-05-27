@@ -33,6 +33,79 @@ if (-not (Test-Path $pythonPath)) {
 - 提及夏普比率、回撤降低、收益提升等目标
 - 要求系统性测试策略改进方案
 
+## 回测时间区间规范
+
+**所有优化回测必须严格遵循以下时间区间划分**：
+
+| 区间 | 起止日期 | 用途 | 说明 |
+|------|---------|------|------|
+| **测试集（样本内）** | 2020-04-28 ~ 2024-04-28 | 参数优化、策略开发 | 在此区间上搜索最优参数、验证优化效果 |
+| **验证集（样本外）** | 2024-04-28 ~ 2026-04-28 | 过度拟合检测、最终验证 | 仅用于验证优化结果的稳健性，禁止在此区间上调参 |
+
+**关键规则**：
+- 阶段一~阶段六的所有优化回测（基线、单项优化、组合优化）默认使用**测试集区间** `2020-04-28 ~ 2024-04-28`
+- 阶段五的样本外验证必须使用**验证集区间** `2024-04-28 ~ 2026-04-28`
+- 验证集数据是"不可见"的——禁止在验证集上反复调参，只能在测试集上确定参数后，在验证集上做一次最终检验
+- 如果策略的注册配置中 `start_date` 早于 `2020-04-28`，仍以 `2020-04-28` 作为测试集起点
+
+**回测模板中的默认参数更新**：
+
+```python
+# StockSelectionStrategy 模板
+def run_backtest_with_params(strategy_name=STRATEGY_NAME, extra_params=None, label='test',
+                              pool='中证1000', start_date='2020-04-28', end_date='2024-04-28'):
+
+# StrategyLogic 模板
+def run_backtest_with_params(strategy_name=STRATEGY_NAME, extra_params=None, label='test',
+                              start_date='2020-04-28', end_date='2024-04-28'):
+```
+
+**样本外验证函数更新**（使用固定验证集区间，不再使用 split_ratio）：
+
+```python
+# 固定的测试集/验证集时间边界
+TRAIN_START = '2020-04-28'
+TRAIN_END = '2024-04-28'    # 测试集结束 = 验证集开始
+VALID_START = '2024-04-28'  # 验证集开始
+VALID_END = '2026-04-28'    # 验证集结束
+
+def run_out_of_sample_test(strategy_name, extra_params, label):
+    """使用固定验证集进行样本外测试"""
+    # 测试集（样本内）回测
+    in_sample = run_backtest_with_params(
+        strategy_name=strategy_name, extra_params=extra_params,
+        label=f'{label}_is', start_date=TRAIN_START, end_date=TRAIN_END)
+
+    # 验证集（样本外）回测
+    out_sample = run_backtest_with_params(
+        strategy_name=strategy_name, extra_params=extra_params,
+        label=f'{label}_oos', start_date=VALID_START, end_date=VALID_END)
+
+    # 基线对比
+    baseline_is = run_backtest_with_params(
+        strategy_name=strategy_name, extra_params=None,
+        label='baseline_is', start_date=TRAIN_START, end_date=TRAIN_END)
+
+    baseline_oos = run_backtest_with_params(
+        strategy_name=strategy_name, extra_params=None,
+        label='baseline_oos', start_date=VALID_START, end_date=VALID_END)
+
+    is_improvement = (in_sample.get('sharpe_ratio', 0) - baseline_is.get('sharpe_ratio', 0)) / abs(baseline_is.get('sharpe_ratio', 1)) * 100
+    oos_improvement = (out_sample.get('sharpe_ratio', 0) - baseline_oos.get('sharpe_ratio', 0)) / abs(baseline_oos.get('sharpe_ratio', 1)) * 100
+
+    return {
+        'train_period': f'{TRAIN_START} ~ {TRAIN_END}',
+        'valid_period': f'{VALID_START} ~ {VALID_END}',
+        'in_sample_sharpe': in_sample.get('sharpe_ratio', 0),
+        'out_sample_sharpe': out_sample.get('sharpe_ratio', 0),
+        'baseline_is_sharpe': baseline_is.get('sharpe_ratio', 0),
+        'baseline_oos_sharpe': baseline_oos.get('sharpe_ratio', 0),
+        'is_improvement_pct': is_improvement,
+        'oos_improvement_pct': oos_improvement,
+        'decay_ratio': oos_improvement / is_improvement if is_improvement != 0 else 0,
+    }
+```
+
 ## 核心工作流
 
 ### 阶段一：理解策略
@@ -40,7 +113,7 @@ if (-not (Test-Path $pythonPath)) {
 1. 读取策略文件，理解当前逻辑和参数
 2. 读取策略目录下的 `readme.md` 文档
 3. **识别策略基类**：判断是 `StockSelectionStrategy` 还是 `StrategyLogic`，两者回测模板不同
-4. 运行基线回测，记录当前性能指标
+4. 运行基线回测（使用测试集区间 2020-04-28 ~ 2024-04-28），记录当前性能指标
 5. 确定核心评估指标（默认：夏普比率）
 
 ### 阶段二：提出优化建议
@@ -111,7 +184,7 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
 def run_backtest_with_params(strategy_name=STRATEGY_NAME, extra_params=None, label='test',
-                              pool='中证1000', start_date='2020-04-28', end_date='2026-04-28'):
+                              pool='中证1000', start_date='2020-04-28', end_date='2024-04-28'):
     strategy_class = get_strategy(strategy_name)
     default_kwargs = get_strategy_default_kwargs(strategy_name)
     backtest_config = get_strategy_backtest_config(strategy_name)
@@ -198,7 +271,7 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
 def run_backtest_with_params(strategy_name=STRATEGY_NAME, extra_params=None, label='test',
-                              start_date='2020-04-28', end_date='2026-04-28'):
+                              start_date='2020-04-28', end_date='2024-04-28'):
     strategy_class = get_strategy(strategy_name)
     default_kwargs = get_strategy_default_kwargs(strategy_name)
     backtest_config = get_strategy_backtest_config(strategy_name)
@@ -302,38 +375,42 @@ def run_backtest_with_params(strategy_name=STRATEGY_NAME, extra_params=None, lab
 
 **检测方法一：样本外验证（必做）**
 
-将回测区间分为前后两段，在前半段（样本内）验证优化效果，在后半段（样本外）检验是否仍然有效：
+使用固定的验证集区间（2024-04-28 ~ 2026-04-28）检验优化在样本外是否仍然有效。测试集用于参数优化，验证集仅用于最终检验，禁止在验证集上调参：
 
 ```python
-def run_out_of_sample_test(strategy_name, extra_params, label,
-                            full_start, full_end, split_ratio=0.5):
-    from datetime import datetime, timedelta
-    start_dt = datetime.strptime(full_start, '%Y-%m-%d')
-    end_dt = datetime.strptime(full_end, '%Y-%m-%d')
-    total_days = (end_dt - start_dt).days
-    split_dt = start_dt + timedelta(days=int(total_days * split_ratio))
-    split_date = split_dt.strftime('%Y-%m-%d')
+# 固定的测试集/验证集时间边界
+TRAIN_START = '2020-04-28'
+TRAIN_END = '2024-04-28'    # 测试集结束 = 验证集开始
+VALID_START = '2024-04-28'  # 验证集开始
+VALID_END = '2026-04-28'    # 验证集结束
 
+def run_out_of_sample_test(strategy_name, extra_params, label):
+    """使用固定验证集进行样本外测试"""
+    # 测试集（样本内）回测
     in_sample = run_backtest_with_params(
         strategy_name=strategy_name, extra_params=extra_params,
-        label=f'{label}_is', start_date=full_start, end_date=split_date)
+        label=f'{label}_is', start_date=TRAIN_START, end_date=TRAIN_END)
 
+    # 验证集（样本外）回测
     out_sample = run_backtest_with_params(
         strategy_name=strategy_name, extra_params=extra_params,
-        label=f'{label}_oos', start_date=split_date, end_date=full_end)
+        label=f'{label}_oos', start_date=VALID_START, end_date=VALID_END)
 
+    # 基线对比
     baseline_is = run_backtest_with_params(
         strategy_name=strategy_name, extra_params=None,
-        label='baseline_is', start_date=full_start, end_date=split_date)
+        label='baseline_is', start_date=TRAIN_START, end_date=TRAIN_END)
 
     baseline_oos = run_backtest_with_params(
         strategy_name=strategy_name, extra_params=None,
-        label='baseline_oos', start_date=split_date, end_date=full_end)
+        label='baseline_oos', start_date=VALID_START, end_date=VALID_END)
 
     is_improvement = (in_sample.get('sharpe_ratio', 0) - baseline_is.get('sharpe_ratio', 0)) / abs(baseline_is.get('sharpe_ratio', 1)) * 100
     oos_improvement = (out_sample.get('sharpe_ratio', 0) - baseline_oos.get('sharpe_ratio', 0)) / abs(baseline_oos.get('sharpe_ratio', 1)) * 100
 
     return {
+        'train_period': f'{TRAIN_START} ~ {TRAIN_END}',
+        'valid_period': f'{VALID_START} ~ {VALID_END}',
         'in_sample_sharpe': in_sample.get('sharpe_ratio', 0),
         'out_sample_sharpe': out_sample.get('sharpe_ratio', 0),
         'baseline_is_sharpe': baseline_is.get('sharpe_ratio', 0),
@@ -500,13 +577,141 @@ def run_temporal_stability_test(strategy_name, extra_params, label,
 1. **清理策略代码**：删除所有无效优化的参数和方法
 2. **更新策略目录下的 `readme.md`**：仅反映保留的优化内容
 3. **生成 HTML 优化报告**：使用 Chart.js 生成交互式报告（详见下方"HTML报告生成模板"）
-4. **运行验证回测**：清理代码后重新回测，确认结果与优化预期一致
+4. **记录优化历史**：将本次优化的完整过程和结果追加到 `optimization_history.json`（详见下方"优化历史记录"）
+5. **运行验证回测**：清理代码后重新回测，确认结果与优化预期一致
+
+#### 优化历史记录
+
+每次优化完成后，必须将完整的优化过程和结果追加到 `optimization/optimization_history.json` 文件中。该文件记录了策略的所有优化历史，便于追溯和对比不同轮次的优化效果。
+
+**记录格式**：
+
+```python
+import json
+import datetime
+
+def save_optimization_history(strategy_dir, optimization_record):
+    """将本次优化记录追加到历史文件中"""
+    history_file = os.path.join(strategy_dir, 'optimization', 'optimization_history.json')
+    
+    # 读取已有历史
+    if os.path.exists(history_file):
+        with open(history_file, 'r', encoding='utf-8') as f:
+            history = json.load(f)
+    else:
+        history = {'optimizations': []}
+    
+    # 追加新记录
+    history['optimizations'].append(optimization_record)
+    
+    # 写回文件
+    with open(history_file, 'w', encoding='utf-8') as f:
+        json.dump(history, f, indent=2, ensure_ascii=False)
+```
+
+**每条优化记录必须包含以下字段**：
+
+```python
+optimization_record = {
+    # 基本信息
+    'round_id': 'round_1',                    # 优化轮次标识
+    'timestamp': datetime.datetime.now().isoformat(),  # 优化完成时间
+    'strategy_name': 'etf_rotation',           # 策略注册名
+    'train_period': '2020-04-28 ~ 2024-04-28', # 测试集区间
+    'valid_period': '2024-04-28 ~ 2026-04-28', # 验证集区间
+    
+    # 基线指标
+    'baseline': {
+        'sharpe_ratio': 1.38,
+        'total_return_pct': 499.27,
+        'max_drawdown_pct': -18.84,
+        'annual_return_pct': 35.0,
+    },
+    
+    # 最终优化后指标（测试集）
+    'optimized': {
+        'sharpe_ratio': 2.04,
+        'total_return_pct': 589.6,
+        'max_drawdown_pct': -10.12,
+        'annual_return_pct': 39.7,
+    },
+    
+    # 验证集指标
+    'validation': {
+        'sharpe_ratio': 2.31,
+        'total_return_pct': 120.5,
+        'max_drawdown_pct': -8.5,
+        'decay_ratio': 0.95,  # 验证集改进/测试集改进
+    },
+    
+    # 所有优化方案结果摘要
+    'optimization_results': [
+        {
+            'label': 'opt03_volatility_filter',
+            'name': '波动率过滤 (vol=0.03)',
+            'params': {'max_volatility': 0.03},
+            'sharpe_ratio': 1.65,
+            'sharpe_improvement_pct': 19.6,
+            'verdict': '有效',
+        },
+        {
+            'label': 'opt21_expand_hk_tech',
+            'name': '扩展: 恒生科技ETF',
+            'params': {'extra_etf_codes': {'恒生科技': '513130.SH'}},
+            'sharpe_ratio': 1.15,
+            'sharpe_improvement_pct': -16.7,
+            'verdict': '无效',
+        },
+        # ... 所有优化方案
+    ],
+    
+    # 硬逻辑与过度拟合审查结果
+    'review_results': [
+        {
+            'label': 'opt03_volatility_filter',
+            'logic_rating': 'A',
+            'decay_ratio': 0.85,
+            'sensitivity_ratio': 0.15,
+            'temporal_consistency': 0.80,
+            'conclusion': '通过',
+        },
+        # ... 所有有效优化的审查结果
+    ],
+    
+    # 最终采纳的参数变更
+    'adopted_changes': {
+        'max_volatility': {'old': 0.03, 'new': 0.015, 'reason': '降低波动率阈值，过滤更多高波动标的'},
+    },
+    
+    # 被放弃的优化及原因
+    'rejected_changes': [
+        {'label': 'opt21_expand_hk_tech', 'reason': '扩展标的池引入高波动ETF，夏普下降16.7%'},
+        {'label': 'opt24_abs_momentum_benchmark', 'reason': '绝对动量基准过于严格，错过跨市场机会'},
+    ],
+    
+    # 报告文件路径
+    'report_path': 'optimization/optimization_report.html',
+    
+    # 经验总结
+    'lessons_learned': [
+        '波动率过滤是最有效的优化方向',
+        '扩展标的池反而有害，高波动ETF拖累策略',
+        '简单阈值优于复杂机制',
+    ],
+}
+```
+
+**优化历史文件的使用场景**：
+- 对比不同轮次优化的效果，判断优化是否边际递减
+- 回溯某项优化的决策过程和依据
+- 避免重复测试已验证无效的优化方向
+- 为新策略的优化提供参考经验
 
 #### HTML 报告生成模板
 
 在**策略目录下**的 `optimization/` 目录中创建 `generate_report.py` 脚本，生成包含 Chart.js 交互式图表的 HTML 报告（确保报告文件也在策略目录内）。
 
-报告应包含以下7个章节：
+报告应包含以下8个章节：
 
 1. **优化总览**：4张核心指标卡片（夏普变化、收益变化、回撤变化、年化变化）
 2. **策略说明**：原始逻辑与优化后新增逻辑的说明
@@ -515,6 +720,7 @@ def run_temporal_stability_test(strategy_name, extra_params, label,
 5. **组合优化回测**：组合方案对比表 + 夏普/收益2张柱状图
 6. **核心发现**：深度洞察（交易成本、协同效应、参数冲突、无效优化分析、过度拟合风险警示）
 7. **优化前后对比**：雷达图综合对比 + 最终采纳/未采纳参数清单
+8. **验证集检验**：在验证集（2024-04-28 ~ 2026-04-28）上的策略表现，与测试集结果对比，衰减比分析
 
 ```python
 import json
@@ -629,7 +835,7 @@ tr.effective {{ background: rgba(52, 211, 153, 0.05); }}
 <div class="container">
 
 <h1>策略优化分析报告</h1>
-<p style="text-align:center;color:#94a3b8;margin-bottom:40px;">回测区间与参数信息</p>
+<p style="text-align:center;color:#94a3b8;margin-bottom:40px;">测试集: 2020-04-28 ~ 2024-04-28 | 验证集: 2024-04-28 ~ 2026-04-28</p>
 
 <!-- 一、优化总览 -->
 <h2>一、优化总览</h2>
@@ -685,6 +891,10 @@ tr.effective {{ background: rgba(52, 211, 153, 0.05); }}
 <!-- 七、优化前后对比 -->
 <h2>七、优化前后对比</h2>
 <!-- 雷达图 + 参数清单 -->
+
+<!-- 八、验证集检验 -->
+<h2>八、验证集检验 (2024-04-28 ~ 2026-04-28)</h2>
+<!-- 验证集上的策略表现，与测试集对比，衰减比分析 -->
 
 </div>
 
@@ -746,12 +956,13 @@ if __name__ == '__main__':
 3. **不可替代核心机制**：行业分散、基本面过滤等核心风控机制不应被优化替代，而应被增强
 4. **简单优于复杂**：优先使用简单直接的风控手段，而非复杂评分模型
 5. **风控优于选股**：对大多数策略而言，最大改进来自风险控制（波动率过滤、止损），而非更好的选股
-6. **全程记录**：记录每项优化成功或失败的原因，包括具体失败原因
+6. **全程记录**：记录每项优化成功或失败的原因，包括具体失败原因；每次优化完成后必须将完整过程写入 `optimization_history.json`
 7. **冲突检测**：组合优化前必须分析参数间是否存在逻辑冲突，避免1+1<1
 8. **验证回测**：清理代码后必须重新回测，确认结果与优化预期一致
 9. **硬逻辑优先**：优化的逻辑因果链和经济合理性比统计显著性更重要，无法解释"为什么有效"的优化不可采纳
 10. **过度拟合防范**：每项有效优化必须通过样本外验证、参数敏感性分析和时间稳定性测试，三项中任何一项不通过即放弃
 11. **目录隔离**：所有优化过程中新增的文件（脚本、报告、结果）必须严格放置在被优化策略所在的目录内，不得在策略目录外创建任何文件
+12. **训练验证分离**：测试集（2020-04-28~2024-04-28）用于参数优化，验证集（2024-04-28~2026-04-28）仅用于最终检验，禁止在验证集上调参
 
 ## 策略文件结构
 
@@ -855,6 +1066,7 @@ strategies/<策略目录>/           # ← 被优化策略的根目录
     ├── run_optimization.py          # 自动化回测运行脚本
     ├── generate_report.py           # HTML报告生成脚本
     ├── optimization_report.html     # HTML优化报告
+    ├── optimization_history.json    # 优化历史记录（每次优化追加写入）
     └── optimization_results/        # 优化回测结果子目录
         ├── baseline.json            # 基线结果
         ├── opt01_xxx.json           # 优化1结果
@@ -899,13 +1111,14 @@ strategy_dir = get_strategy_dir('small_cap')
 
 报告应包含以下内容：
 
-1. **优化概览**：策略名称、回测区间、股票池、核心指标、基线与优化后对比
+1. **优化概览**：策略名称、测试集/验证集区间、股票池、核心指标、基线与优化后对比
 2. **结果汇总表**：所有优化的夏普比率、变化百分比、总收益、最大回撤、结论
 3. **详细分析**：每项优化的方向、实现方式、预期目标、实际结果、成功/失败原因
 4. **硬逻辑与过度拟合审查**：每项有效优化的硬逻辑评级、样本外衰减比、参数敏感度、时间稳定性、综合审查结论
 5. **组合优化结果**：基线与组合优化的对比表
 6. **最终参数**：更新后的策略参数值
-7. **经验总结**：优化过程中的关键收获
+7. **验证集检验**：在验证集（2024-04-28 ~ 2026-04-28）上的最终策略表现，与测试集对比
+8. **经验总结**：优化过程中的关键收获
 
 ## 已验证的有效优化
 
