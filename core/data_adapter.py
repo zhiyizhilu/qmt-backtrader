@@ -92,6 +92,10 @@ class MarketDataAdapter(ABC):
         """获取当前价格"""
         pass
 
+    def get_open_price(self, symbol: str) -> Optional[float]:
+        """获取当前bar的开盘价，默认返回None，子类可覆盖"""
+        return None
+
     @abstractmethod
     def get_close_prices(self, symbol: str, period: int = None) -> List[float]:
         """获取收盘价序列"""
@@ -260,6 +264,16 @@ class BacktraderDataAdapter(MarketDataAdapter):
             price = data.close[0]
             # NaN 表示该日期尚无实际数据（前置填充行），返回 None
             if price != price:  # NaN != NaN is True
+                return None
+            return price
+        return None
+
+    def get_open_price(self, symbol: str) -> Optional[float]:
+        """获取当前bar的开盘价"""
+        data = self._symbol_data_map.get(symbol)
+        if data:
+            price = data.open[0]
+            if price != price:  # NaN check
                 return None
             return price
         return None

@@ -475,6 +475,12 @@ class StrategyLogic:
             return self._data_adapter.get_current_price(symbol)
         return None
 
+    def get_open_price(self, symbol: str) -> Optional[float]:
+        """获取指定标的当前bar的开盘价"""
+        if self._data_adapter and hasattr(self._data_adapter, 'get_open_price'):
+            return self._data_adapter.get_open_price(symbol)
+        return None
+
     def get_unadjusted_price(self, symbol: str) -> Optional[float]:
         """获取指定标的的不复权（实际）价格
 
