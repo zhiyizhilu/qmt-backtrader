@@ -1,0 +1,20 @@
+{
+  "initial_capital": 200000,
+  "final_value": 312357.50779961207,
+  "total_return_pct": 56.17875389980603,
+  "sharpe_ratio": 1.2098433389672332,
+  "max_drawdown_pct": -12.043969393472324,
+  "annual_return_pct": 12.27984019285926,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 214370486.06956223,
+  "label": "slip_notrade_0930_0945",
+  "extra_params": {
+    "switch_threshold": 0.005,
+    "spread_threshold": 0.004,
+    "no_trade_start": "09:30",
+    "no_trade_end": "09:45"
+  },
+  "slippage": 0.0007,
+  "timestamp": "2026-05-28T09:35:55.691263"
+}

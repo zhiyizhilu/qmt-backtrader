@@ -1,0 +1,19 @@
+{
+  "initial_capital": 200000,
+  "final_value": 295571.87555835285,
+  "total_return_pct": 47.78593777917643,
+  "sharpe_ratio": 0.6265204123397323,
+  "max_drawdown_pct": -34.391300055543816,
+  "annual_return_pct": 10.680123013646226,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 192952946.75145596,
+  "label": "opt08_extra_stocks",
+  "extra_params": {
+    "extra_stocks": {
+      "交通银行": "601328.SH",
+      "招商银行": "600036.SH"
+    }
+  },
+  "timestamp": "2026-05-27T19:17:52.951797"
+}

@@ -1,0 +1,18 @@
+{
+  "initial_capital": 200000,
+  "final_value": 707407.9618519293,
+  "total_return_pct": 253.70398092596466,
+  "sharpe_ratio": 3.247547436770822,
+  "max_drawdown_pct": -8.649579202881974,
+  "annual_return_pct": 38.84596549440546,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 456445872.99394935,
+  "label": "combo06",
+  "extra_params": {
+    "switch_threshold": 0.004,
+    "min_holding_bars": 10,
+    "no_trade_close_start": "14:57"
+  },
+  "timestamp": "2026-05-27T20:29:38.589669"
+}

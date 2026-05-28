@@ -1,0 +1,18 @@
+{
+  "initial_capital": 200000,
+  "final_value": 639792.3927490647,
+  "total_return_pct": 219.89619637453237,
+  "sharpe_ratio": 2.9015235386945557,
+  "max_drawdown_pct": -7.764433806096059,
+  "annual_return_pct": 35.26898592434833,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 331622091.2581994,
+  "label": "review_slip_无滑点_st0.005",
+  "extra_params": {
+    "switch_threshold": 0.005,
+    "spread_threshold": 0.004
+  },
+  "slippage": 0.0,
+  "timestamp": "2026-05-28T09:58:35.914100"
+}

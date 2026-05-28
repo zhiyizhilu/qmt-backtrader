@@ -1,0 +1,18 @@
+{
+  "initial_capital": 200000,
+  "final_value": 181207.58407270606,
+  "total_return_pct": -9.39620796364697,
+  "sharpe_ratio": -2.702942375107668,
+  "max_drawdown_pct": -10.968205837130391,
+  "annual_return_pct": -28.539503007914778,
+  "trading_days": 74,
+  "fee": 0,
+  "turnover": 14666507.842220997,
+  "label": "review_oos_year_2026Q1",
+  "extra_params": {
+    "switch_threshold": 0.005,
+    "spread_threshold": 0.004
+  },
+  "slippage": 0.0007,
+  "timestamp": "2026-05-28T10:00:49.999760"
+}

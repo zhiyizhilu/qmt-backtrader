@@ -1,0 +1,16 @@
+{
+  "initial_capital": 200000,
+  "final_value": 200000,
+  "total_return_pct": 0.0,
+  "sharpe_ratio": 0.0,
+  "max_drawdown_pct": 0.0,
+  "fee": 0,
+  "turnover": 0.0,
+  "label": "review_year_2022",
+  "extra_params": {
+    "switch_threshold": 0.005,
+    "spread_threshold": 0.004
+  },
+  "slippage": 0.0007,
+  "timestamp": "2026-05-28T09:55:29.502494"
+}

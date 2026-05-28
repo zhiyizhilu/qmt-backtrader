@@ -1,0 +1,16 @@
+{
+  "initial_capital": 200000,
+  "final_value": 208338.18266347997,
+  "total_return_pct": 4.169091331739983,
+  "sharpe_ratio": 1.2943325469482918,
+  "max_drawdown_pct": -4.174012489527836,
+  "annual_return_pct": 14.503398723977746,
+  "trading_days": 76,
+  "fee": 0,
+  "turnover": 199586.68260000003,
+  "label": "opt01_switch_threshold_005_2024",
+  "extra_params": {
+    "switch_threshold": 0.005
+  },
+  "timestamp": "2026-05-27T19:20:50.899236"
+}

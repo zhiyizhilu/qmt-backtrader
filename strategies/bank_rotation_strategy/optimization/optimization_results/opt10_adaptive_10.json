@@ -1,0 +1,16 @@
+{
+  "initial_capital": 200000,
+  "final_value": 275724.9546105814,
+  "total_return_pct": 37.862477305290696,
+  "sharpe_ratio": 0.8783616793020383,
+  "max_drawdown_pct": -16.018381099208828,
+  "annual_return_pct": 8.699420449406192,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 260914701.9470996,
+  "label": "opt10_adaptive_10",
+  "extra_params": {
+    "adaptive_threshold": 1.0
+  },
+  "timestamp": "2026-05-27T19:17:53.849568"
+}

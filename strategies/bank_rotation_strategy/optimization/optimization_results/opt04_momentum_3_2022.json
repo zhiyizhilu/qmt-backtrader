@@ -1,0 +1,16 @@
+{
+  "initial_capital": 200000,
+  "final_value": 216780.21937020993,
+  "total_return_pct": 8.390109685104965,
+  "sharpe_ratio": 1.3232591336245312,
+  "max_drawdown_pct": -4.045101131367359,
+  "annual_return_pct": 8.75156346916266,
+  "trading_days": 242,
+  "fee": 0,
+  "turnover": 16583251.398950003,
+  "label": "opt04_momentum_3_2022",
+  "extra_params": {
+    "momentum_period": 3
+  },
+  "timestamp": "2026-05-27T19:20:50.157266"
+}

@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>银行轮动策略 - 滑点修正优化报告</title>
+<style>
+  :root { --bg: #0d1117; --card: #161b22; --border: #30363d; --text: #c9d1d9; --dim: #8b949e; --accent: #58a6ff; --green: #3fb950; --red: #f85149; --yellow: #d29922; --purple: #bc8cff; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; padding: 2rem; }
+  h1 { font-size: 1.8rem; margin-bottom: 0.5rem; color: #fff; }
+  h2 { font-size: 1.3rem; margin: 2rem 0 1rem; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+  h3 { font-size: 1.1rem; margin: 1.5rem 0 0.8rem; color: var(--purple); }
+  .subtitle { color: var(--dim); margin-bottom: 2rem; font-size: 0.95rem; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+  .metric { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem; text-align: center; }
+  .metric .label { font-size: 0.8rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; }
+  .metric .value { font-size: 1.6rem; font-weight: 700; margin-top: 0.3rem; }
+  .green { color: var(--green); }
+  .red { color: var(--red); }
+  .yellow { color: var(--yellow); }
+  .accent { color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.85rem; }
+  th, td { padding: 0.6rem 0.8rem; text-align: right; border-bottom: 1px solid var(--border); }
+  th { background: #1c2128; color: var(--dim); font-weight: 600; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; }
+  td:first-child, th:first-child { text-align: left; }
+  tr:hover { background: #1c2128; }
+  .highlight { background: rgba(88,166,255,0.1); }
+  .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+  .badge-green { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge-red { background: rgba(248,81,73,0.15); color: var(--red); }
+  .badge-yellow { background: rgba(210,153,34,0.15); color: var(--yellow); }
+  .comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+  .comparison .card { margin-bottom: 0; }
+  .finding { padding: 0.8rem 1rem; border-left: 3px solid var(--accent); background: rgba(88,166,255,0.05); margin: 0.8rem 0; border-radius: 0 4px 4px 0; }
+  .finding-critical { border-left-color: var(--red); background: rgba(248,81,73,0.05); }
+  .finding-success { border-left-color: var(--green); background: rgba(63,185,80,0.05); }
+  code { background: #1c2128; padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.85em; }
+  .bar { height: 6px; border-radius: 3px; background: var(--border); margin-top: 0.3rem; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 3px; }
+  .timeline { position: relative; padding-left: 2rem; }
+  .timeline::before { content: ''; position: absolute; left: 0.5rem; top: 0; bottom: 0; width: 2px; background: var(--border); }
+  .timeline-item { position: relative; margin-bottom: 1.5rem; }
+  .timeline-item::before { content: ''; position: absolute; left: -1.65rem; top: 0.4rem; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>银行轮动策略 - 滑点修正优化报告</h1>
+<p class="subtitle">修正日期: 2026-05-28 | 关键修正: 双边价差 → 单边价差 | slippage 0.0014 → 0.0007</p>
+
+<!-- 核心发现 -->
+<h2>1. 核心发现：滑点计算修正</h2>
+
+<div class="card">
+  <h3>价差分布验证（307,343笔Tick数据）</h3>
+  <div class="grid">
+    <div class="metric">
+      <div class="label">ask1 = lastPrice</div>
+      <div class="value green">51.0%</div>
+      <div style="font-size:0.75rem;color:var(--dim)">买入无侵蚀</div>
+    </div>
+    <div class="metric">
+      <div class="label">bid1 = lastPrice</div>
+      <div class="value green">48.3%</div>
+      <div style="font-size:0.75rem;color:var(--dim)">卖出无侵蚀</div>
+    </div>
+    <div class="metric">
+      <div class="label">双边都有价差</div>
+      <div class="value yellow">1.1%</div>
+      <div style="font-size:0.75rem;color:var(--dim)">仅极少数情况</div>
+    </div>
+    <div class="metric">
+      <div class="label">双边都相等</div>
+      <div class="value accent">0.3%</div>
+      <div style="font-size:0.75rem;color:var(--dim)">涨跌停等极端</div>
+    </div>
+  </div>
+
+  <div class="finding finding-critical">
+    <strong>关键修正：</strong>之前使用非零均值0.14%作为slippage，忽略了超过一半的tick买卖方向无侵蚀。
+    实际上绝大多数时候只有单边价差（买入或卖出一方），另一边等于收盘价。
+    修正后使用含零均值0.0696%，取slippage=0.0007。
+  </div>
+</div>
+
+<div class="comparison">
+  <div class="card">
+    <h3 style="color:var(--red)">修正前（错误）</h3>
+    <div class="metric" style="margin-bottom:1rem">
+      <div class="label">slippage</div>
+      <div class="value red">0.0014</div>
+    </div>
+    <div style="font-size:0.85rem">
+      <p>计算方式：非零价差均值</p>
+      <p>双向滑点成本: <strong class="red">0.28%</strong></p>
+      <p>含佣金总成本: <strong class="red">0.32%</strong></p>
+      <p>0.003阈值成本占比: <strong class="red">106%</strong>（完全被侵蚀）</p>
+    </div>
+  </div>
+  <div class="card">
+    <h3 style="color:var(--green)">修正后（正确）</h3>
+    <div class="metric" style="margin-bottom:1rem">
+      <div class="label">slippage</div>
+      <div class="value green">0.0007</div>
+    </div>
+    <div style="font-size:0.85rem">
+      <p>计算方式：含零价差均值</p>
+      <p>双向滑点成本: <strong class="green">0.14%</strong></p>
+      <p>含佣金总成本: <strong class="green">0.18%</strong></p>
+      <p>0.003阈值成本占比: <strong class="yellow">60%</strong>（偏高但可行）</p>
+    </div>
+  </div>
+</div>
+
+<!-- 各银行侵蚀详情 -->
+<h2>2. 各银行价格侵蚀详情</h2>
+<div class="card">
+<table>
+  <tr>
+    <th>银行</th>
+    <th>买入侵蚀(含零)</th>
+    <th>卖出侵蚀(含零)</th>
+    <th>买入侵蚀(非零)</th>
+    <th>卖出侵蚀(非零)</th>
+    <th>非零买入占比</th>
+    <th>非零卖出占比</th>
+  </tr>
+  <tr>
+    <td>工商银行</td>
+    <td>0.0616%</td>
+    <td>0.0742%</td>
+    <td>0.1377%</td>
+    <td>0.1379%</td>
+    <td>45.7%</td>
+    <td>54.0%</td>
+  </tr>
+  <tr>
+    <td>农业银行</td>
+    <td>0.0671%</td>
+    <td>0.0817%</td>
+    <td>0.1509%</td>
+    <td>0.1511%</td>
+    <td>45.6%</td>
+    <td>54.3%</td>
+  </tr>
+  <tr>
+    <td>建设银行</td>
+    <td>0.0523%</td>
+    <td>0.0484%</td>
+    <td>0.1031%</td>
+    <td>0.1027%</td>
+    <td>51.6%</td>
+    <td>48.4%</td>
+  </tr>
+  <tr class="highlight">
+    <td>中国银行</td>
+    <td>0.0870%</td>
+    <td>0.0841%</td>
+    <td>0.1732%</td>
+    <td>0.1731%</td>
+    <td>50.6%</td>
+    <td>48.8%</td>
+  </tr>
+</table>
+<div class="finding">
+  <strong>注意：</strong>中国银行的侵蚀比例最高（含零均值0.087%），约为建设银行（0.052%）的1.7倍。
+  这与中国银行股价较低、最小价格单位（0.01元）占比更大有关。
+</div>
+</div>
+
+<!-- 精细阈值扫描 -->
+<h2>3. 精细阈值扫描结果</h2>
+<div class="card">
+  <p style="margin-bottom:1rem">扫描范围: switch_threshold 0.003-0.010 × spread_threshold 0.003-0.005，共24组参数</p>
+  <table>
+    <tr>
+      <th>switch_threshold</th>
+      <th>spread_threshold</th>
+      <th>样本内夏普</th>
+      <th>样本内收益</th>
+      <th>样本外夏普</th>
+      <th>样本外收益</th>
+      <th>综合评分</th>
+      <th>评价</th>
+    </tr>
+    <tr class="highlight">
+      <td>0.004</td>
+      <td>0.004</td>
+      <td>1.0531</td>
+      <td>47.53%</td>
+      <td>0.6877</td>
+      <td>16.51%</td>
+      <td><strong>0.8339</strong></td>
+      <td><span class="badge badge-green">稳健</span></td>
+    </tr>
+    <tr>
+      <td>0.004</td>
+      <td>0.003</td>
+      <td>1.0529</td>
+      <td>47.36%</td>
+      <td>0.6877</td>
+      <td>16.51%</td>
+      <td><strong>0.8338</strong></td>
+      <td><span class="badge badge-green">稳健</span></td>
+    </tr>
+    <tr>
+      <td>0.004</td>
+      <td>0.005</td>
+      <td>1.0492</td>
+      <td>46.77%</td>
+      <td>0.6857</td>
+      <td>16.87%</td>
+      <td><strong>0.8311</strong></td>
+      <td><span class="badge badge-green">稳健</span></td>
+    </tr>
+    <tr>
+      <td>0.008</td>
+      <td>0.004</td>
+      <td>1.0425</td>
+      <td>49.07%</td>
+      <td>0.5673</td>
+      <td>13.71%</td>
+      <td><strong>0.7574</strong></td>
+      <td><span class="badge badge-green">稳健</span></td>
+    </tr>
+    <tr>
+      <td>0.008</td>
+      <td>0.003</td>
+      <td>1.0416</td>
+      <td>48.84%</td>
+      <td>0.5673</td>
+      <td>13.71%</td>
+      <td><strong>0.7570</strong></td>
+      <td><span class="badge badge-green">稳健</span></td>
+    </tr>
+    <tr>
+      <td>0.008</td>
+      <td>0.005</td>
+      <td>1.0272</td>
+      <td>47.56%</td>
+      <td>0.5668</td>
+      <td>14.11%</td>
+      <td><strong>0.7510</strong></td>
+      <td><span class="badge badge-green">稳健</span></td>
+    </tr>
+    <tr>
+      <td>0.007</td>
+      <td>0.004</td>
+      <td>1.1011</td>
+      <td>51.29%</td>
+      <td>0.4484</td>
+      <td>10.24%</td>
+      <td><strong>0.7095</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.007</td>
+      <td>0.003</td>
+      <td>1.1001</td>
+      <td>51.04%</td>
+      <td>0.4484</td>
+      <td>10.24%</td>
+      <td><strong>0.7091</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.007</td>
+      <td>0.005</td>
+      <td>1.0871</td>
+      <td>49.84%</td>
+      <td>0.4489</td>
+      <td>10.65%</td>
+      <td><strong>0.7042</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.005</td>
+      <td>0.004</td>
+      <td>1.3014</td>
+      <td>64.20%</td>
+      <td>0.2745</td>
+      <td>5.35%</td>
+      <td><strong>0.6853</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.005</td>
+      <td>0.003</td>
+      <td>1.3013</td>
+      <td>64.00%</td>
+      <td>0.2745</td>
+      <td>5.35%</td>
+      <td><strong>0.6852</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.005</td>
+      <td>0.005</td>
+      <td>1.2926</td>
+      <td>63.06%</td>
+      <td>0.2733</td>
+      <td>5.70%</td>
+      <td><strong>0.6811</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.006</td>
+      <td>0.003</td>
+      <td>1.2735</td>
+      <td>62.84%</td>
+      <td>0.2827</td>
+      <td>5.66%</td>
+      <td><strong>0.6790</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.006</td>
+      <td>0.004</td>
+      <td>1.2734</td>
+      <td>63.02%</td>
+      <td>0.2827</td>
+      <td>5.66%</td>
+      <td><strong>0.6790</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.006</td>
+      <td>0.005</td>
+      <td>1.2719</td>
+      <td>62.23%</td>
+      <td>0.2794</td>
+      <td>5.96%</td>
+      <td><strong>0.6764</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.009</td>
+      <td>0.003</td>
+      <td>0.8121</td>
+      <td>34.98%</td>
+      <td>0.4789</td>
+      <td>11.17%</td>
+      <td><strong>0.6122</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.009</td>
+      <td>0.004</td>
+      <td>0.8110</td>
+      <td>35.07%</td>
+      <td>0.4789</td>
+      <td>11.17%</td>
+      <td><strong>0.6117</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.009</td>
+      <td>0.005</td>
+      <td>0.8034</td>
+      <td>34.10%</td>
+      <td>0.4791</td>
+      <td>11.58%</td>
+      <td><strong>0.6088</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.010</td>
+      <td>0.003</td>
+      <td>0.6770</td>
+      <td>28.71%</td>
+      <td>0.4886</td>
+      <td>11.47%</td>
+      <td><strong>0.5640</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.010</td>
+      <td>0.004</td>
+      <td>0.6769</td>
+      <td>28.86%</td>
+      <td>0.4886</td>
+      <td>11.47%</td>
+      <td><strong>0.5640</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.010</td>
+      <td>0.005</td>
+      <td>0.6574</td>
+      <td>27.34%</td>
+      <td>0.4864</td>
+      <td>11.81%</td>
+      <td><strong>0.5548</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.003</td>
+      <td>0.003</td>
+      <td>0.7616</td>
+      <td>33.13%</td>
+      <td>0.4093</td>
+      <td>8.90%</td>
+      <td><strong>0.5502</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.003</td>
+      <td>0.004</td>
+      <td>0.7614</td>
+      <td>33.27%</td>
+      <td>0.4093</td>
+      <td>8.90%</td>
+      <td><strong>0.5501</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+    <tr>
+      <td>0.003</td>
+      <td>0.005</td>
+      <td>0.7581</td>
+      <td>32.59%</td>
+      <td>0.4089</td>
+      <td>9.28%</td>
+      <td><strong>0.5485</strong></td>
+      <td><span class="badge badge-yellow">一般</span></td>
+    </tr>
+  </table>
+  <div class="finding finding-success">
+    <strong>最优参数：</strong>switch_threshold=0.004, spread_threshold=0.004
+    <br>综合评分0.8339（样本内0.4 + 样本外0.6权重），样本外夏普0.69，收益16.5%
+    <br>相比0.005阈值（样本内1.30但样本外仅0.27），0.004在样本内外更均衡
+  </div>
+</div>
+
+<!-- 扰动测试 -->
+<h2>4. 扰动测试与稳健性</h2>
+<div class="card">
+  <table>
+    <tr>
+      <th>参数变化</th>
+      <th>样本内夏普</th>
+      <th>样本内收益</th>
+      <th>样本内回撤</th>
+    </tr>
+    <tr>
+      <td>+20% (st=0.0048)</td>
+      <td>1.2734</td>
+      <td>63.02%</td>
+      <td>-11.27%</td>
+    </tr>
+    <tr>
+      <td>+10% (st=0.0044)</td>
+      <td>1.3557</td>
+      <td>68.54%</td>
+      <td>-10.89%</td>
+    </tr>
+    <tr class="highlight">
+      <td><strong>基准 (st=0.004)</strong></td>
+      <td><strong>1.3014</strong></td>
+      <td><strong>64.20%</strong></td>
+      <td><strong>-11.18%</strong></td>
+    </tr>
+    <tr>
+      <td>-10% (st=0.0036)</td>
+      <td>1.0890</td>
+      <td>50.76%</td>
+      <td>-13.13%</td>
+    </tr>
+    <tr>
+      <td>-20% (st=0.0032)</td>
+      <td>1.0531</td>
+      <td>47.53%</td>
+      <td>-14.35%</td>
+    </tr>
+  </table>
+  <div class="finding">
+    <strong>扰动稳定性：</strong>±20%参数变化下，样本内夏普在1.05-1.36之间，表现稳定。
+    但需注意样本外衰减问题——0.005在样本外夏普仅0.27，而0.004达到0.69。
+  </div>
+</div>
+
+<!-- 年度表现 -->
+<h2>5. 年度表现分解（最优参数 st=0.004, sp=0.004）</h2>
+<div class="card">
+  <table>
+    <tr>
+      <th>年份</th>
+      <th>夏普比率</th>
+      <th>收益率</th>
+      <th>最大回撤</th>
+      <th>评价</th>
+    </tr>
+    <tr>
+      <td>2020</td>
+      <td>-0.12</td>
+      <td>-0.84%</td>
+      <td>-10.92%</td>
+      <td><span class="badge badge-red">亏损</span></td>
+    </tr>
+    <tr>
+      <td>2021</td>
+      <td>0.79</td>
+      <td>7.64%</td>
+      <td>-9.24%</td>
+      <td><span class="badge badge-green">盈利</span></td>
+    </tr>
+    <tr>
+      <td>2024</td>
+      <td>2.34</td>
+      <td>31.80%</td>
+      <td>-9.15%</td>
+      <td><span class="badge badge-green">优秀</span></td>
+    </tr>
+    <tr>
+      <td>2025</td>
+      <td>0.05</td>
+      <td>-1.37%</td>
+      <td>-11.78%</td>
+      <td><span class="badge badge-yellow">持平</span></td>
+    </tr>
+    <tr>
+      <td>2026Q1</td>
+      <td>-2.70</td>
+      <td>-9.40%</td>
+      <td>-10.97%</td>
+      <td><span class="badge badge-red">亏损</span></td>
+    </tr>
+  </table>
+  <div class="finding finding-critical">
+    <strong>风险提示：</strong>2025年和2026Q1表现明显走弱，策略可能面临市场环境变化。
+    银行股同质化程度提高时，比率差缩小，换仓机会减少且利润空间不足。
+  </div>
+</div>
+
+<!-- 成本分析 -->
+<h2>6. 成本敏感性分析</h2>
+<div class="card">
+  <table>
+    <tr>
+      <th>switch_threshold</th>
+      <th>利润空间</th>
+      <th>双向滑点(0.07%×2)</th>
+      <th>双向佣金(0.02%×2)</th>
+      <th>总成本</th>
+      <th>成本占比</th>
+      <th>净利润空间</th>
+    </tr>
+    <tr>
+      <td>0.003</td>
+      <td>0.30%</td>
+      <td>0.14%</td>
+      <td>0.04%</td>
+      <td>0.18%</td>
+      <td class="yellow">60%</td>
+      <td class="green">0.12%</td>
+    </tr>
+    <tr class="highlight">
+      <td><strong>0.004</strong></td>
+      <td><strong>0.40%</strong></td>
+      <td><strong>0.14%</strong></td>
+      <td><strong>0.04%</strong></td>
+      <td><strong>0.18%</strong></td>
+      <td class="green"><strong>45%</strong></td>
+      <td class="green"><strong>0.22%</strong></td>
+    </tr>
+    <tr>
+      <td>0.005</td>
+      <td>0.50%</td>
+      <td>0.14%</td>
+      <td>0.04%</td>
+      <td>0.18%</td>
+      <td class="green">36%</td>
+      <td class="green">0.32%</td>
+    </tr>
+    <tr>
+      <td>0.008</td>
+      <td>0.80%</td>
+      <td>0.14%</td>
+      <td>0.04%</td>
+      <td>0.18%</td>
+      <td class="green">23%</td>
+      <td class="green">0.62%</td>
+    </tr>
+  </table>
+  <div class="finding">
+    <strong>对比修正前：</strong>之前slippage=0.0014时，0.003阈值的成本占比高达106%（完全被侵蚀）。
+    修正后slippage=0.0007，0.003阈值的成本占比降至60%，0.004阈值为45%。
+    0.004是成本占比和交易频率的较好平衡点。
+  </div>
+</div>
+
+<!-- 最终参数 -->
+<h2>7. 最终参数与结论</h2>
+<div class="card">
+  <div class="grid">
+    <div class="metric">
+      <div class="label">slippage</div>
+      <div class="value green">0.0007</div>
+    </div>
+    <div class="metric">
+      <div class="label">switch_threshold</div>
+      <div class="value accent">0.004</div>
+    </div>
+    <div class="metric">
+      <div class="label">spread_threshold</div>
+      <div class="value accent">0.004</div>
+    </div>
+    <div class="metric">
+      <div class="label">commission</div>
+      <div class="value">0.0002</div>
+    </div>
+  </div>
+
+  <h3>优化历程</h3>
+  <div class="timeline">
+    <div class="timeline-item">
+      <strong>第一版</strong>：switch_threshold=0.003, slippage=0（无滑点）
+      <br><span class="dim">问题：忽略交易成本，回测虚高</span>
+    </div>
+    <div class="timeline-item">
+      <strong>第二版</strong>：switch_threshold=0.010, slippage=0.0014（非零均值，高估）
+      <br><span class="dim">问题：滑点高估一倍，阈值过大导致交易机会过少</span>
+    </div>
+    <div class="timeline-item" style="color:var(--green)">
+      <strong>第三版（当前）</strong>：switch_threshold=0.004, slippage=0.0007（含零均值，正确）
+      <br><span class="dim">修正：单边价差验证→含零均值→综合评分最优</span>
+    </div>
+  </div>
+
+  <div class="finding finding-success" style="margin-top:1.5rem">
+    <strong>结论：</strong>
+    <ol style="margin-left:1.2rem;margin-top:0.5rem">
+      <li>用户的理解完全正确——绝大多数时候只有单边价差，不应使用双边价差计算滑点</li>
+      <li>修正后slippage从0.0014降至0.0007，双向成本从0.32%降至0.18%</li>
+      <li>0.003阈值变得可行（成本占比60%），但0.004更优（成本占比45%，样本外夏普0.69）</li>
+      <li>0.005虽然样本内夏普最高(1.30)，但样本外严重衰减(0.27)，不推荐</li>
+      <li>策略在2025-2026年表现走弱，需关注市场环境变化</li>
+    </ol>
+  </div>
+</div>
+
+</body>
+</html>

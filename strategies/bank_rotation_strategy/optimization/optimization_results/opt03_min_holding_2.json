@@ -1,0 +1,16 @@
+{
+  "initial_capital": 200000,
+  "final_value": 269246.3638438402,
+  "total_return_pct": 34.6231819219201,
+  "sharpe_ratio": 0.7927000727003068,
+  "max_drawdown_pct": -13.24977279056859,
+  "annual_return_pct": 8.030040440921615,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 59534875.78080003,
+  "label": "opt03_min_holding_2",
+  "extra_params": {
+    "min_holding_days": 2
+  },
+  "timestamp": "2026-05-27T19:17:50.145303"
+}

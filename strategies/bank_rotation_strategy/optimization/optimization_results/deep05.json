@@ -1,0 +1,17 @@
+{
+  "initial_capital": 200000,
+  "final_value": 634900.9384430754,
+  "total_return_pct": 217.45046922153767,
+  "sharpe_ratio": 2.8812317764452056,
+  "max_drawdown_pct": -7.939349745493608,
+  "annual_return_pct": 34.9995480972203,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 319634642.7884994,
+  "label": "deep05",
+  "extra_params": {
+    "no_trade_start": "09:30",
+    "no_trade_end": "09:35"
+  },
+  "timestamp": "2026-05-27T20:23:46.233634"
+}

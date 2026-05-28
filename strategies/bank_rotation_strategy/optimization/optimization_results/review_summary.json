@@ -1,0 +1,251 @@
+{
+  "oos": {
+    "opt10_adaptive_05": {
+      "label": "opt10_adaptive_05",
+      "train_period": "2020-04-28 ~ 2024-04-28",
+      "valid_period": "2024-04-28 ~ 2026-04-28",
+      "in_sample_sharpe": 1.2154378160447183,
+      "out_sample_sharpe": 0.5307625643451331,
+      "baseline_is_sharpe": 0.8756850750449261,
+      "baseline_oos_sharpe": 0.6032998127966859,
+      "is_improvement_pct": 38.79850766925102,
+      "oos_improvement_pct": -12.023416369929828,
+      "decay_ratio": -0.30989378438023646
+    },
+    "opt04_momentum_3": {
+      "label": "opt04_momentum_3",
+      "train_period": "2020-04-28 ~ 2024-04-28",
+      "valid_period": "2024-04-28 ~ 2026-04-28",
+      "in_sample_sharpe": 1.0228181580734308,
+      "out_sample_sharpe": 0.5790196456229023,
+      "baseline_is_sharpe": 0.8756850750449261,
+      "baseline_oos_sharpe": 0.6032998127966859,
+      "is_improvement_pct": 16.802054439600468,
+      "oos_improvement_pct": -4.024560700794725,
+      "decay_ratio": -0.23952789316699916
+    },
+    "opt01_switch_threshold_005": {
+      "label": "opt01_switch_threshold_005",
+      "train_period": "2020-04-28 ~ 2024-04-28",
+      "valid_period": "2024-04-28 ~ 2026-04-28",
+      "in_sample_sharpe": 0.9996391087122639,
+      "out_sample_sharpe": 0.4318425334159697,
+      "baseline_is_sharpe": 0.8756850750449261,
+      "baseline_oos_sharpe": 0.6032998127966859,
+      "is_improvement_pct": 14.155092646860343,
+      "oos_improvement_pct": -28.419912578109468,
+      "decay_ratio": -2.0077517884994642
+    }
+  },
+  "sensitivity": {
+    "opt10_adaptive_05": {
+      "label": "opt10_adaptive_05",
+      "base_sharpe": 1.2154378160447183,
+      "base_param": 0.5,
+      "perturbation_results": {
+        "perturb_-20%": {
+          "param_value": 0.4,
+          "sharpe_ratio": 1.1591353428098268
+        },
+        "perturb_-10%": {
+          "param_value": 0.45,
+          "sharpe_ratio": 1.200966027535803
+        },
+        "perturb_+10%": {
+          "param_value": 0.55,
+          "sharpe_ratio": 1.2414531441530823
+        },
+        "perturb_+20%": {
+          "param_value": 0.6,
+          "sharpe_ratio": 1.2018601359483534
+        }
+      },
+      "sharpe_std": 0.03255975985936288,
+      "sharpe_range": 0.0823178013432555,
+      "sensitivity_ratio": 0.06772687196053712
+    },
+    "opt04_momentum_3": {
+      "label": "opt04_momentum_3",
+      "base_sharpe": 1.0228181580734308,
+      "base_param": 3,
+      "perturbation_results": {
+        "perturb_-20%": {
+          "param_value": 2,
+          "sharpe_ratio": 0.8850973121856972
+        },
+        "perturb_-10%": {
+          "param_value": 3,
+          "sharpe_ratio": 1.0228181580734308
+        },
+        "perturb_+10%": {
+          "param_value": 3,
+          "sharpe_ratio": 1.0228181580734308
+        },
+        "perturb_+20%": {
+          "param_value": 4,
+          "sharpe_ratio": 0.8247491048214014
+        }
+      },
+      "sharpe_std": 0.12062170332094897,
+      "sharpe_range": 0.1980690532520294,
+      "sensitivity_ratio": 0.1936503098704369
+    },
+    "opt01_switch_threshold_005": {
+      "label": "opt01_switch_threshold_005",
+      "base_sharpe": 0.9996391087122639,
+      "base_param": 0.005,
+      "perturbation_results": {
+        "perturb_-20%": {
+          "param_value": 0.004,
+          "sharpe_ratio": 0.7262364947960648
+        },
+        "perturb_-10%": {
+          "param_value": 0.0045000000000000005,
+          "sharpe_ratio": 0.9431572992814615
+        },
+        "perturb_+10%": {
+          "param_value": 0.0055000000000000005,
+          "sharpe_ratio": 1.0569071237270784
+        },
+        "perturb_+20%": {
+          "param_value": 0.006,
+          "sharpe_ratio": 1.0025266393389667
+        }
+      },
+      "sharpe_std": 0.14250188373285183,
+      "sharpe_range": 0.3306706289310136,
+      "sensitivity_ratio": 0.3307900081630298
+    }
+  },
+  "temporal": {
+    "opt10_adaptive_05": {
+      "label": "opt10_adaptive_05",
+      "yearly_results": [
+        {
+          "year": 2020,
+          "opt_sharpe": -0.32217254593194145,
+          "base_sharpe": -0.4424276361708428,
+          "improvement": 0.12025509023890135,
+          "is_positive": true
+        },
+        {
+          "year": 2021,
+          "opt_sharpe": 0.3305526895140487,
+          "base_sharpe": 0.2928803952769066,
+          "improvement": 0.03767229423714208,
+          "is_positive": true
+        },
+        {
+          "year": 2022,
+          "opt_sharpe": 1.6659129467592189,
+          "base_sharpe": 0.3370178430525523,
+          "improvement": 1.3288951037066665,
+          "is_positive": true
+        },
+        {
+          "year": 2023,
+          "opt_sharpe": 2.2313733327764083,
+          "base_sharpe": 1.9984731608378363,
+          "improvement": 0.23290017193857193,
+          "is_positive": true
+        },
+        {
+          "year": 2024,
+          "opt_sharpe": 2.592430396393691,
+          "base_sharpe": 2.183639799563685,
+          "improvement": 0.40879059683000607,
+          "is_positive": true
+        }
+      ],
+      "positive_years": 5,
+      "total_years": 5,
+      "consistency_ratio": 1.0
+    },
+    "opt04_momentum_3": {
+      "label": "opt04_momentum_3",
+      "yearly_results": [
+        {
+          "year": 2020,
+          "opt_sharpe": -0.48111250613729306,
+          "base_sharpe": -0.4424276361708428,
+          "improvement": -0.038684869966450264,
+          "is_positive": false
+        },
+        {
+          "year": 2021,
+          "opt_sharpe": 0.6251388116570176,
+          "base_sharpe": 0.2928803952769066,
+          "improvement": 0.33225841638011094,
+          "is_positive": true
+        },
+        {
+          "year": 2022,
+          "opt_sharpe": 1.3232591336245312,
+          "base_sharpe": 0.3370178430525523,
+          "improvement": 0.9862412905719788,
+          "is_positive": true
+        },
+        {
+          "year": 2023,
+          "opt_sharpe": 1.6966162128289524,
+          "base_sharpe": 1.9984731608378363,
+          "improvement": -0.30185694800888396,
+          "is_positive": false
+        },
+        {
+          "year": 2024,
+          "opt_sharpe": 2.8774464455496194,
+          "base_sharpe": 2.183639799563685,
+          "improvement": 0.6938066459859344,
+          "is_positive": true
+        }
+      ],
+      "positive_years": 3,
+      "total_years": 5,
+      "consistency_ratio": 0.6
+    },
+    "opt01_switch_threshold_005": {
+      "label": "opt01_switch_threshold_005",
+      "yearly_results": [
+        {
+          "year": 2020,
+          "opt_sharpe": -0.18184112368095393,
+          "base_sharpe": -0.4424276361708428,
+          "improvement": 0.26058651248988884,
+          "is_positive": true
+        },
+        {
+          "year": 2021,
+          "opt_sharpe": 0.6438637376558551,
+          "base_sharpe": 0.2928803952769066,
+          "improvement": 0.3509833423789485,
+          "is_positive": true
+        },
+        {
+          "year": 2022,
+          "opt_sharpe": 0.3772266219236615,
+          "base_sharpe": 0.3370178430525523,
+          "improvement": 0.04020877887110924,
+          "is_positive": true
+        },
+        {
+          "year": 2023,
+          "opt_sharpe": 1.4217435314267304,
+          "base_sharpe": 1.9984731608378363,
+          "improvement": -0.576729629411106,
+          "is_positive": false
+        },
+        {
+          "year": 2024,
+          "opt_sharpe": 1.2943325469482918,
+          "base_sharpe": 2.183639799563685,
+          "improvement": -0.8893072526153931,
+          "is_positive": false
+        }
+      ],
+      "positive_years": 3,
+      "total_years": 5,
+      "consistency_ratio": 0.6
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "initial_capital": 200000,
+  "final_value": 541448.4433055804,
+  "total_return_pct": 170.7242216527902,
+  "sharpe_ratio": 2.559703960850547,
+  "max_drawdown_pct": -7.773198555464512,
+  "annual_return_pct": 29.52925532351456,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 311592303.47529936,
+  "label": "deep08",
+  "extra_params": {
+    "daily_drawdown_limit": 0.005
+  },
+  "timestamp": "2026-05-27T20:24:56.959076"
+}

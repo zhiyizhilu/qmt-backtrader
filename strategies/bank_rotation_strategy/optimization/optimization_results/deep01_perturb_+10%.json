@@ -1,0 +1,16 @@
+{
+  "initial_capital": 200000,
+  "final_value": 722125.4641138931,
+  "total_return_pct": 261.0627320569466,
+  "sharpe_ratio": 3.269979832460326,
+  "max_drawdown_pct": -8.744166251574125,
+  "annual_return_pct": 39.5907135146371,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 541433543.4321009,
+  "label": "deep01_perturb_+10%",
+  "extra_params": {
+    "switch_threshold": 0.0033000000000000004
+  },
+  "timestamp": "2026-05-27T21:33:24.625068"
+}

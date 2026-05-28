@@ -1,0 +1,18 @@
+{
+  "initial_capital": 200000,
+  "final_value": 295064.16358092375,
+  "total_return_pct": 47.53208179046187,
+  "sharpe_ratio": 1.0531039007884742,
+  "max_drawdown_pct": -14.353895501642603,
+  "annual_return_pct": 10.630700022550288,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 279107621.03687835,
+  "label": "review_perturb_-20%",
+  "extra_params": {
+    "switch_threshold": 0.004,
+    "spread_threshold": 0.004
+  },
+  "slippage": 0.0007,
+  "timestamp": "2026-05-28T09:52:58.719033"
+}
