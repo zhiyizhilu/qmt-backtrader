@@ -36,6 +36,10 @@ class EngineDataAdapter(MarketDataAdapter):
         self._ohlcv_data: Dict[str, deque] = {}
         self._last_daily_date: Dict[str, Optional[datetime.date]] = {}
         self._current_day_close: Dict[str, Optional[float]] = {}
+        self._current_day_open: Dict[str, Optional[float]] = {}
+        self._current_day_high: Dict[str, Optional[float]] = {}
+        self._current_day_low: Dict[str, Optional[float]] = {}
+        self._current_day_volume: Dict[str, float] = {}
 
         for symbol in data_feeds:
             self._close_prices[symbol] = deque(maxlen=self.MAX_CLOSE_PRICES)
@@ -43,6 +47,10 @@ class EngineDataAdapter(MarketDataAdapter):
             self._ohlcv_data[symbol] = deque(maxlen=self.MAX_CLOSE_PRICES)
             self._last_daily_date[symbol] = None
             self._current_day_close[symbol] = None
+            self._current_day_open[symbol] = None
+            self._current_day_high[symbol] = None
+            self._current_day_low[symbol] = None
+            self._current_day_volume[symbol] = 0.0
 
     @property
     def period(self) -> str:
@@ -93,10 +101,39 @@ class EngineDataAdapter(MarketDataAdapter):
                     })
             else:
                 current_date = feed.get_date(local_idx)
+                o = feed.get_open(local_idx)
+                h = feed.get_high(local_idx)
+                l = feed.get_low(local_idx)
+                v = feed.get_volume(local_idx)
+                v = 0.0 if (isinstance(v, float) and math.isnan(v)) else float(v)
+
                 if self._last_daily_date.get(symbol) != current_date:
                     if self._last_daily_date.get(symbol) is not None and self._current_day_close.get(symbol) is not None:
                         self._daily_close_prices[symbol].append(self._current_day_close[symbol])
+                        day_open = self._current_day_open.get(symbol)
+                        day_high = self._current_day_high.get(symbol)
+                        day_low = self._current_day_low.get(symbol)
+                        day_vol = self._current_day_volume.get(symbol, 0.0)
+                        if day_open is not None and day_high is not None and day_low is not None:
+                            self._ohlcv_data[symbol].append({
+                                'open': day_open,
+                                'high': day_high,
+                                'low': day_low,
+                                'close': self._current_day_close[symbol],
+                                'volume': day_vol,
+                            })
                     self._last_daily_date[symbol] = current_date
+                    self._current_day_open[symbol] = o if not math.isnan(o) else close
+                    self._current_day_high[symbol] = h if not math.isnan(h) else close
+                    self._current_day_low[symbol] = l if not math.isnan(l) else close
+                    self._current_day_volume[symbol] = v
+                else:
+                    if not math.isnan(h) and self._current_day_high.get(symbol) is not None:
+                        self._current_day_high[symbol] = max(self._current_day_high[symbol], h)
+                    if not math.isnan(l) and self._current_day_low.get(symbol) is not None:
+                        self._current_day_low[symbol] = min(self._current_day_low[symbol], l)
+                    self._current_day_volume[symbol] = self._current_day_volume.get(symbol, 0.0) + v
+
                 self._current_day_close[symbol] = close
 
     def finalize_daily_bars(self):
@@ -107,6 +144,18 @@ class EngineDataAdapter(MarketDataAdapter):
                     close = feed.get_close(local_idx)
                     if not math.isnan(close):
                         self._daily_close_prices[symbol].append(close)
+                        day_open = self._current_day_open.get(symbol)
+                        day_high = self._current_day_high.get(symbol)
+                        day_low = self._current_day_low.get(symbol)
+                        day_vol = self._current_day_volume.get(symbol, 0.0)
+                        if day_open is not None and day_high is not None and day_low is not None:
+                            self._ohlcv_data[symbol].append({
+                                'open': day_open,
+                                'high': day_high,
+                                'low': day_low,
+                                'close': close,
+                                'volume': day_vol,
+                            })
 
     def get_current_price(self, symbol: str) -> Optional[float]:
         local_idx = self._current_local_indices.get(symbol, -1)

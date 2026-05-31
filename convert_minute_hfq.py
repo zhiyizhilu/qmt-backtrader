@@ -282,6 +282,232 @@ def _format_size(size_bytes: int) -> str:
     return f"{size_bytes} B"
 
 
+def validate_merged_data(symbol: str,
+                         qmt_min_bfq: pd.DataFrame, qmt_min_hfq: pd.DataFrame,
+                         jq_min_bfq: Optional[pd.DataFrame], jq_min_hfq: Optional[pd.DataFrame],
+                         merged_bfq: pd.DataFrame, merged_hfq: pd.DataFrame,
+                         strict: bool = False) -> Dict:
+    """验证合并后的数据质量
+
+    检验项：
+    1. 重叠区间：QMT直接后复权 vs 聚宽线性变换后复权 的价格偏差
+    2. 边界连续性：QMT/聚宽数据接缝处价格跳变检查
+    3. 价格合理性：后复权 >= 不复权 & 无负价格
+    4. 数据完整性：合并后无重复索引、无异常空值
+
+    Args:
+        symbol: 股票代码
+        qmt_min_bfq: QMT不复权分钟数据
+        qmt_min_hfq: QMT后复权分钟数据
+        jq_min_bfq: 聚宽不复权分钟数据
+        jq_min_hfq: 聚宽转换后后复权数据
+        merged_bfq: 合并后不复权数据
+        merged_hfq: 合并后后复权数据
+        strict: 严格模式，检验失败时抛出异常
+
+    Returns:
+        验证结果字典，包含 passed, warnings, details
+    """
+    validation = {'passed': True, 'warnings': [], 'details': {}}
+
+    known_qmt_bug_stocks = {
+        '600076.SH': 'QMT后复权算法在2024年存在严重bug，315个close为负，建议排除此股票',
+        '600734.SH': 'QMT后复权算法在2020-2021年存在严重bug，23416个close为负，建议排除此股票',
+        '600052.SH': 'QMT后复权在2021-02-01~02-18期间存在轻微异常(ratio~0.63)，影响较小',
+        '600744.SH': 'QMT后复权在2020-02-04当天存在异常(1个open为负)，影响极小',
+    }
+
+    def _warn(msg: str):
+        logger.warning(f"  [验证] {msg}")
+        validation['warnings'].append(msg)
+
+    def _fail(msg: str):
+        validation['passed'] = False
+        _warn(msg)
+
+    logger.info(f"数据验证 {symbol}...")
+
+    # ---- 1. 重叠区间对比 ----
+    if (jq_min_hfq is not None and not jq_min_hfq.empty
+            and not qmt_min_hfq.empty):
+        overlap_idx = qmt_min_hfq.index[qmt_min_hfq.index.isin(jq_min_hfq.index)]
+        if len(overlap_idx) > 0:
+            qmt_overlap = qmt_min_hfq.loc[overlap_idx]
+            jq_overlap = jq_min_hfq.loc[overlap_idx]
+
+            overlap_stats = {}
+            for col in ['open', 'high', 'low', 'close']:
+                if col not in qmt_overlap.columns or col not in jq_overlap.columns:
+                    continue
+
+                qmt_vals = qmt_overlap[col].values.astype(float)
+                jq_vals = jq_overlap[col].values.astype(float)
+
+                nonzero = (qmt_vals != 0) & (jq_vals != 0)
+                if nonzero.sum() == 0:
+                    continue
+
+                diff_pct = np.abs(qmt_vals[nonzero] - jq_vals[nonzero]) / qmt_vals[nonzero] * 100
+                exact_match = np.sum(diff_pct < 0.001)
+                close_match_1pct = np.sum(diff_pct < 1.0)
+                large_diff_count = int(np.sum(diff_pct >= 1.0))
+                max_diff = float(diff_pct.max())
+                mean_diff = float(diff_pct.mean())
+
+                overlap_stats[col] = {
+                    'total': int(nonzero.sum()),
+                    'exact_match': int(exact_match),
+                    'exact_match_pct': round(exact_match / nonzero.sum() * 100, 2),
+                    'close_match_1pct': int(close_match_1pct),
+                    'close_match_1pct_pct': round(close_match_1pct / nonzero.sum() * 100, 2),
+                    'large_diff_count': large_diff_count,
+                    'max_diff_pct': round(max_diff, 4),
+                    'mean_diff_pct': round(mean_diff, 6),
+                }
+
+                logger.info(f"  重叠验证 {col}: 精确匹配={exact_match}/{nonzero.sum()}"
+                            f"({exact_match / nonzero.sum() * 100:.2f}%), "
+                            f"偏差<1%={close_match_1pct}/{nonzero.sum()}, "
+                            f"最大偏差={max_diff:.4f}%, 平均偏差={mean_diff:.6f}%")
+
+                if col == 'close' and max_diff > 1.0:
+                    _fail(f"close 最大偏差 {max_diff:.4f}% > 1%, 线性变换可能存在问题")
+                elif col == 'close' and mean_diff > 0.01:
+                    _warn(f"close 平均偏差 {mean_diff:.6f}% > 0.01%")
+
+                if large_diff_count > 0 and col == 'open':
+                    _warn(f"open 有 {large_diff_count} 个bar偏差>=1% (除权日开盘价跳变, 属正常现象)")
+
+            validation['details']['overlap'] = overlap_stats
+        else:
+            logger.info(f"  无重叠区间，跳过重叠验证")
+    else:
+        logger.info(f"  缺少聚宽或QMT后复权数据，跳过重叠验证")
+
+    # ---- 2. 边界连续性检查 ----
+    if (jq_min_hfq is not None and not jq_min_hfq.empty
+            and not qmt_min_hfq.empty):
+        qmt_start = qmt_min_hfq.index[0]
+        jq_before_qmt = jq_min_hfq[jq_min_hfq.index < qmt_start]
+
+        if not jq_before_qmt.empty and not qmt_min_hfq.empty:
+            jq_last_bar = jq_before_qmt.iloc[-1]
+            qmt_first_bar = qmt_min_hfq.iloc[0]
+
+            boundary_stats = {}
+            for col in ['open', 'high', 'low', 'close']:
+                if col not in jq_last_bar.index or col not in qmt_first_bar.index:
+                    continue
+                jq_val = float(jq_last_bar[col])
+                qmt_val = float(qmt_first_bar[col])
+                if jq_val != 0:
+                    jump_pct = abs(qmt_val - jq_val) / jq_val * 100
+                    boundary_stats[col] = {
+                        'jq_last': round(jq_val, 4),
+                        'qmt_first': round(qmt_val, 4),
+                        'jump_pct': round(jump_pct, 4),
+                    }
+                    logger.info(f"  边界 {col}: 聚宽最后={jq_val:.4f}, QMT首个={qmt_val:.4f}, "
+                                f"跳变={jump_pct:.4f}%")
+
+                    if col == 'close' and jump_pct > 5.0:
+                        _fail(f"边界close跳变 {jump_pct:.4f}% > 5%, 数据接缝可能有问题")
+                    elif col == 'close' and jump_pct > 1.0:
+                        _warn(f"边界close跳变 {jump_pct:.4f}% > 1%, 请关注")
+
+            validation['details']['boundary'] = boundary_stats
+
+            time_gap = qmt_start - jq_before_qmt.index[-1]
+            logger.info(f"  边界时间间隔: {time_gap}")
+
+    # ---- 3. 价格合理性：后复权 >= 不复权 & 无负价格 ----
+    if not merged_bfq.empty and not merged_hfq.empty:
+        common_idx = merged_bfq.index[merged_bfq.index.isin(merged_hfq.index)]
+        if len(common_idx) > 0:
+            bfq_common = merged_bfq.loc[common_idx]
+            hfq_common = merged_hfq.loc[common_idx]
+
+            negative_count = 0
+            for col in ['close']:
+                if col not in bfq_common.columns or col not in hfq_common.columns:
+                    continue
+                bfq_vals = bfq_common[col].values.astype(float)
+                hfq_vals = hfq_common[col].values.astype(float)
+                valid = (bfq_vals > 0) & (hfq_vals > 0)
+                if valid.sum() == 0:
+                    continue
+                ratio = hfq_vals[valid] / bfq_vals[valid]
+                negative_count = int(np.sum(ratio < 0.99))
+
+            if negative_count > 0:
+                if symbol in known_qmt_bug_stocks:
+                    _warn(f"后复权 < 不复权 的bar数: {negative_count} "
+                          f"[已知QMT数据问题] {known_qmt_bug_stocks[symbol]}")
+                else:
+                    _warn(f"后复权 < 不复权 的bar数: {negative_count} "
+                          f"(QMT日线后复权数据本身可能存在异常, 非转换问题)")
+            else:
+                logger.info(f"  价格合理性: 通过 (后复权 >= 不复权)")
+
+            validation['details']['price_sanity'] = {'negative_ratio_count': negative_count}
+
+    # ---- 3b. 负价格检测 ----
+    if not merged_hfq.empty:
+        neg_price_info = {}
+        for col in ['open', 'high', 'low', 'close']:
+            if col not in merged_hfq.columns:
+                continue
+            neg_count = int((merged_hfq[col].astype(float) < 0).sum())
+            if neg_count > 0:
+                neg_price_info[col] = neg_count
+        if neg_price_info:
+            if symbol in known_qmt_bug_stocks:
+                _warn(f"后复权存在负价格: {neg_price_info} "
+                      f"[已知QMT数据问题] {known_qmt_bug_stocks[symbol]}")
+            else:
+                _fail(f"后复权存在负价格: {neg_price_info} (非已知QMT数据问题，需排查)")
+        validation['details']['negative_prices'] = neg_price_info
+
+    # ---- 4. 数据完整性 ----
+    integrity = {}
+    if not merged_hfq.empty:
+        dup_count = int(merged_hfq.index.duplicated().sum())
+        integrity['duplicate_index'] = dup_count
+        if dup_count > 0:
+            _fail(f"合并后存在 {dup_count} 个重复索引")
+
+        nan_cols = {}
+        for col in ['open', 'high', 'low', 'close']:
+            if col in merged_hfq.columns:
+                nan_count = int(merged_hfq[col].isna().sum())
+                if nan_count > 0:
+                    nan_cols[col] = nan_count
+        if nan_cols:
+            _warn(f"后复权数据存在空值: {nan_cols}")
+        integrity['nan_in_hfq'] = nan_cols
+
+    if not merged_bfq.empty:
+        dup_count_bfq = int(merged_bfq.index.duplicated().sum())
+        integrity['duplicate_index_bfq'] = dup_count_bfq
+        if dup_count_bfq > 0:
+            _fail(f"合并不复权存在 {dup_count_bfq} 个重复索引")
+
+    logger.info(f"  数据完整性: 索引重复={integrity.get('duplicate_index', 'N/A')}, "
+                f"空值={integrity.get('nan_in_hfq', {})}")
+
+    validation['details']['integrity'] = integrity
+
+    # ---- 总结 ----
+    if validation['passed']:
+        logger.info(f"  验证通过 ✓")
+    else:
+        logger.warning(f"  验证未通过 ✗ ({len(validation['warnings'])} 个问题)")
+        if strict:
+            raise ValueError(f"{symbol} 数据验证失败: {'; '.join(validation['warnings'])}")
+
+    return validation
+
+
 def convert_minute_data(symbol: str, start_date: str = '19900101',
                         end_date: str = '20991231', force: bool = False,
                         jq: bool = False, jq_dir: str = JQ_DEFAULT_DIR) -> Dict:
@@ -359,6 +585,12 @@ def convert_minute_data(symbol: str, start_date: str = '19900101',
 
     if not merged_bfq.empty:
         logger.info(f"  数据范围: {merged_bfq.index[0].date()} ~ {merged_bfq.index[-1].date()}")
+
+    validation = validate_merged_data(
+        symbol, qmt_min_bfq, qmt_min_hfq, jq_min_bfq, jq_min_hfq,
+        merged_bfq, merged_hfq, strict=False,
+    )
+    result['validation'] = validation
 
     logger.info(f"保存不复权数据到缓存...")
     raw_years = save_to_cache(symbol, merged_bfq, 'QMTDataProcessor_Raw', '1m', force=force)

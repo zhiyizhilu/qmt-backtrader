@@ -335,6 +335,7 @@ class SmartCacheManager:
         req_start = self._get_param_value(func, args, kwargs, 'start_date', '')
         req_end = self._get_param_value(func, args, kwargs, 'end_date', '')
         skip_current_year_refresh = kwargs.pop('skip_current_year_refresh', False)
+        skip_early_missing = kwargs.pop('skip_early_missing', False)
 
         if not symbol or not req_start or not req_end:
             return func(*args, **kwargs)
@@ -354,13 +355,31 @@ class SmartCacheManager:
 
         cached_frames, truly_missing = self._check_cache_coverage(
             namespace, symbol, period, req_years, req_start, req_end, is_raw,
-            skip_current_year_refresh
+            skip_current_year_refresh, skip_early_missing
         )
+
+        if skip_early_missing and truly_missing and cached_frames:
+            available_years_from_cache = set()
+            for f in cached_frames:
+                if isinstance(f, pd.DataFrame) and isinstance(f.index, pd.DatetimeIndex):
+                    available_years_from_cache.update(f.index.year.unique())
+            if available_years_from_cache:
+                min_cached_year = min(available_years_from_cache)
+                early_missing = set(y for y in truly_missing if y < min_cached_year)
+                if early_missing:
+                    self.logger.info(
+                        f"[{namespace}] {symbol} skip_early_missing: 过滤早期缺失年份 {sorted(early_missing)}, "
+                        f"最早缓存年份={min_cached_year}"
+                    )
+                    truly_missing -= early_missing
+                    idx = self.index_manager
+                    idx.update_checked_market_years(symbol, period, sorted(early_missing))
 
         if truly_missing:
             new_frames = self._fetch_missing_years(
                 namespace, func, args, kwargs, symbol, period,
-                truly_missing, req_years, req_start, req_end, is_raw
+                truly_missing, req_years, req_start, req_end, is_raw,
+                skip_early_missing=skip_early_missing
             )
             cached_frames.extend(new_frames)
 
@@ -378,7 +397,8 @@ class SmartCacheManager:
     def _check_cache_coverage(self, namespace: str, symbol: str, period: str,
                                req_years: List[int], req_start: str,
                                req_end: str, is_raw: bool,
-                               skip_current_year_refresh: bool = False) -> Tuple[list, set]:
+                               skip_current_year_refresh: bool = False,
+                               skip_early_missing: bool = False) -> Tuple[list, set]:
         """检查缓存覆盖情况，返回 (cached_frames, truly_missing)
 
         从索引和磁盘判断哪些年份已有缓存，并验证已有缓存是否覆盖请求范围。
@@ -431,7 +451,7 @@ class SmartCacheManager:
                 else:
                     coverage_missing = self._verify_cache_date_coverage(
                         namespace, symbol, pd.concat(cached_frames), req_years, req_start, req_end, checked_years,
-                        skip_current_year_refresh, is_raw, period
+                        skip_current_year_refresh, is_raw, period, skip_early_missing
                     )
                     if coverage_missing == set(req_years):
                         cached_frames = []
@@ -456,7 +476,8 @@ class SmartCacheManager:
                                      checked_years: set,
                                      skip_current_year_refresh: bool = False,
                                      is_raw: bool = False,
-                                     period: str = '1d') -> set:
+                                     period: str = '1d',
+                                     skip_early_missing: bool = False) -> set:
         """验证缓存数据是否覆盖请求的日期范围，返回仍需获取的年份集合
 
         返回空集表示缓存完全覆盖，无需增量获取。
@@ -477,46 +498,48 @@ class SmartCacheManager:
 
         missing = set()
         if disk_start > req_start:
-            first_cached_year = cached_df.index.min().year
-            start_missing = set(y for y in req_years if y < first_cached_year)
-
-            # 利用 earliest_data_date 永久跳过上市前年份（不受 checked_years 过期影响）
-            if earliest_date:
-                earliest_year = pd.Timestamp(earliest_date).year
-                pre_listing_years = set(y for y in start_missing if y < earliest_year)
-                if pre_listing_years:
-                    start_missing -= pre_listing_years
-                    self.logger.debug(
-                        f"[{namespace}] {symbol} 跳过上市前年份: "
-                        f"最早数据日期={earliest_date}, 跳过={sorted(pre_listing_years)}"
-                    )
-            else:
-                # earliest_data_date 尚未记录，但从 checked_years 推断：
-                # 如果上市前年份全部已检查且无数据，说明缓存起始日期就是最早数据日期
-                pre_checked = start_missing & checked_years
-                if pre_checked and pre_checked == start_missing:
-                    # 所有上市前年份都已检查过且无数据，记录 earliest_data_date
-                    if is_raw:
-                        idx.update_earliest_raw_data_date(symbol, period, disk_start)
-                    else:
-                        idx.update_earliest_data_date(symbol, period, disk_start)
-                    self.logger.debug(
-                        f"[{namespace}] {symbol} 推断并记录最早数据日期: {disk_start} "
-                        f"(上市前年份={sorted(start_missing)}均已检查)"
-                    )
-
-            start_missing -= checked_years
-            missing |= start_missing
-            if start_missing:
+            if skip_early_missing:
                 self.logger.info(
-                    f"[{namespace}] {symbol} 缓存未覆盖起始日期: "
-                    f"缓存起始={disk_start}, 请求起始={req_start}, 缺失年份={sorted(start_missing)}"
-                )
-            else:
-                self.logger.debug(
-                    f"[{namespace}] {symbol} 缓存未覆盖起始日期(已检查): "
+                    f"[{namespace}] {symbol} 跳过早期缺失年份(skip_early_missing): "
                     f"缓存起始={disk_start}, 请求起始={req_start}"
                 )
+            else:
+                first_cached_year = cached_df.index.min().year
+                start_missing = set(y for y in req_years if y < first_cached_year)
+
+                if earliest_date:
+                    earliest_year = pd.Timestamp(earliest_date).year
+                    pre_listing_years = set(y for y in start_missing if y < earliest_year)
+                    if pre_listing_years:
+                        start_missing -= pre_listing_years
+                        self.logger.debug(
+                            f"[{namespace}] {symbol} 跳过上市前年份: "
+                            f"最早数据日期={earliest_date}, 跳过={sorted(pre_listing_years)}"
+                        )
+                else:
+                    pre_checked = start_missing & checked_years
+                    if pre_checked and pre_checked == start_missing:
+                        if is_raw:
+                            idx.update_earliest_raw_data_date(symbol, period, disk_start)
+                        else:
+                            idx.update_earliest_data_date(symbol, period, disk_start)
+                        self.logger.debug(
+                            f"[{namespace}] {symbol} 推断并记录最早数据日期: {disk_start} "
+                            f"(上市前年份={sorted(start_missing)}均已检查)"
+                        )
+
+                start_missing -= checked_years
+                missing |= start_missing
+                if start_missing:
+                    self.logger.info(
+                        f"[{namespace}] {symbol} 缓存未覆盖起始日期: "
+                        f"缓存起始={disk_start}, 请求起始={req_start}, 缺失年份={sorted(start_missing)}"
+                    )
+                else:
+                    self.logger.debug(
+                        f"[{namespace}] {symbol} 缓存未覆盖起始日期(已检查): "
+                        f"缓存起始={disk_start}, 请求起始={req_start}"
+                    )
 
         if disk_end < req_end:
             last_cached_year = cached_df.index.max().year
@@ -639,7 +662,8 @@ class SmartCacheManager:
                               kwargs: dict, symbol: str, period: str,
                               truly_missing: set, req_years: List[int],
                               req_start: str, req_end: str,
-                              is_raw: bool) -> list:
+                              is_raw: bool,
+                              skip_early_missing: bool = False) -> list:
         """获取缺失年份数据，写入磁盘并更新索引，返回新数据帧列表
 
         对于后复权数据(is_raw=False)，采用重叠校验策略：
@@ -655,7 +679,8 @@ class SmartCacheManager:
         if not is_raw and actual_cached:
             return self._fetch_hfq_with_overlap_check(
                 namespace, func, args, kwargs, symbol, period,
-                truly_missing, req_years, req_start, req_end
+                truly_missing, req_years, req_start, req_end,
+                skip_early_missing=skip_early_missing
             )
 
         self.logger.info(
@@ -762,7 +787,8 @@ class SmartCacheManager:
     def _fetch_hfq_with_overlap_check(self, namespace: str, func: Callable, args: tuple,
                                        kwargs: dict, symbol: str, period: str,
                                        truly_missing: set, req_years: List[int],
-                                       req_start: str, req_end: str) -> list:
+                                       req_start: str, req_end: str,
+                                       skip_early_missing: bool = False) -> list:
         """后复权数据增量更新：重叠校验策略
 
         后复权价格 = 原始价格 × 累计调整因子，调整因子随除权除息事件变化。
@@ -792,14 +818,23 @@ class SmartCacheManager:
         missing_before = any(y < min_cached for y in truly_missing)
 
         if missing_before:
-            self.logger.info(
-                f"[{namespace}] {symbol} 检测到缺失年份在已有年份前面，触发全量重获取: "
-                f"已有年份={actual_cached}, 缺失年份={sorted(truly_missing)}"
-            )
-            return self._fetch_hfq_full_range(
-                namespace, func, args, kwargs, symbol, period,
-                truly_missing, req_years, req_start, req_end
-            )
+            if skip_early_missing:
+                self.logger.info(
+                    f"[{namespace}] {symbol} skip_early_missing: 跳过早期缺失年份的全量重获取, "
+                    f"已有年份={actual_cached}, 缺失年份={sorted(truly_missing)}"
+                )
+                truly_missing = set(y for y in truly_missing if y >= min_cached)
+                if not truly_missing:
+                    return []
+            else:
+                self.logger.info(
+                    f"[{namespace}] {symbol} 检测到缺失年份在已有年份前面，触发全量重获取: "
+                    f"已有年份={actual_cached}, 缺失年份={sorted(truly_missing)}"
+                )
+                return self._fetch_hfq_full_range(
+                    namespace, func, args, kwargs, symbol, period,
+                    truly_missing, req_years, req_start, req_end
+                )
 
         overlap_start, cached_last_date = self._get_hfq_overlap_start(
             namespace, symbol, period, actual_cached
@@ -840,19 +875,33 @@ class SmartCacheManager:
             )
 
             if factor_changed:
-                self.logger.info(
-                    f"[{namespace}] {symbol} 检测到调整因子变化，触发全量重获取"
-                )
-                written = self.disk_cache.put_yearly_from_df(
-                    namespace, symbol, period, new_data,
-                    only_years=sorted(new_data.index.year.unique())
-                )
-                for y in written:
-                    idx.update_market_index(symbol, period, y)
-                return self._fetch_hfq_full_range(
-                    namespace, func, args, kwargs, symbol, period,
-                    truly_missing, req_years, req_start, req_end
-                )
+                if skip_early_missing:
+                    self.logger.info(
+                        f"[{namespace}] {symbol} 检测到调整因子变化，但skip_early_missing=True，"
+                        f"仅更新新获取的年份数据，不触发全量重获取"
+                    )
+                    new_only_years = sorted(truly_missing & set(new_data.index.year.unique()))
+                    written = self.disk_cache.put_yearly_from_df(
+                        namespace, symbol, period, new_data,
+                        only_years=new_only_years if new_only_years else None
+                    )
+                    for y in written:
+                        idx.update_market_index(symbol, period, y)
+                    new_frames.append(new_data)
+                else:
+                    self.logger.info(
+                        f"[{namespace}] {symbol} 检测到调整因子变化，触发全量重获取"
+                    )
+                    written = self.disk_cache.put_yearly_from_df(
+                        namespace, symbol, period, new_data,
+                        only_years=sorted(new_data.index.year.unique())
+                    )
+                    for y in written:
+                        idx.update_market_index(symbol, period, y)
+                    return self._fetch_hfq_full_range(
+                        namespace, func, args, kwargs, symbol, period,
+                        truly_missing, req_years, req_start, req_end
+                    )
 
             self.logger.info(
                 f"[{namespace}] {symbol} 调整因子未变化，安全追加新数据"

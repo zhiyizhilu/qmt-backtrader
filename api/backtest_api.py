@@ -125,7 +125,11 @@ class BacktestAPI(BaseAPI):
         data = None
 
         try:
-            data = self._market_data_processor.get_data(symbol, start_date, end_date, period)
+            kwargs = {}
+            if period in ('1m', '5m', '15m', '30m', '60m'):
+                kwargs['skip_early_missing'] = True
+                kwargs['skip_current_year_refresh'] = True
+            data = self._market_data_processor.get_data(symbol, start_date, end_date, period, **kwargs)
         except FutuServiceError:
             raise
         except Exception as e:
