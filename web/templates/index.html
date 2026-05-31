@@ -153,17 +153,17 @@
                                 未发现回测结果
                             </div>
                             <div v-else class="space-y-2">
-                                <!-- 标准策略 -->
-                                <div v-if="standardStrategies.length > 0">
-                                    <div class="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1.5 cursor-pointer select-none"
-                                         @click="collapsedStandard = !collapsedStandard">
-                                        <span class="collapse-toggle" :class="{ collapsed: collapsedStandard }">▼</span>
-                                        <span class="w-2 h-2 rounded-full bg-slate-500 flex-shrink-0"></span>
-                                        标准策略
+                                <!-- VIP策略 -->
+                                <div v-if="vipStrategies.length > 0">
+                                    <div class="text-xs text-amber-500/70 font-medium mb-1 flex items-center gap-1.5 cursor-pointer select-none"
+                                         @click="collapsedVip = !collapsedVip">
+                                        <span class="collapse-toggle" :class="{ collapsed: collapsedVip }">▼</span>
+                                        <span class="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0"></span>
+                                        VIP 策略
                                     </div>
-                                    <div class="collapse-content" :class="{ collapsed: collapsedStandard }" :style="{ maxHeight: collapsedStandard ? '0' : '9999px' }">
+                                    <div class="collapse-content" :class="{ collapsed: collapsedVip }" :style="{ maxHeight: collapsedVip ? '0' : '9999px' }">
                                     <div class="space-y-0.5">
-                                        <div v-for="s in standardStrategies" :key="s.name"
+                                        <div v-for="s in vipStrategies" :key="s.name"
                                              class="strategy-item rounded-lg px-2 py-2 border border-transparent group"
                                              :class="{ active: selectedStrategy === s.name }"
                                              @click="selectStrategy(s.name)">
@@ -192,17 +192,17 @@
                                     </div>
                                     </div>
                                 </div>
-                                <!-- VIP策略 -->
-                                <div v-if="vipStrategies.length > 0">
-                                    <div class="text-xs text-amber-500/70 font-medium mb-1 flex items-center gap-1.5 cursor-pointer select-none"
-                                         @click="collapsedVip = !collapsedVip">
-                                        <span class="collapse-toggle" :class="{ collapsed: collapsedVip }">▼</span>
-                                        <span class="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0"></span>
-                                        VIP 策略
+                                <!-- 标准策略 -->
+                                <div v-if="standardStrategies.length > 0">
+                                    <div class="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1.5 cursor-pointer select-none"
+                                         @click="collapsedStandard = !collapsedStandard">
+                                        <span class="collapse-toggle" :class="{ collapsed: collapsedStandard }">▼</span>
+                                        <span class="w-2 h-2 rounded-full bg-slate-500 flex-shrink-0"></span>
+                                        标准策略
                                     </div>
-                                    <div class="collapse-content" :class="{ collapsed: collapsedVip }" :style="{ maxHeight: collapsedVip ? '0' : '9999px' }">
+                                    <div class="collapse-content" :class="{ collapsed: collapsedStandard }" :style="{ maxHeight: collapsedStandard ? '0' : '9999px' }">
                                     <div class="space-y-0.5">
-                                        <div v-for="s in vipStrategies" :key="s.name"
+                                        <div v-for="s in standardStrategies" :key="s.name"
                                              class="strategy-item rounded-lg px-2 py-2 border border-transparent group"
                                              :class="{ active: selectedStrategy === s.name }"
                                              @click="selectStrategy(s.name)">
