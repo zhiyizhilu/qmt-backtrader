@@ -38,6 +38,13 @@ class SmallCapRoeStrategy(StockSelectionStrategy):
         ('max_price', 10.0),
         ('limit_days', 30),
         ('min_ipo_days', 250),
+        ('max_volatility', None),
+        ('stop_loss_pct', None),
+        ('max_same_industry', None),
+        ('min_market_cap', None),
+        ('keep_existing', None),
+        ('momentum_period', None),
+        ('max_debt_ratio', None),
     )
 
     def __init__(self, executor=None, **kwargs):
@@ -47,6 +54,7 @@ class SmallCapRoeStrategy(StockSelectionStrategy):
         self._just_sold: List[str] = []
         self._high_limit_list: List[str] = []
         self._lifecycle_manager = None
+        self._purchase_prices: Dict[str, float] = {}
 
     def _get_lifecycle_manager(self):
         if self._lifecycle_manager is None:
@@ -60,7 +68,16 @@ class SmallCapRoeStrategy(StockSelectionStrategy):
     def on_bar(self, bar):
         self._prepare_high_limit_list()
         self._check_limit_up()
+        prev_holdings = set(self._current_holdings.keys())
         super().on_bar(bar)
+        curr_holdings = set(self._current_holdings.keys())
+        for symbol in curr_holdings - prev_holdings:
+            price = self.get_unadjusted_price(symbol)
+            if price and price > 0:
+                self._purchase_prices[symbol] = price
+        for symbol in prev_holdings - curr_holdings:
+            if symbol in self._purchase_prices:
+                del self._purchase_prices[symbol]
 
     def _prepare_high_limit_list(self):
         holdings = self.get_current_holdings()
@@ -176,13 +193,37 @@ class SmallCapRoeStrategy(StockSelectionStrategy):
         filtered = self._filter_fundamental(filtered)
         self.log(f'基本面筛选(ROE>{self.params.min_roe}, ROA>{self.params.min_roa}): -> {len(filtered)} 只')
 
+        filtered = self._filter_debt_ratio(filtered)
+        if self.params.max_debt_ratio is not None:
+            self.log(f'负债率过滤(>{self.params.max_debt_ratio}): -> {len(filtered)} 只')
+
+        filtered = self._filter_volatility(filtered)
+        if self.params.max_volatility is not None:
+            self.log(f'波动率过滤(>{self.params.max_volatility}): -> {len(filtered)} 只')
+
+        filtered = self._filter_momentum(filtered)
+        if self.params.momentum_period is not None:
+            self.log(f'动量过滤(周期{self.params.momentum_period}): -> {len(filtered)} 只')
+
+        filtered = self._filter_stop_loss(filtered)
+        if self.params.stop_loss_pct is not None:
+            self.log(f'止损过滤(>{self.params.stop_loss_pct*100:.0f}%): -> {len(filtered)} 只')
+
         if not filtered:
-            self.log('基本面筛选后无股票')
+            self.log('筛选后无股票')
             return []
 
         market_caps = self._calc_market_caps(filtered)
         if not market_caps:
             self.log('无法计算市值')
+            return []
+
+        market_caps = self._filter_min_market_cap(market_caps)
+        if self.params.min_market_cap is not None:
+            self.log(f'市值下限过滤(>={self.params.min_market_cap/1e8:.0f}亿): -> {len(market_caps)} 只')
+
+        if not market_caps:
+            self.log('市值过滤后无股票')
             return []
 
         sorted_stocks = sorted(market_caps.items(), key=lambda x: x[1])
@@ -196,8 +237,16 @@ class SmallCapRoeStrategy(StockSelectionStrategy):
         target_list = [stock for stock, _ in sorted_stocks if stock not in black_list]
         self.log(f'黑名单过滤: {len(sorted_stocks)} -> {len(target_list)} 只 (黑名单{len(black_list)}只)')
 
+        target_list = self._filter_industry_concentration(target_list)
+        if self.params.max_same_industry is not None:
+            self.log(f'行业分散(同行业<={self.params.max_same_industry}只): -> {len(target_list)} 只')
+
         max_stocks = self.params.max_stocks
         selected = target_list[:max_stocks]
+
+        selected = self._apply_keep_existing(selected)
+        if self.params.keep_existing is not None:
+            self.log(f'换手率控制: 保留现有持仓 -> {len(selected)} 只')
 
         self.log(f'选股结果: {len(pool)} -> {len(selected)} 只')
         for stock, mc in sorted_stocks[:max_stocks]:
@@ -296,7 +345,7 @@ class SmallCapRoeStrategy(StockSelectionStrategy):
         pershare_fields = ['du_return_on_equity']
         pershare_data = self.get_financial_fields_batch(stock_list, 'Pershareindex', pershare_fields)
 
-        balance_fields = ['tot_assets', 'total_equity']
+        balance_fields = ['total_assets', 'total_equity']
         balance_data = self.get_financial_fields_batch(stock_list, 'Balance', balance_fields)
 
         result = []
@@ -311,7 +360,7 @@ class SmallCapRoeStrategy(StockSelectionStrategy):
                 continue
 
             stock_balance = balance_data.get(stock, {})
-            total_assets = stock_balance.get('tot_assets')
+            total_assets = stock_balance.get('total_assets')
             total_equity = stock_balance.get('total_equity')
 
             if total_assets and total_assets > 0 and total_equity and total_equity > 0:
@@ -378,3 +427,123 @@ class SmallCapRoeStrategy(StockSelectionStrategy):
             if has_limit_up:
                 result.append(stock)
         return result
+
+    def _filter_volatility(self, stock_list: List[str]) -> List[str]:
+        if self.params.max_volatility is None:
+            return stock_list
+        result = []
+        for stock in stock_list:
+            closes = self.get_close_prices(stock, 20)
+            if len(closes) < 5:
+                result.append(stock)
+                continue
+            returns = []
+            for i in range(1, len(closes)):
+                if closes[i - 1] > 0:
+                    returns.append((closes[i] - closes[i - 1]) / closes[i - 1])
+            if returns:
+                avg_ret = sum(returns) / len(returns)
+                variance = sum((r - avg_ret) ** 2 for r in returns) / len(returns)
+                daily_vol = variance ** 0.5
+                if daily_vol > self.params.max_volatility:
+                    continue
+            result.append(stock)
+        return result
+
+    def _filter_stop_loss(self, stock_list: List[str]) -> List[str]:
+        if self.params.stop_loss_pct is None:
+            return stock_list
+        result = []
+        for stock in stock_list:
+            if stock in self._purchase_prices:
+                purchase_price = self._purchase_prices[stock]
+                current_price = self.get_unadjusted_price(stock)
+                if current_price and purchase_price > 0:
+                    loss_pct = (current_price - purchase_price) / purchase_price
+                    if loss_pct <= -self.params.stop_loss_pct:
+                        self.log(f'止损过滤: {stock}, 亏损{loss_pct*100:.1f}%')
+                        continue
+            result.append(stock)
+        return result
+
+    def _filter_industry_concentration(self, stock_list: List[str]) -> List[str]:
+        if self.params.max_same_industry is None:
+            return stock_list
+        industry_count: Dict[str, int] = {}
+        result = []
+        for stock in stock_list:
+            industry = self.get_industry(stock)
+            if industry is None:
+                result.append(stock)
+                continue
+            count = industry_count.get(industry, 0)
+            if count >= self.params.max_same_industry:
+                continue
+            industry_count[industry] = count + 1
+            result.append(stock)
+        return result
+
+    def _filter_min_market_cap(self, market_caps: Dict[str, float]) -> Dict[str, float]:
+        if self.params.min_market_cap is None:
+            return market_caps
+        result = {}
+        for stock, cap in market_caps.items():
+            if cap >= self.params.min_market_cap:
+                result[stock] = cap
+            else:
+                self.log(f'市值过小过滤: {stock}, 市值{cap/1e8:.2f}亿 < {self.params.min_market_cap/1e8:.2f}亿')
+        return result
+
+    def _filter_momentum(self, stock_list: List[str]) -> List[str]:
+        if self.params.momentum_period is None:
+            return stock_list
+        result = []
+        for stock in stock_list:
+            closes = self.get_close_prices(stock, self.params.momentum_period + 1)
+            if len(closes) >= 2:
+                momentum = (closes[-1] - closes[0]) / closes[0] if closes[0] > 0 else 0
+                if momentum <= 0:
+                    continue
+            result.append(stock)
+        return result
+
+    def _filter_debt_ratio(self, stock_list: List[str]) -> List[str]:
+        if self.params.max_debt_ratio is None:
+            return stock_list
+        result = []
+        for stock in stock_list:
+            try:
+                total_assets = self.get_financial_field(stock, 'Balance', 'total_assets')
+                total_liab = self.get_financial_field(stock, 'Balance', 'total_liabilities')
+                if total_assets and total_assets > 0 and total_liab is not None:
+                    debt_ratio = total_liab / total_assets
+                    if debt_ratio > self.params.max_debt_ratio:
+                        continue
+            except Exception:
+                pass
+            result.append(stock)
+        return result
+
+    def _apply_keep_existing(self, selected: List[str]) -> List[str]:
+        if self.params.keep_existing is None:
+            return selected
+        holdings = set(self._current_holdings.keys())
+        kept = [s for s in selected if s in holdings]
+        new = [s for s in selected if s not in holdings]
+        kept_set = set(kept)
+        for stock in holdings:
+            if stock not in kept_set and stock in selected:
+                pass
+        for stock in holdings:
+            if stock not in kept_set:
+                kept.append(stock)
+        return kept + new
+
+    def _get_portfolio_value(self) -> float:
+        cash = self.get_cash()
+        holdings_value = 0
+        for symbol, volume in self._current_holdings.items():
+            price = self.get_current_price(symbol)
+            if price and price > 0:
+                holdings_value += price * volume
+        return cash + holdings_value

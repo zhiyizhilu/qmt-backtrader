@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 1793541.7961834176,
+  "total_return_pct": 79.35417961834176,
+  "sharpe_ratio": 0.7038755341140542,
+  "max_drawdown_pct": -42.18536146742407,
+  "annual_return_pct": 16.389198858090115,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 114818552.59137408,
+  "label": "opt06_momentum_confirm",
+  "extra_params": {
+    "momentum_period": 20
+  },
+  "timestamp": "2026-06-01T13:31:39.861606"
+}

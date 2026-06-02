@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 1000000,
+  "total_return_pct": 0.0,
+  "sharpe_ratio": 0.0,
+  "max_drawdown_pct": 0.0,
+  "annual_return_pct": 0.0,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 0.0,
+  "label": "r3_opt02_debt_70",
+  "extra_params": {
+    "max_debt_ratio": 0.7
+  },
+  "timestamp": "2026-06-01T21:18:34.111168"
+}
