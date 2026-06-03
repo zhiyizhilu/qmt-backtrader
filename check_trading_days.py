@@ -1,6 +1,6 @@
-"""兼容层：将 check_trading_days.py 的调用转发到 download_market_data.py --check
+"""兼容层：将 check_trading_days.py 的调用转发到 download_open_market_data.py --check
 
-原有功能已合并到 download_market_data.py 中，此文件仅做参数转换和转发。
+原有功能已合并到 download_open_market_data.py 中，此文件仅做参数转换和转发。
 """
 import sys
 import os
@@ -50,10 +50,10 @@ def main():
 
         i += 1
 
-    script = os.path.join(PROJECT_ROOT, 'download_market_data.py')
+    script = os.path.join(PROJECT_ROOT, 'download_open_market_data.py')
     cmd = [sys.executable, script] + forward_args
 
-    print(f"[兼容层] 转发到: python download_market_data.py {' '.join(forward_args)}")
+    print(f"[兼容层] 转发到: python download_open_market_data.py {' '.join(forward_args)}")
     result = subprocess.run(cmd, cwd=PROJECT_ROOT)
     sys.exit(result.returncode)
 

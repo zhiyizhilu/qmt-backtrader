@@ -1,6 +1,6 @@
-"""从富途 request_history_kline 获取行情数据（后复权/不复权）
+"""从富途 OpenD 下载行情数据（日线/分钟线，后复权/不复权）
 
-参考 download_financial_data.py 的模式实现，支持：
+参考 download_qmt_financial_data.py 的模式实现，支持：
   - 指定股票池板块或手动指定股票
   - 增量下载（跳过已有缓存）
   - 强制重新下载
@@ -13,6 +13,7 @@
 import argparse
 import logging
 import os
+import re
 import sys
 import time
 from collections import defaultdict
@@ -29,7 +30,7 @@ from core.data.qmt import QMTDataProcessor
 
 
 def setup_logger(log_to_file: bool = False, log_file: Optional[str] = None) -> logging.Logger:
-    logger = logging.getLogger('download_futu_data')
+    logger = logging.getLogger('download_futu_market_data')
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
 
@@ -47,7 +48,7 @@ def setup_logger(log_to_file: bool = False, log_file: Optional[str] = None) -> l
             log_dir = 'logs'
             if not os.path.exists(log_dir):
                 os.makedirs(log_dir)
-            log_file = f"{log_dir}/{datetime.now().strftime('%Y%m%d_%H%M%S')}_download_futu_data.log"
+            log_file = f"{log_dir}/{datetime.now().strftime('%Y%m%d_%H%M%S')}_download_futu_market_data.log"
 
         file_handler = logging.FileHandler(log_file, encoding='utf-8')
         file_handler.setLevel(logging.DEBUG)
@@ -62,7 +63,7 @@ def setup_logger(log_to_file: bool = False, log_file: Optional[str] = None) -> l
     return logger
 
 
-logger = logging.getLogger('download_futu_data')
+logger = logging.getLogger('download_futu_market_data')
 
 
 class FutuDownloadProgress:
@@ -103,6 +104,23 @@ class FutuDownloadProgress:
             f"{self.downloaded} 已下载, {self.failed} 失败, {self.skipped} 跳过 | "
             f"耗时={int(elapsed // 60)}m{int(elapsed % 60)}s ETA={eta_str}"
         )
+
+
+def load_screened_stocks(txt_path: str) -> List[str]:
+    """从策略筛选结果文件加载股票代码列表"""
+    if not os.path.exists(txt_path):
+        logger.error(f"筛选结果文件不存在: {txt_path}")
+        return []
+    stocks = []
+    with open(txt_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            m = re.match(r'^(\S+):\s+\d+\s+次', line)
+            if m:
+                symbol = m.group(1)
+                stocks.append(symbol)
+    logger.info(f"从筛选结果文件加载到 {len(stocks)} 只股票: {txt_path}")
+    return stocks
 
 
 def resolve_stock_list(qmt_processor: Optional[QMTDataProcessor],
@@ -600,25 +618,30 @@ def main():
         epilog="""
 使用示例:
   # 下载沪深300后复权日线行情数据
-  python download_futu_data.py --pool 沪深300 --start 2020-01-01 --end 2026-12-31
+  python download_futu_market_data.py --pool 沪深300 --start 2020-01-01 --end 2026-12-31
 
   # 下载指定股票的后复权和不复权数据
-  python download_futu_data.py --stocks 601398.SH,600036.SH --start 2020-01-01 --end 2026-12-31 --type all
+  python download_futu_market_data.py --stocks 601398.SH,600036.SH --start 2020-01-01 --end 2026-12-31 --type all
 
   # 下载1分钟数据
-  python download_futu_data.py --stocks 601398.SH --start 2025-01-01 --end 2026-12-31 --period 1m
+  python download_futu_market_data.py --stocks 601398.SH --start 2025-01-01 --end 2026-12-31 --period 1m
 
   # 强制重新下载（忽略已有缓存）
-  python download_futu_data.py --pool 沪深300 --start 2020-01-01 --end 2026-12-31 --force
+  python download_futu_market_data.py --pool 沪深300 --start 2020-01-01 --end 2026-12-31 --force
 
   # 启用详细日志 + 写入日志文件
-  python download_futu_data.py --pool 沪深A股 --start 2020-01-01 --end 2026-12-31 --verbose --log
+  python download_futu_market_data.py --pool 沪深A股 --start 2020-01-01 --end 2026-12-31 --verbose --log
+
+  # 从策略筛选结果文件加载股票列表下载分钟线
+  python download_futu_market_data.py --screened-stocks strategies_my/xxx/screened_stocks_raw.txt --start 2020-01-01 --end 2026-12-31 --period 1m
         """,
     )
     parser.add_argument('--pool', type=str, default=None,
                         help='股票池板块名称: 沪深300, 中证500, 中证1000, 上证50, 沪深A股')
     parser.add_argument('--stocks', type=str, default=None,
                         help='手动指定股票代码，逗号分隔，如 601398.SH,600036.SH')
+    parser.add_argument('--screened-stocks', type=str, default=None,
+                        help='从策略筛选结果文件加载股票列表，如 strategies_my/xxx/screened_stocks_raw.txt')
     parser.add_argument('--start', type=str, required=True,
                         help='数据起始日期，如 2020-01-01')
     parser.add_argument('--end', type=str, required=True,
@@ -698,10 +721,13 @@ def main():
     opendata_processor = OpenDataProcessor(fallback_to_simulated=False)
 
     # 获取股票列表
-    stock_list = resolve_stock_list(
-        qmt_processor, opendata_processor, args.pool, args.stocks,
-        args.start, args.end
-    )
+    if args.screened_stocks:
+        stock_list = load_screened_stocks(args.screened_stocks)
+    else:
+        stock_list = resolve_stock_list(
+            qmt_processor, opendata_processor, args.pool, args.stocks,
+            args.start, args.end
+        )
     if not stock_list:
         logger.error("未获取到任何股票，退出")
         sys.exit(1)

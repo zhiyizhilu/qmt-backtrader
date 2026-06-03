@@ -121,22 +121,22 @@ python main.py --mode instances --instances config/instances.json
 
 **下载行情数据（OpenData 数据源）：**
 ```bash
-python download_market_data.py --pool 中证1000 --start 2020-01-01 --end 2026-04-28
+python download_open_market_data.py --pool 中证1000 --start 2020-01-01 --end 2026-04-28
 ```
 
 **下载行情数据（QMT 数据源）：**
 ```bash
-python download_qmt_data.py --pool 中证1000 --start 2020-01-01 --end 2026-04-28
+python download_qmt_market_data.py --pool 中证1000 --start 2020-01-01 --end 2026-04-28
 ```
 
 **下载行情数据（富途数据源）：**
 ```bash
-python download_futu_data.py --pool 中证1000 --start 2020-01-01 --end 2026-04-28
+python download_futu_market_data.py --pool 中证1000 --start 2020-01-01 --end 2026-04-28
 ```
 
 **下载财务数据：**
 ```bash
-python download_financial_data.py --pool 中证1000 --start 2020-01-01
+python download_qmt_financial_data.py --pool 中证1000 --start 2020-01-01
 ```
 
 **清理过期日志：**

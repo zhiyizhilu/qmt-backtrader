@@ -53,7 +53,7 @@ class DownloadSpinner:
 
 
 def setup_logger(log_to_file: bool = False, verbose: bool = False) -> logging.Logger:
-    logger = logging.getLogger('download_qmt_data')
+    logger = logging.getLogger('download_qmt_market_data')
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
 
@@ -83,7 +83,7 @@ def setup_logger(log_to_file: bool = False, verbose: bool = False) -> logging.Lo
     return logger
 
 
-logger = logging.getLogger('download_qmt_data')
+logger = logging.getLogger('download_qmt_market_data')
 
 
 def _delete_cache(symbol: str, period: str, data_type: str):
@@ -227,22 +227,22 @@ def main():
         epilog='\n'.join([
             '使用示例:',
             '  # 测试单只股票',
-            '  python download_qmt_data.py --stocks 000001.SZ --type all',
+            '  python download_qmt_market_data.py --stocks 000001.SZ --type all',
             '',
             '  # 从JQData历史成分股CSV下载沪深300全部日线(含退市股)',
-            '  python download_qmt_data.py --index 000300.SH --type all',
+            '  python download_qmt_market_data.py --index 000300.SH --type all',
             '',
             '  # 下载沪深300当前成分股日线',
-            '  python download_qmt_data.py --pool 沪深300 --type all',
+            '  python download_qmt_market_data.py --pool 沪深300 --type all',
             '',
             '  # 下载全市场日线数据',
-            '  python download_qmt_data.py --pool 沪深A股 --type all',
+            '  python download_qmt_market_data.py --pool 沪深A股 --type all',
             '',
             '  # 强制重新下载（删除已有缓存后重新获取）',
-            '  python download_qmt_data.py --stocks 000001.SZ --type all --force',
+            '  python download_qmt_market_data.py --stocks 000001.SZ --type all --force',
             '',
             '  # 查看缓存信息',
-            '  python download_qmt_data.py --stocks 000001.SZ --info',
+            '  python download_qmt_market_data.py --stocks 000001.SZ --info',
         ]),
     )
     parser.add_argument('--stocks', type=str, default=None,

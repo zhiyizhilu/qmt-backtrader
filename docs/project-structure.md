@@ -13,10 +13,11 @@ qmt_backtrader/
 │   ├── strategies_for_vip.md    # VIP 量化策略集
 │   └── project-structure.md     # 项目结构（本文件）
 ├── main.py                      # 主入口文件
-├── download_market_data.py      # 行情数据预下载脚本（OpenData）
-├── download_financial_data.py   # 财务数据预下载脚本
-├── download_qmt_data.py         # QMT 行情数据预下载脚本
-├── download_futu_data.py        # 富途行情数据预下载脚本
+├── download_open_market_data.py  # 行情数据预下载脚本（OpenData）
+├── download_qmt_financial_data.py   # QMT 财务数据预下载脚本
+├── download_qmt_market_data.py   # QMT 行情数据预下载脚本
+├── download_futu_market_data.py        # 富途行情数据预下载脚本
+├── download_futu_capital_flow.py       # 富途资金流向数据下载脚本
 ├── api/                         # API 接口
 │   ├── backtest_api.py          # 回测 API（基于自研回测引擎）
 │   ├── base_api.py              # API 基类

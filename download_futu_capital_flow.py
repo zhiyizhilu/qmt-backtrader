@@ -7,7 +7,7 @@ from futu import OpenQuoteContext, PeriodType, RET_OK, Market, SecurityType
 
 HOST = '127.0.0.1'
 PORT = 11111
-SAVE_DIR = r'e:\jupyter notebook\automatic\qmt_backtrader\.cache\FutuData\capital_flow'
+SAVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache', 'FutuData', 'capital_flow')
 INDEX_FILE = os.path.join(SAVE_DIR, 'download_index.json')
 
 os.makedirs(SAVE_DIR, exist_ok=True)

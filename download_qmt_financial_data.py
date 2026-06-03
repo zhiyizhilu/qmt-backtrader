@@ -15,7 +15,7 @@ from core.data.qmt import QMTDataProcessor
 
 
 def setup_logger(log_to_file: bool = False, log_file: str = None) -> logging.Logger:
-    logger = logging.getLogger('download_financial_data')
+    logger = logging.getLogger('download_qmt_financial_data')
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
 
@@ -48,7 +48,7 @@ def setup_logger(log_to_file: bool = False, log_file: str = None) -> logging.Log
     return logger
 
 
-logger = logging.getLogger('download_financial_data')
+logger = logging.getLogger('download_qmt_financial_data')
 
 
 class FinancialDownloadProgress:
@@ -308,22 +308,22 @@ def main():
         epilog="""
 使用示例:
   # 下载沪深A股全部财务数据
-  python download_financial_data.py --pool 沪深A股 --start 20200101 --end 20260428
+  python download_qmt_financial_data.py --pool 沪深A股 --start 20200101 --end 20260428
 
   # 下载沪深300财务数据（仅资产负债表和利润表）
-  python download_financial_data.py --pool 沪深300 --start 20200101 --end 20260428 --tables Balance,Income
+  python download_qmt_financial_data.py --pool 沪深300 --start 20200101 --end 20260428 --tables Balance,Income
 
   # 指定股票代码下载
-  python download_financial_data.py --stocks 000001.SZ,600000.SH --start 20200101 --end 20260428
+  python download_qmt_financial_data.py --stocks 000001.SZ,600000.SH --start 20200101 --end 20260428
 
   # 强制重新下载（忽略已有缓存）
-  python download_financial_data.py --pool 沪深A股 --start 20200101 --end 20260428 --force
+  python download_qmt_financial_data.py --pool 沪深A股 --start 20200101 --end 20260428 --force
 
   # 启用详细日志 + 写入日志文件
-  python download_financial_data.py --pool 沪深A股 --start 20200101 --end 20260428 --verbose --log
+  python download_qmt_financial_data.py --pool 沪深A股 --start 20200101 --end 20260428 --verbose --log
 
   # 使用按报告期筛选
-  python download_financial_data.py --pool 沪深A股 --start 20200101 --end 20260428 --report-type report_time
+  python download_qmt_financial_data.py --pool 沪深A股 --start 20200101 --end 20260428 --report-type report_time
         """,
     )
     parser.add_argument('--pool', type=str, default=None,

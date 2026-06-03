@@ -20,7 +20,7 @@ from core.data.qmt import QMTDataProcessor
 
 
 def setup_logger(log_to_file: bool = False, log_file: str = None) -> logging.Logger:
-    logger = logging.getLogger('download_market_data')
+    logger = logging.getLogger('download_open_market_data')
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
 
@@ -38,7 +38,7 @@ def setup_logger(log_to_file: bool = False, log_file: str = None) -> logging.Log
             log_dir = 'logs'
             if not os.path.exists(log_dir):
                 os.makedirs(log_dir)
-            log_file = f"{log_dir}/{datetime.now().strftime('%Y%m%d_%H%M%S')}_download_market_data.log"
+            log_file = f"{log_dir}/{datetime.now().strftime('%Y%m%d_%H%M%S')}_download_open_market_data.log"
 
         file_handler = logging.FileHandler(log_file, encoding='utf-8')
         file_handler.setLevel(logging.DEBUG)
@@ -53,7 +53,7 @@ def setup_logger(log_to_file: bool = False, log_file: str = None) -> logging.Log
     return logger
 
 
-logger = logging.getLogger('download_market_data')
+logger = logging.getLogger('download_open_market_data')
 
 
 class MissingType(Enum):
@@ -1824,31 +1824,31 @@ def main():
         epilog='\n'.join([
             '使用示例:',
             '  # 下载沪深300后复权行情数据',
-            '  python download_market_data.py --pool 沪深300 --start 2020-01-01 --end 2026-01-01 --type adjusted --workers 5',
+            '  python download_open_market_data.py --pool 沪深300 --start 2020-01-01 --end 2026-01-01 --type adjusted --workers 5',
             '',
             '  # 下载并校验数据完整性（以沪深300交易日为基准）',
-            '  python download_market_data.py --pool 沪深300 --start 2020-01-01 --end 2026-01-01 --type all --workers 5 --verify',
+            '  python download_open_market_data.py --pool 沪深300 --start 2020-01-01 --end 2026-01-01 --type all --workers 5 --verify',
             '',
             '  # 仅校验已有数据完整性（不下载新数据）',
-            '  python download_market_data.py --pool 沪深300 --start 2020-01-01 --end 2026-01-01 --type adjusted --verify-only',
+            '  python download_open_market_data.py --pool 沪深300 --start 2020-01-01 --end 2026-01-01 --type adjusted --verify-only',
             '',
             '  # 检查交易日一致性并生成HTML报告',
-            '  python download_market_data.py --check --start 2020-01-01 --end 2026-12-31',
+            '  python download_open_market_data.py --check --start 2020-01-01 --end 2026-12-31',
             '',
             '  # 检查并修复，生成HTML报告',
-            '  python download_market_data.py --check --fix --start 2020-01-01 --end 2026-12-31',
+            '  python download_open_market_data.py --check --fix --start 2020-01-01 --end 2026-12-31',
             '',
             '  # dry-run模式：显示修复计划但不执行',
-            '  python download_market_data.py --check --fix --dry-run --start 2020-01-01 --end 2026-12-31',
+            '  python download_open_market_data.py --check --fix --dry-run --start 2020-01-01 --end 2026-12-31',
             '',
             '  # 强制重新下载 (忽略已有缓存)',
-            '  python download_market_data.py --pool 中证1000 --start 2020-01-01 --end 2026-01-01 --type raw --force',
+            '  python download_open_market_data.py --pool 中证1000 --start 2020-01-01 --end 2026-01-01 --type raw --force',
             '',
             '  # 指定股票代码下载',
-            '  python download_market_data.py --stocks 000001.SZ,600000.SH,600519.SH --start 2020-01-01 --end 2026-01-01 --type all',
+            '  python download_open_market_data.py --stocks 000001.SZ,600000.SH,600519.SH --start 2020-01-01 --end 2026-01-01 --type all',
             '',
             '  # 将日志同时写入文件',
-            '  python download_market_data.py --pool 沪深A股 --start 2020-01-01 --end 2026-01-01 --type all --workers 20 --log --verify',
+            '  python download_open_market_data.py --pool 沪深A股 --start 2020-01-01 --end 2026-01-01 --type all --workers 20 --log --verify',
         ]),
     )
     parser.add_argument('--pool', type=str, default=None,
