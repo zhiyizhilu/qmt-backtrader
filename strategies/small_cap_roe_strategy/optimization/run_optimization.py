@@ -244,11 +244,38 @@ OPTIMIZATIONS_R3 = [
     ('r3_opt08_stop10_vol06_debt70', '止损10%+波动6%+负债率70%', {'stop_loss_pct': 0.10, 'max_volatility': 0.06, 'max_debt_ratio': 0.70}),
 ]
 
+OPTIMIZATIONS_R4 = [
+    ('r4_opt01_more_stocks_15', '持仓15只', {'max_stocks': 15}),
+    ('r4_opt02_more_stocks_20', '持仓20只', {'max_stocks': 20}),
+    ('r4_opt03_score_growth', '评分排序:营收增长加权', {'score_mode': 'composite', 'growth_weight': 1.0}),
+    ('r4_opt04_score_cashflow', '评分排序:现金流质量加权', {'score_mode': 'composite', 'cashflow_weight': 1.0}),
+    ('r4_opt05_score_bm', '评分排序:账面市值比加权', {'score_mode': 'composite', 'bm_weight': 1.0}),
+    ('r4_opt06_score_growth_cashflow', '评分排序:增长+现金流', {'score_mode': 'composite', 'growth_weight': 0.5, 'cashflow_weight': 0.5}),
+    ('r4_opt07_score_all3', '评分排序:增长+现金流+BM', {'score_mode': 'composite', 'growth_weight': 0.3, 'cashflow_weight': 0.3, 'bm_weight': 0.4}),
+    ('r4_opt08_stop10_more15', '止损10%+持仓15只', {'stop_loss_pct': 0.10, 'max_stocks': 15}),
+    ('r4_opt09_score_growth_stop10', '评分:增长+止损10%', {'score_mode': 'composite', 'growth_weight': 1.0, 'stop_loss_pct': 0.10}),
+    ('r4_opt10_score_all3_stop10', '评分:三因子+止损10%', {'score_mode': 'composite', 'growth_weight': 0.3, 'cashflow_weight': 0.3, 'bm_weight': 0.4, 'stop_loss_pct': 0.10}),
+]
+
+
+OPTIMIZATIONS_R5 = [
+    ('r5_opt01_stocks_25', '持仓25只', {'max_stocks': 25}),
+    ('r5_opt02_stocks_30', '持仓30只', {'max_stocks': 30}),
+    ('r5_opt03_stocks20_stop10', '持仓20只+止损10%', {'max_stocks': 20, 'stop_loss_pct': 0.10}),
+    ('r5_opt04_stocks20_vol06', '持仓20只+波动率6%', {'max_stocks': 20, 'max_volatility': 0.06}),
+    ('r5_opt05_stocks20_stop10_vol06', '持仓20只+止损10%+波动6%', {'max_stocks': 20, 'stop_loss_pct': 0.10, 'max_volatility': 0.06}),
+    ('r5_opt06_roe_12', 'ROE阈值12%', {'min_roe': 0.12}),
+    ('r5_opt07_roe_18', 'ROE阈值18%', {'min_roe': 0.18}),
+    ('r5_opt08_price_15', '价格上限15元', {'max_price': 15.0}),
+    ('r5_opt09_price_20', '价格上限20元', {'max_price': 20.0}),
+    ('r5_opt10_stocks20_roe12', '持仓20只+ROE12%', {'max_stocks': 20, 'min_roe': 0.12}),
+]
+
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['single', 'all', 'oos', 'sensitivity', 'temporal', 'combined', 'r3'], default='all')
+    parser.add_argument('--mode', choices=['single', 'all', 'oos', 'sensitivity', 'temporal', 'combined', 'r3', 'r4', 'r5'], default='all')
     parser.add_argument('--label', type=str, default=None)
     parser.add_argument('--param-name', type=str, default=None)
     parser.add_argument('--param-value', type=float, default=None)
@@ -289,6 +316,46 @@ if __name__ == '__main__':
                 total_ret = result.get('total_return_pct', 0)
                 max_dd = result.get('max_drawdown_pct', 0)
                 print(f"    夏普: {sharpe:.4f}, 总收益: {total_ret:.2f}%, 最大回撤: {max_dd:.2f}%")
+            except Exception as e:
+                print(f"    错误: {e}")
+                traceback.print_exc()
+
+    elif args.mode == 'r4':
+        print("=" * 60)
+        print("运行第四轮优化（做加法：因子增强+组合构建）")
+        print("=" * 60)
+        for label, name, params in OPTIMIZATIONS_R4:
+            print(f"\n>>> 运行: {name} ({label})")
+            try:
+                result = run_backtest_with_params(
+                    strategy_name=STRATEGY_NAME,
+                    extra_params=params,
+                    label=label)
+                sharpe = result.get('sharpe_ratio', 0)
+                total_ret = result.get('total_return_pct', 0)
+                max_dd = result.get('max_drawdown_pct', 0)
+                print(f"    夏普: {sharpe:.4f}, 总收益: {total_ret:.2f}%, 最大回撤: {max_dd:.2f}%")
+            except Exception as e:
+                print(f"    错误: {e}")
+                traceback.print_exc()
+
+    elif args.mode == 'r5':
+        print("=" * 60)
+        print("运行第五轮优化（拓展思路：分散化深度+最佳组合+核心参数调优）")
+        print("=" * 60)
+        for label, name, params in OPTIMIZATIONS_R5:
+            print(f"\n>>> 运行: {name} ({label})")
+            try:
+                result = run_backtest_with_params(
+                    strategy_name=STRATEGY_NAME,
+                    extra_params=params,
+                    label=label)
+                sharpe = result.get('sharpe_ratio', 0)
+                total_ret = result.get('total_return_pct', 0)
+                max_dd = result.get('max_drawdown_pct', 0)
+                baseline_sharpe = 1.0644
+                improvement = (sharpe - baseline_sharpe) / baseline_sharpe * 100
+                print(f"    夏普: {sharpe:.4f} ({improvement:+.1f}%), 总收益: {total_ret:.2f}%, 最大回撤: {max_dd:.2f}%")
             except Exception as e:
                 print(f"    错误: {e}")
                 traceback.print_exc()

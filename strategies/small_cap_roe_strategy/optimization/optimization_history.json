@@ -1,0 +1,115 @@
+{
+  "strategy": "small_cap_roe",
+  "optimization_date": "2026-06-03",
+  "stock_pool": "中证全指",
+  "test_period": "2020-04-28 ~ 2024-04-28",
+  "oos_period": "2024-04-28 ~ 2026-04-28",
+  "baseline": {
+    "sharpe_ratio": 1.0644,
+    "total_return_pct": 176.86,
+    "max_drawdown_pct": -48.18,
+    "annual_return_pct": 30.29,
+    "params": {
+      "max_stocks": 10,
+      "max_volatility": null
+    }
+  },
+  "optimized": {
+    "sharpe_ratio": 1.1322,
+    "total_return_pct": 178.38,
+    "max_drawdown_pct": -44.10,
+    "annual_return_pct": 30.47,
+    "params": {
+      "max_stocks": 20,
+      "max_volatility": 0.06
+    }
+  },
+  "improvement": {
+    "sharpe_delta": 0.0678,
+    "sharpe_pct": 6.37,
+    "max_drawdown_delta": 4.08,
+    "total_return_delta": 1.52
+  },
+  "validation": {
+    "oos_base_sharpe": 1.2289,
+    "oos_opt_sharpe": 1.5836,
+    "oos_improvement_pct": 28.86,
+    "decay_ratio": 4.53,
+    "parameter_sensitivity": 0.076,
+    "temporal_stability_pct": 100
+  },
+  "sensitivity_analysis": {
+    "max_stocks_16": {"sharpe": 1.0523, "return_pct": 160.22, "max_dd_pct": -46.20},
+    "max_stocks_18": {"sharpe": 1.0460, "return_pct": 156.16, "max_dd_pct": -45.22},
+    "max_stocks_20": {"sharpe": 1.1322, "return_pct": 178.38, "max_dd_pct": -44.10},
+    "max_stocks_22": {"sharpe": 1.1042, "return_pct": 169.97, "max_dd_pct": -44.16},
+    "max_stocks_24": {"sharpe": 1.0938, "return_pct": 166.08, "max_dd_pct": -43.96}
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "approach": "做减法",
+      "optimizations": 11,
+      "best_result": "波动率5%过滤，夏普1.0842（+1.86%）",
+      "conclusion": "大部分优化无效或损害alpha，仅波动率过滤微弱有效"
+    },
+    {
+      "round": 2,
+      "approach": "做减法深化",
+      "optimizations": 10,
+      "best_result": "波动率6%过滤+止损10%，夏普1.0976（+3.12%）",
+      "conclusion": "止损和负债率过滤损害alpha，波动率6%是最优阈值"
+    },
+    {
+      "round": 3,
+      "approach": "做减法极限",
+      "optimizations": 7,
+      "best_result": "负债率50%过滤，夏普1.0828（+1.73%）",
+      "conclusion": "更严格的过滤条件反而降低效果，做减法已到极限"
+    },
+    {
+      "round": 4,
+      "approach": "做加法",
+      "optimizations": 10,
+      "best_result": "持仓20只，夏普1.1199（+5.21%）",
+      "conclusion": "增加持仓数量有效分散风险，评分排序和动态ROE无效"
+    },
+    {
+      "round": 5,
+      "approach": "做加法深化",
+      "optimizations": 10,
+      "best_result": "持仓20只+波动率6%，夏普1.1322（+6.37%）",
+      "conclusion": "持仓20只与波动率6%产生协同效应，是最终优化方案"
+    }
+  ],
+  "failed_attempts": [
+    {"name": "止损10%", "reason": "损害alpha，降低收益"},
+    {"name": "止损20%", "reason": "损害alpha，降低收益"},
+    {"name": "负债率50%", "reason": "导致0交易或微弱改善"},
+    {"name": "负债率70%", "reason": "微弱改善，不值得增加复杂度"},
+    {"name": "行业分散", "reason": "损害alpha"},
+    {"name": "市值下限", "reason": "损害alpha"},
+    {"name": "保留现有持仓", "reason": "损害alpha"},
+    {"name": "动量确认", "reason": "损害alpha"},
+    {"name": "回撤控制", "reason": "导致0交易，框架限制"},
+    {"name": "双周调仓", "reason": "损害alpha"},
+    {"name": "评分排序(增长)", "reason": "营收增长数据缺失率高，评分退化为市值排序"},
+    {"name": "评分排序(现金流)", "reason": "微弱改善，不值得增加复杂度"},
+    {"name": "评分排序(账面市值比)", "reason": "灾难性，夏普暴跌52-54%"},
+    {"name": "动态ROE", "reason": "无效，未改变选股结果"},
+    {"name": "价格上限15元", "reason": "灾难性，夏普暴跌25.6%"},
+    {"name": "价格上限20元", "reason": "灾难性，夏普暴跌更多"},
+    {"name": "持仓25只", "reason": "过度稀释alpha"},
+    {"name": "持仓30只", "reason": "过度稀释alpha"}
+  ],
+  "key_insights": [
+    "小市值+ROE策略的alpha来源非常集中，任何'做减法'的优化都损害alpha",
+    "唯一有效的方向是'做加法'——在不减少alpha暴露的前提下降低集中度风险",
+    "持仓20只是最优分散化点（15只不够分散，30只过度稀释）",
+    "波动率6%过滤与持仓20只产生协同效应",
+    "价格上限放宽是灾难性的（10→15元夏普暴跌25.6%），说明小市值alpha高度依赖低价股",
+    "ROE 12%无变化（因为ROA>10%已经是更严格的约束）",
+    "评分排序模式无效（营收增长数据缺失率高，评分退化为纯市值排序）",
+    "账面市值比评分灾难性（夏普暴跌52-54%）"
+  ]
+}

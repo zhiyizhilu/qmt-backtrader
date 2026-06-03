@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 2036581.1602106174,
+  "total_return_pct": 103.65811602106174,
+  "sharpe_ratio": 0.7913755892843999,
+  "max_drawdown_pct": -47.269696424676404,
+  "annual_return_pct": 20.29588086748997,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 58235587.98210525,
+  "label": "r5_opt08_price_15",
+  "extra_params": {
+    "max_price": 15.0
+  },
+  "timestamp": "2026-06-03T05:11:43.000442"
+}

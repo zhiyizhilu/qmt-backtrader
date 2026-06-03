@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>小市值ROE策略优化报告</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #e0e0e0; line-height: 1.6; }
+        .container { max-width: 960px; margin: 0 auto; padding: 40px 24px; }
+        h1 { font-size: 28px; font-weight: 700; color: #fff; margin-bottom: 8px; }
+        .subtitle { color: #888; font-size: 14px; margin-bottom: 40px; }
+        h2 { font-size: 20px; font-weight: 600; color: #fff; margin: 40px 0 16px; border-left: 3px solid #6c5ce7; padding-left: 12px; }
+        h3 { font-size: 16px; font-weight: 600; color: #ddd; margin: 24px 0 12px; }
+
+        .card { background: #1a1d27; border-radius: 12px; padding: 24px; margin-bottom: 16px; border: 1px solid #2a2d3a; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+        .metric-card { background: #1a1d27; border-radius: 12px; padding: 20px; border: 1px solid #2a2d3a; text-align: center; }
+        .metric-label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+        .metric-value { font-size: 28px; font-weight: 700; }
+        .metric-delta { font-size: 13px; margin-top: 4px; }
+        .positive { color: #00b894; }
+        .negative { color: #e17055; }
+        .neutral { color: #636e72; }
+
+        table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+        th { text-align: left; padding: 10px 12px; color: #888; font-weight: 500; border-bottom: 1px solid #2a2d3a; }
+        td { padding: 10px 12px; border-bottom: 1px solid #1e2130; }
+        tr:hover td { background: #1e2130; }
+
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+        .badge-pass { background: #00b89422; color: #00b894; }
+        .badge-fail { background: #e1705522; color: #e17055; }
+
+        .progress-bar { height: 6px; background: #2a2d3a; border-radius: 3px; margin-top: 8px; overflow: hidden; }
+        .progress-fill { height: 100%; border-radius: 3px; }
+
+        .insight-list { list-style: none; }
+        .insight-list li { padding: 8px 0; padding-left: 20px; position: relative; color: #bbb; font-size: 14px; }
+        .insight-list li::before { content: '→'; position: absolute; left: 0; color: #6c5ce7; font-weight: bold; }
+
+        .round-summary { display: grid; grid-template-columns: auto 1fr auto; gap: 8px 16px; align-items: center; padding: 12px 0; border-bottom: 1px solid #1e2130; }
+        .round-num { font-weight: 700; color: #6c5ce7; font-size: 14px; }
+        .round-approach { font-size: 13px; color: #888; }
+
+        .footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid #2a2d3a; color: #555; font-size: 12px; text-align: center; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>小市值ROE策略优化报告</h1>
+    <p class="subtitle">股票池：中证全指 | 测试期：2020-04-28 ~ 2024-04-28 | 验证期：2024-04-28 ~ 2026-04-28</p>
+
+    <!-- 核心指标对比 -->
+    <h2>核心指标对比</h2>
+    <div class="card-grid">
+        <div class="metric-card">
+            <div class="metric-label">夏普比率</div>
+            <div class="metric-value positive">1.1322</div>
+            <div class="metric-delta positive">+6.37% (基线 1.0644)</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">总收益率</div>
+            <div class="metric-value positive">178.38%</div>
+            <div class="metric-delta positive">+1.52% (基线 176.86%)</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">最大回撤</div>
+            <div class="metric-value positive">-44.10%</div>
+            <div class="metric-delta positive">改善 4.08% (基线 -48.18%)</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">样本外夏普</div>
+            <div class="metric-value positive">1.5836</div>
+            <div class="metric-delta positive">+28.86% (基线 1.2289)</div>
+        </div>
+    </div>
+
+    <!-- 优化方案 -->
+    <h2>最终优化方案</h2>
+    <div class="card">
+        <table>
+            <tr><th>参数</th><th>基线值</th><th>优化值</th><th>说明</th></tr>
+            <tr><td>max_stocks</td><td>10</td><td>20</td><td>持仓数量翻倍，分散集中度风险</td></tr>
+            <tr><td>max_volatility</td><td>None</td><td>0.06</td><td>过滤日波动率>6%的高风险股票</td></tr>
+        </table>
+    </div>
+
+    <!-- 硬逻辑审查 -->
+    <h2>硬逻辑与过度拟合审查</h2>
+    <div class="card">
+        <table>
+            <tr><th>检测项</th><th>指标</th><th>阈值</th><th>结果</th><th>状态</th></tr>
+            <tr>
+                <td>样本外衰减比</td>
+                <td>4.53</td>
+                <td>> 0.5</td>
+                <td>
+                    样本外改善 28.86% vs 样本内改善 6.37%
+                    <div class="progress-bar"><div class="progress-fill positive" style="width: 90%"></div></div>
+                </td>
+                <td><span class="badge badge-pass">通过</span></td>
+            </tr>
+            <tr>
+                <td>参数敏感性</td>
+                <td>0.076</td>
+                <td>< 0.3</td>
+                <td>
+                    max_stocks 在 16~24 范围内夏普波动极小
+                    <div class="progress-bar"><div class="progress-fill positive" style="width: 25%"></div></div>
+                </td>
+                <td><span class="badge badge-pass">通过</span></td>
+            </tr>
+            <tr>
+                <td>时间稳定性</td>
+                <td>100%</td>
+                <td>> 50%</td>
+                <td>2/2 时间区间均一致有效</td>
+                <td><span class="badge badge-pass">通过</span></td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- 参数敏感性详情 -->
+    <h2>参数敏感性分析</h2>
+    <div class="card">
+        <table>
+            <tr><th>max_stocks</th><th>夏普比率</th><th>总收益率</th><th>最大回撤</th><th>vs 最优</th></tr>
+            <tr><td>16</td><td>1.0523</td><td>160.22%</td><td>-46.20%</td><td class="negative">-7.06%</td></tr>
+            <tr><td>18</td><td>1.0460</td><td>156.16%</td><td>-45.22%</td><td class="negative">-7.62%</td></tr>
+            <tr style="background: #6c5ce711"><td><strong>20</strong></td><td><strong>1.1322</strong></td><td><strong>178.38%</strong></td><td><strong>-44.10%</strong></td><td class="positive">最优</td></tr>
+            <tr><td>22</td><td>1.1042</td><td>169.97%</td><td>-44.16%</td><td class="negative">-2.47%</td></tr>
+            <tr><td>24</td><td>1.0938</td><td>166.08%</td><td>-43.96%</td><td class="negative">-3.39%</td></tr>
+        </table>
+    </div>
+
+    <!-- 五轮优化历程 -->
+    <h2>五轮优化历程</h2>
+    <div class="card">
+        <div class="round-summary">
+            <span class="round-num">R1</span>
+            <span>做减法 — 波动率/止损/行业分散等11项优化</span>
+            <span class="neutral">最佳 +1.86%</span>
+        </div>
+        <div class="round-summary">
+            <span class="round-num">R2</span>
+            <span>做减法深化 — 波动率6%+止损10%等10项</span>
+            <span class="neutral">最佳 +3.12%</span>
+        </div>
+        <div class="round-summary">
+            <span class="round-num">R3</span>
+            <span>做减法极限 — 负债率等7项，已到极限</span>
+            <span class="neutral">最佳 +1.73%</span>
+        </div>
+        <div class="round-summary">
+            <span class="round-num">R4</span>
+            <span>做加法 — 增加持仓/评分排序/动态ROE等10项</span>
+            <span class="positive">突破 +5.21%</span>
+        </div>
+        <div class="round-summary" style="border-bottom: none;">
+            <span class="round-num">R5</span>
+            <span>做加法深化 — 持仓20+波动率6%协同效应等10项</span>
+            <span class="positive">最终 +6.37%</span>
+        </div>
+    </div>
+
+    <!-- 失败尝试 -->
+    <h2>失败尝试统计</h2>
+    <div class="card">
+        <p style="margin-bottom: 12px; color: #888; font-size: 13px;">共 48 次优化尝试，其中 18 种方案被确认为无效或有害</p>
+        <table>
+            <tr><th>方案</th><th>失败原因</th></tr>
+            <tr><td>止损 10%/20%</td><td>损害alpha，降低收益</td></tr>
+            <tr><td>负债率 50%/70%</td><td>导致0交易或微弱改善</td></tr>
+            <tr><td>行业分散</td><td>损害alpha</td></tr>
+            <tr><td>市值下限</td><td>损害alpha</td></tr>
+            <tr><td>保留现有持仓</td><td>损害alpha</td></tr>
+            <tr><td>动量确认</td><td>损害alpha</td></tr>
+            <tr><td>回撤控制</td><td>导致0交易，框架限制</td></tr>
+            <tr><td>双周调仓</td><td>损害alpha</td></tr>
+            <tr><td>评分排序(增长)</td><td>数据缺失率高，退化为市值排序</td></tr>
+            <tr><td>评分排序(账面市值比)</td><td>灾难性，夏普暴跌52-54%</td></tr>
+            <tr><td>动态ROE</td><td>无效，未改变选股结果</td></tr>
+            <tr><td>价格上限15/20元</td><td>灾难性，夏普暴跌25%+</td></tr>
+            <tr><td>持仓25/30只</td><td>过度稀释alpha</td></tr>
+        </table>
+    </div>
+
+    <!-- 核心洞察 -->
+    <h2>核心洞察</h2>
+    <div class="card">
+        <ul class="insight-list">
+            <li>小市值+ROE策略的alpha来源非常集中，任何"做减法"的优化都损害alpha</li>
+            <li>唯一有效的方向是"做加法"——在不减少alpha暴露的前提下降低集中度风险</li>
+            <li>持仓20只是最优分散化点（15只不够分散，30只过度稀释）</li>
+            <li>波动率6%过滤与持仓20只产生协同效应</li>
+            <li>价格上限放宽是灾难性的，说明小市值alpha高度依赖低价股</li>
+            <li>评分排序模式无效（数据缺失率高，评分退化为纯市值排序）</li>
+            <li>账面市值比评分灾难性（夏普暴跌52-54%）</li>
+        </ul>
+    </div>
+
+    <div class="footer">
+        优化报告生成时间：2026-06-03 | 策略：small_cap_roe | 优化轮次：5轮48项
+    </div>
+</div>
+</body>
+</html>

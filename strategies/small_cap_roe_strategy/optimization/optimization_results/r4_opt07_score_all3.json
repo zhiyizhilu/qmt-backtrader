@@ -1,0 +1,19 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 1256643.3135099185,
+  "total_return_pct": 25.664331350991855,
+  "sharpe_ratio": 0.48545513404616913,
+  "max_drawdown_pct": -19.32874158169329,
+  "annual_return_pct": 6.114484920265584,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 27418503.535742234,
+  "label": "r4_opt07_score_all3",
+  "extra_params": {
+    "score_mode": "composite",
+    "growth_weight": 0.3,
+    "cashflow_weight": 0.3,
+    "bm_weight": 0.4
+  },
+  "timestamp": "2026-06-02T20:58:48.791095"
+}

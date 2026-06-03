@@ -1,0 +1,17 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 2561574.2946096337,
+  "total_return_pct": 156.15742946096339,
+  "sharpe_ratio": 1.0460348892845142,
+  "max_drawdown_pct": -45.21533383234792,
+  "annual_return_pct": 27.68138367079207,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 61138022.32795352,
+  "label": "review_sens_stocks_18",
+  "extra_params": {
+    "max_stocks": 18,
+    "max_volatility": 0.06
+  },
+  "timestamp": "2026-06-03T10:19:16.995619"
+}
