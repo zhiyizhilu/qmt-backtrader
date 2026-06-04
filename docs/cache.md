@@ -22,7 +22,8 @@
 5. **原子写入**：使用临时文件 + 原子重命名，避免写入中断导致文件损坏
 6. **缓存索引**：维护年份索引，快速判断缓存覆盖范围，避免重复下载
 7. **按年份分片**：行情/财报数据按年份分片存储，一个股票一年一个文件
-8. **向后兼容**：旧格式缓存文件仍可读取
+8. **不复权数据独立缓存**：不复权数据（`get_raw_data()`）使用独立命名空间 `QMTDataProcessor_Raw`，缓存到 `market_raw/` 目录，与后复权数据完全隔离
+9. **向后兼容**：旧格式缓存文件仍可读取
 
 ## 缓存目录
 
@@ -34,7 +35,12 @@
 │   └── financial_index.json         # 财务数据索引
 ├── lifecycle/                       # 股票生命周期缓存
 │   └── stock_lifecycle.json         # 上市/退市时间数据
-├── QMTDataProcessor/                # QMT 行情数据缓存
+├── QMTDataProcessor/                # QMT 行情数据缓存（后复权）
+│   └── market/                      # 后复权行情
+│       └── {symbol}/{year}_{period}.parquet
+├── QMTDataProcessor_Raw/            # QMT 行情数据缓存（不复权）
+│   └── market_raw/                  # 不复权行情
+│       └── {symbol}/{year}_{period}.parquet
 ├── QMTDataProcessor_Financial/      # QMT 财务数据缓存
 ├── FutuData/                        # 富途行情数据缓存
 │   ├── market/                      # 后复权行情

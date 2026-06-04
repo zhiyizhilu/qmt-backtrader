@@ -77,6 +77,8 @@ class QMTDataProcessor(DataProcessor):
         
         缓存命中时不调用QMT API，直接返回缓存数据；
         缓存缺失时调用 download_history_data + get_market_data_ex，下载后保存到缓存。
+        
+        如需不复权数据，请使用 get_raw_data()。
         """
         if not self.xtdata:
             raise RuntimeError("QMT (xtquant) 未安装或未连接")

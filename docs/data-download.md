@@ -594,6 +594,17 @@ python download_qmt_market_data.py --pool 沪深300 --type market --start 2020-0
 #### Q3: 下载速度慢怎么办？
 QMT 数据通过本地接口获取，速度取决于 MiniQMT 客户端的数据同步状态。首次下载可能较慢，后续增量更新较快。
 
+#### Q4: 不复权数据如何用于回测？
+策略在 `@register_strategy` 的 `default_kwargs` 中指定 `dividend_type='none'`，回测时框架自动从 `market_raw` 目录加载不复权数据。预下载不复权数据后，回测时 `smart_cache` 直接读取本地缓存，不会重复下载。详见 [策略开发文档](strategy-development.md#使用不复权数据回测)。
+
+```bash
+# 预下载不复权日线数据（回测前执行一次即可）
+python download_qmt_market_data.py --pool 全部A股 --type market_raw --period 1d
+
+# 预下载不复权分钟线数据
+python download_qmt_market_data.py --pool 全部A股 --type market_raw --period 1m
+```
+
 ## 财务数据下载（download_qmt_financial_data.py）
 
 `download_qmt_financial_data.py` 用于从 OpenData（akshare）批量下载 A 股财务数据，包括利润表、资产负债表、现金流量表等，按年份分片缓存到本地。

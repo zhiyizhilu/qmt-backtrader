@@ -117,7 +117,7 @@ class BacktestAPI(BaseAPI):
         self._period = period
 
     def add_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d",
-                 skip_if_late_start: bool = False):
+                 skip_if_late_start: bool = False, dividend_type: str = None):
         self._period = period
         self._data_start_date = start_date
         self._data_end_date = end_date
@@ -129,7 +129,11 @@ class BacktestAPI(BaseAPI):
             if period in ('1m', '5m', '15m', '30m', '60m'):
                 kwargs['skip_early_missing'] = True
                 kwargs['skip_current_year_refresh'] = True
-            data = self._market_data_processor.get_data(symbol, start_date, end_date, period, **kwargs)
+            if dividend_type == 'none':
+                # 不复权数据使用 get_raw_data()，缓存到 market_raw 目录
+                data = self._market_data_processor.get_raw_data(symbol, start_date, end_date, period)
+            else:
+                data = self._market_data_processor.get_data(symbol, start_date, end_date, period, **kwargs)
         except FutuServiceError:
             raise
         except Exception as e:
@@ -729,9 +733,15 @@ class BacktestAPI(BaseAPI):
             self._data_start_date = (today - datetime.timedelta(days=400)).strftime('%Y-%m-%d')
             self.logger.info(f"数据范围未设置，使用默认值: {self._data_start_date} ~ {self._data_end_date}")
 
+        # 获取策略指定的dividend_type（默认None使用后复权）
+        dividend_type = kwargs.get('dividend_type', None)
+        if dividend_type:
+            self.logger.info(f"策略指定不复权数据模式: dividend_type={dividend_type}")
+
         for symbol in symbols_needed:
             if symbol not in self._symbols:
-                self.add_data(symbol, self._data_start_date, self._data_end_date, self._period)
+                self.add_data(symbol, self._data_start_date, self._data_end_date, self._period,
+                              dividend_type=dividend_type)
 
     def set_cash(self, cash: float):
         self._initial_cash = cash

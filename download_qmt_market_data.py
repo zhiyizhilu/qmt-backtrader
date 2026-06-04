@@ -115,21 +115,21 @@ def _format_size(size_bytes: int) -> str:
     return f"{size_bytes} B"
 
 
-def show_cache_info(symbols: List[str]):
+def show_cache_info(symbols: List[str], period: str = '1d'):
     """显示缓存信息（通过 cache_manager API）"""
     cache_dir = cache_manager.disk_cache.cache_dir / 'QMTData'
     logger.info(f"\n{'='*60}")
-    logger.info(f"缓存信息 (目录: {cache_dir})")
+    logger.info(f"缓存信息 (目录: {cache_dir}, 周期: {period})")
     logger.info(f"{'='*60}")
 
     for symbol in symbols:
         # 后复权
-        years = cache_manager.index_manager.get_available_market_years(symbol, '1d')
+        years = cache_manager.index_manager.get_available_market_years(symbol, period)
         if not years:
-            years = cache_manager.disk_cache.list_yearly_files('QMTDataProcessor', symbol, '1d')
+            years = cache_manager.disk_cache.list_yearly_files('QMTDataProcessor', symbol, period)
         if years:
             year_dir = cache_manager.disk_cache._get_yearly_dir('QMTDataProcessor', symbol)
-            total_size = sum(f.stat().st_size for f in year_dir.glob('*.parquet')) if year_dir.exists() else 0
+            total_size = sum(f.stat().st_size for f in year_dir.glob(f'*_{period}.parquet')) if year_dir.exists() else 0
             size_str = _format_size(total_size)
             logger.info(f"  {symbol} 后复权: {len(years)} 个年份 "
                         f"({min(years)}~{max(years)}), 总大小={size_str}")
@@ -137,12 +137,12 @@ def show_cache_info(symbols: List[str]):
             logger.info(f"  {symbol} 后复权: 无缓存")
 
         # 不复权
-        raw_years = cache_manager.index_manager.get_available_market_raw_years(symbol, '1d')
+        raw_years = cache_manager.index_manager.get_available_market_raw_years(symbol, period)
         if not raw_years:
-            raw_years = cache_manager.disk_cache.list_yearly_files('QMTDataProcessor_Raw', symbol, '1d')
+            raw_years = cache_manager.disk_cache.list_yearly_files('QMTDataProcessor_Raw', symbol, period)
         if raw_years:
             year_dir = cache_manager.disk_cache._get_yearly_dir('QMTDataProcessor_Raw', symbol)
-            total_size = sum(f.stat().st_size for f in year_dir.glob('*.parquet')) if year_dir.exists() else 0
+            total_size = sum(f.stat().st_size for f in year_dir.glob(f'*_{period}.parquet')) if year_dir.exists() else 0
             size_str = _format_size(total_size)
             logger.info(f"  {symbol} 不复权: {len(raw_years)} 个年份 "
                         f"({min(raw_years)}~{max(raw_years)}), 总大小={size_str}")
@@ -238,6 +238,12 @@ def main():
             '  # 下载全市场日线数据',
             '  python download_qmt_market_data.py --pool 沪深A股 --type all',
             '',
+            '  # 下载1分钟线数据',
+            '  python download_qmt_market_data.py --stocks 000001.SZ --period 1m --type all',
+            '',
+            '  # 下载tick逐笔数据(仅支持不复权)',
+            '  python download_qmt_market_data.py --stocks 000001.SZ --period tick --type raw',
+            '',
             '  # 强制重新下载（删除已有缓存后重新获取）',
             '  python download_qmt_market_data.py --stocks 000001.SZ --type all --force',
             '',
@@ -252,11 +258,11 @@ def main():
     parser.add_argument('--pool', type=str, default=None,
                         help='股票池板块名称(仅当前成分股): 沪深300, 中证500, 沪深A股 等')
     parser.add_argument('--period', type=str, default='1d',
-                        choices=['1d', '1w', '1mon'],
-                        help='数据周期 (默认: 1d)')
+                        choices=['1m', '5m', '15m', '30m', '60m', '1d', '1w', '1mon', 'tick'],
+                        help='数据周期: 1m/5m/15m/30m/60m=分钟级 1d=日线 1w=周线 1mon=月线 tick=逐笔 (默认: 1d)')
     parser.add_argument('--type', type=str, default='all',
                         choices=['adjusted', 'raw', 'all'],
-                        help='数据类型: adjusted=后复权 raw=不复权 all=两者都下载 (默认: all)')
+                        help='数据类型: adjusted=后复权 raw=不复权 all=两者都下载 (默认: all, tick仅支持raw)')
     parser.add_argument('--start', type=str, default='',
                         help='数据起始日期，如 20200101 (留空则下载全部可用历史)')
     parser.add_argument('--end', type=str, default='',
@@ -299,8 +305,13 @@ def main():
         sys.exit(1)
 
     if args.info:
-        show_cache_info(stock_list)
+        show_cache_info(stock_list, period=args.period)
         return
+
+    # tick 数据不支持后复权，自动强制 raw 模式
+    if args.period == 'tick' and args.type in ('adjusted', 'all'):
+        logger.warning("tick 逐笔数据不支持后复权，自动切换为 --type raw")
+        args.type = 'raw'
 
     # 创建 QMTDataProcessor（不使用 OpenData 补充）
     from core.data.qmt import QMTDataProcessor
@@ -383,7 +394,7 @@ def main():
                 f"○{stats['empty']} ✗{stats['failed']}, 耗时={elapsed:.1f}秒")
     logger.info(f"{'='*60}")
 
-    show_cache_info(stock_list[:5])
+    show_cache_info(stock_list[:5], period=args.period)
 
 
 if __name__ == '__main__':

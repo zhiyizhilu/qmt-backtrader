@@ -104,6 +104,76 @@ class MySelectionStrategy(StockSelectionStrategy):
         return [stock for stock, _ in ranked]
 ```
 
+## 使用不复权数据回测
+
+框架默认使用后复权（`hfq`）数据进行回测，适用于大多数场景。某些策略（如打板策略、涨停检测、资金流向分析等）需要使用不复权数据，因为后复权价格会因除权除息而失真，导致涨停判断错误。
+
+### 启用方式
+
+在策略的 `@register_strategy` 装饰器中，通过 `default_kwargs` 传入 `dividend_type='none'` 即可启用不复权数据模式：
+
+```python
+@register_strategy('my_strategy',
+                   default_kwargs={'max_stocks': 20, 'dividend_type': 'none'},
+                   backtest_config={'cash': 1000000, 'commission': 0.0003,
+                                    'start_date': '2025-06-01', 'end_date': '2026-06-01'})
+class MyStrategy(StockSelectionStrategy):
+    ...
+```
+
+### 数据流说明
+
+```
+策略注册 dividend_type='none'
+    ↓
+add_strategy() 从 kwargs 提取 dividend_type
+    ↓
+add_data(dividend_type='none')
+    ↓
+QMTDataProcessor.get_raw_data()    ← 不复权数据
+    ↓
+@smart_cache(namespace_suffix='_Raw')
+    ↓
+缓存到 .cache/QMTData/market_raw/{symbol}/{year}_{period}.parquet
+```
+
+- **后复权模式**（默认）：`add_data()` → `get_data()` → 缓存到 `market/` 目录
+- **不复权模式**：`add_data(dividend_type='none')` → `get_raw_data()` → 缓存到 `market_raw/` 目录
+
+两种模式的缓存完全独立，互不干扰。
+
+### 数据预下载
+
+不复权数据量较大（尤其是分钟线），建议在回测前预先下载：
+
+```bash
+# 下载不复权日线数据
+python download_qmt_market_data.py --pool 中证1000 --type market_raw --period 1d
+
+# 下载不复权分钟线数据
+python download_qmt_market_data.py --pool 中证1000 --type market_raw --period 1m
+```
+
+预下载的数据会缓存到 `market_raw` 目录，回测时 `smart_cache` 直接读取本地缓存，不会重复下载。
+
+### 适用场景
+
+| 场景 | 说明 | 推荐复权方式 |
+|------|------|-------------|
+| 涨停/跌停检测 | 后复权价格可能超过涨跌停价，导致误判 | 不复权 |
+| 打板策略 | 需要判断实际价格是否触及涨停价 | 不复权 |
+| 资金流向分析 | 需要实际成交价格和金额 | 不复权 |
+| 股息率计算 | 需要实际价格计算收益率 | 不复权 |
+| 一般趋势跟踪 | 后复权价格连续，适合技术分析 | 后复权（默认） |
+| 均线/动量策略 | 后复权消除除权缺口，信号更准确 | 后复权（默认） |
+
+### 注意事项
+
+1. **不指定 `dividend_type` 时默认使用后复权数据**，已有策略无需任何修改
+2. 不复权数据在除权除息日会出现价格跳空，均线等技术指标可能失真
+3. 不复权模式的缓存与后复权模式完全隔离，不会互相影响
+4. 分钟级不复权数据量较大，建议通过 `download_qmt_market_data.py` 预下载
+
 ## 内置策略
 
 ### 1. 小市值策略 (small_cap)

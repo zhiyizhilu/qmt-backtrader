@@ -31,6 +31,19 @@ python main.py --mode backtest --strategy small_cap --period 1d --pool 中证100
 python main.py --mode backtest --strategy small_cap --period 1d --pool 中证1000 --start 2020-04-28 --end 2026-04-28 --ai-mode --no-record
 ```
 
+**使用不复权数据回测（适用于打板、涨停检测等策略）：**
+```bash
+# 策略在 @register_strategy 的 default_kwargs 中指定 dividend_type='none'，
+# 运行方式与普通回测相同：
+python main.py --mode backtest --strategy dde_main_capital --ai-mode
+```
+
+> 不复权数据回测需要预先下载不复权数据到 `market_raw` 目录：
+> ```bash
+> python download_qmt_market_data.py --pool 中证全指 --type market_raw --period 1d
+> ```
+> 详见 [策略开发文档](strategy-development.md#使用不复权数据回测)。
+
 **使用 YAML 配置文件：**
 ```bash
 python main.py --mode backtest --strategy small_cap --config config/backtest.yaml
