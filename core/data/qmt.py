@@ -117,7 +117,7 @@ class QMTDataProcessor(DataProcessor):
                 except (ValueError, TypeError):
                     raise RuntimeError(f"QMT日期解析失败: {symbol}")
 
-        df = df[(df.index >= start_date) & (df.index <= end_date)]
+        df = df[(df.index >= pd.Timestamp(start_date)) & (df.index <= pd.Timestamp(end_date))]
 
         if df.empty:
             raise RuntimeError(f"QMT无数据: {symbol} ({start_date}~{end_date})")
@@ -168,7 +168,7 @@ class QMTDataProcessor(DataProcessor):
                         except (ValueError, TypeError):
                             return None
 
-                df = df[(df.index >= start_date) & (df.index <= end_date)]
+                df = df[(df.index >= pd.Timestamp(start_date)) & (df.index <= pd.Timestamp(end_date))]
 
                 if df.empty:
                     return None
@@ -1688,10 +1688,116 @@ class QMTDataProcessor(DataProcessor):
                 except (ValueError, TypeError):
                     raise RuntimeError(f"QMT日期解析失败: {symbol}")
 
-        df = df[(df.index >= start_date) & (df.index <= end_date)]
+        df = df[(df.index >= pd.Timestamp(start_date)) & (df.index <= pd.Timestamp(end_date))]
 
         if df.empty:
             raise RuntimeError(f"QMT无不复权数据: {symbol} ({start_date}~{end_date})")
 
         return self.preprocess_data(df)
+
+    def get_tick_data(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """获取tick逐笔数据（不走smart_cache，使用pickle按年存储）
+
+        tick数据包含列表列(askPrice/bidPrice/askVol/bidVol)，无法写入parquet，
+        因此绕过smart_cache，直接下载并按年保存为pickle文件。
+
+        缓存路径: .cache/QMTData/market_tick/{symbol}/{year}_tick.pkl
+        """
+        import pickle as _pickle
+
+        if not self.xtdata:
+            raise RuntimeError("QMT (xtquant) 未安装或未连接")
+
+        start_time = start_date.replace('-', '')
+        end_time = end_date.replace('-', '')
+
+        # 缓存目录
+        cache_base = cache_manager.disk_cache.cache_dir / 'QMTData' / 'market_tick' / symbol
+        cache_base.mkdir(parents=True, exist_ok=True)
+
+        # 计算请求涉及的年份
+        try:
+            req_start_year = pd.Timestamp(start_date).year
+            req_end_year = pd.Timestamp(end_date).year
+        except Exception:
+            req_start_year = 1990
+            req_end_year = 2099
+        req_years = list(range(req_start_year, req_end_year + 1))
+
+        # 检查已有缓存，收集缺失年份
+        cached_frames = []
+        missing_years = []
+        for year in req_years:
+            cache_file = cache_base / f"{year}_tick.pkl"
+            if cache_file.exists():
+                try:
+                    with open(cache_file, 'rb') as f:
+                        df = _pickle.load(f)
+                    if isinstance(df, pd.DataFrame) and not df.empty:
+                        cached_frames.append(df)
+                        continue
+                except Exception:
+                    pass
+            missing_years.append(year)
+
+        # 只下载缺失年份的数据
+        if missing_years:
+            self.logger.info(f"{symbol} tick: 缓存缺失年份={sorted(missing_years)}, 正在下载...")
+            self.xtdata.download_history_data(
+                stock_code=symbol, period='tick',
+                start_time=start_time, end_time=end_time,
+                incrementally=False
+            )
+
+            history_data = self.xtdata.get_market_data_ex(
+                [], [symbol], period='tick',
+                start_time=start_time, end_time=end_time,
+                count=-1, dividend_type="none"
+            )
+
+            if symbol not in history_data or history_data[symbol].empty:
+                if not cached_frames:
+                    raise RuntimeError(f"QMT无tick数据: {symbol} ({start_date}~{end_date})")
+                self.logger.warning(f"{symbol} tick: 缺失年份无数据")
+                result = pd.concat(cached_frames).sort_index()
+                return result[~result.index.duplicated(keep='last')]
+
+            df = history_data[symbol]
+
+            if not isinstance(df.index, pd.DatetimeIndex):
+                try:
+                    df.index = pd.to_datetime(df.index, format='%Y%m%d%H%M%S')
+                except (ValueError, TypeError):
+                    try:
+                        df.index = pd.to_datetime(df.index, format='%Y%m%d')
+                    except (ValueError, TypeError):
+                        raise RuntimeError(f"QMT日期解析失败: {symbol}")
+
+            # 按年拆分并保存
+            for year in sorted(df.index.year.unique()):
+                if year not in missing_years:
+                    continue
+                year_df = df[df.index.year == year]
+                if year_df.empty:
+                    continue
+                cache_file = cache_base / f"{year}_tick.pkl"
+                try:
+                    with open(cache_file, 'wb') as f:
+                        _pickle.dump(year_df, f, protocol=_pickle.HIGHEST_PROTOCOL)
+                    self.logger.debug(f"{symbol} tick: 保存 {year} 年数据 ({len(year_df)} 条)")
+                except Exception as e:
+                    self.logger.warning(f"{symbol} tick: 保存 {year} 年缓存失败: {e}")
+                cached_frames.append(year_df)
+
+        if not cached_frames:
+            raise RuntimeError(f"QMT无tick数据: {symbol} ({start_date}~{end_date})")
+
+        result = pd.concat(cached_frames).sort_index()
+        result = result[~result.index.duplicated(keep='last')]
+        result = result[(result.index >= pd.Timestamp(start_date)) & (result.index <= pd.Timestamp(end_date))]
+
+        if result.empty:
+            raise RuntimeError(f"QMT无tick数据: {symbol} ({start_date}~{end_date})")
+
+        return result
 
