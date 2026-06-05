@@ -88,6 +88,15 @@ logger = logging.getLogger('download_qmt_market_data')
 
 def _delete_cache(symbol: str, period: str, data_type: str):
     """删除指定标的的缓存，触发重新下载"""
+    # tick 数据使用独立的 pickle 缓存目录
+    if period == 'tick':
+        tick_dir = cache_manager.disk_cache.cache_dir / 'QMTData' / 'market_tick' / symbol
+        if tick_dir.exists():
+            for f in tick_dir.glob('*.pkl'):
+                f.unlink(missing_ok=True)
+        cache_manager.mem_cache.clear()
+        return
+
     if data_type in ('adjusted', 'all'):
         namespace = 'QMTDataProcessor'
         years = cache_manager.disk_cache.list_yearly_files(namespace, symbol, period)
@@ -123,6 +132,23 @@ def show_cache_info(symbols: List[str], period: str = '1d'):
     logger.info(f"{'='*60}")
 
     for symbol in symbols:
+        # tick 数据使用独立的 pickle 缓存
+        if period == 'tick':
+            tick_dir = cache_dir / 'market_tick' / symbol
+            if tick_dir.exists():
+                pkl_files = list(tick_dir.glob('*.pkl'))
+                total_size = sum(f.stat().st_size for f in pkl_files)
+                years = sorted(int(f.stem.split('_')[0]) for f in pkl_files)
+                size_str = _format_size(total_size)
+                if years:
+                    logger.info(f"  {symbol} tick: {len(years)} 个年份 "
+                                f"({min(years)}~{max(years)}), 总大小={size_str}")
+                else:
+                    logger.info(f"  {symbol} tick: 无缓存")
+            else:
+                logger.info(f"  {symbol} tick: 无缓存")
+            continue
+
         # 后复权
         years = cache_manager.index_manager.get_available_market_years(symbol, period)
         if not years:
@@ -347,24 +373,39 @@ def main():
         stock_has_data = False
 
         try:
-            for data_type in data_types:
+            if args.period == 'tick':
+                # tick 数据使用独立的 get_tick_data 方法（pickle缓存）
                 try:
-                    if data_type == 'adjusted':
-                        df = processor.get_data(symbol, start_date, end_date, args.period)
-                    else:
-                        df = processor.get_raw_data(symbol, start_date, end_date, args.period)
-
+                    df = processor.get_tick_data(symbol, start_date, end_date)
                     if df is not None and not df.empty:
                         stock_has_data = True
-
                 except RuntimeError as e:
                     if '无数据' in str(e) or 'QMT' in str(e):
-                        logger.debug(f"{symbol} {data_type}: {e}")
+                        logger.debug(f"{symbol} tick: {e}")
                     else:
                         raise
                 except Exception as e:
-                    logger.warning(f"{symbol} {data_type} 获取失败: {e}")
+                    logger.warning(f"{symbol} tick 获取失败: {e}")
                     stock_has_error = True
+            else:
+                for data_type in data_types:
+                    try:
+                        if data_type == 'adjusted':
+                            df = processor.get_data(symbol, start_date, end_date, args.period)
+                        else:
+                            df = processor.get_raw_data(symbol, start_date, end_date, args.period)
+
+                        if df is not None and not df.empty:
+                            stock_has_data = True
+
+                    except RuntimeError as e:
+                        if '无数据' in str(e) or 'QMT' in str(e):
+                            logger.debug(f"{symbol} {data_type}: {e}")
+                        else:
+                            raise
+                    except Exception as e:
+                        logger.warning(f"{symbol} {data_type} 获取失败: {e}")
+                        stock_has_error = True
 
         except Exception as e:
             spinner.stop()
