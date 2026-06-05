@@ -74,7 +74,7 @@ _DISCOVERED = False
 
 
 def _auto_discover():
-    """自动发现 strategies、strategies_for_vip 及 strategies_my 包下的所有策略模块"""
+    """自动发现 strategies、strategies_for_vip、strategies_for_svip 及 strategies_my 包下的所有策略模块"""
     global _DISCOVERED
     if _DISCOVERED:
         return
@@ -85,6 +85,10 @@ def _auto_discover():
     vip_dir = os.path.normpath(vip_dir)
     if os.path.isdir(vip_dir):
         _discover_package('strategies_for_vip', vip_dir)
+    svip_dir = os.path.join(os.path.dirname(__file__), '..', 'strategies_for_svip')
+    svip_dir = os.path.normpath(svip_dir)
+    if os.path.isdir(svip_dir):
+        _discover_package('strategies_for_svip', svip_dir)
     my_dir = os.path.join(os.path.dirname(__file__), '..', 'strategies_my')
     my_dir = os.path.normpath(my_dir)
     if os.path.isdir(my_dir):

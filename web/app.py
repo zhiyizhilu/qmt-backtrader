@@ -21,6 +21,7 @@ CACHE_DIR = os.path.join(PROJECT_ROOT, '.cache')
 STRATEGY_DIRS = [
     os.path.join(PROJECT_ROOT, 'strategies'),
     os.path.join(PROJECT_ROOT, 'strategies_for_vip'),
+    os.path.join(PROJECT_ROOT, 'strategies_for_svip'),
     os.path.join(PROJECT_ROOT, 'strategies_my'),
 ]
 

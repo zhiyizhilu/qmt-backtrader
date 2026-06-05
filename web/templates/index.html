@@ -192,6 +192,45 @@
                                     </div>
                                     </div>
                                 </div>
+                                <!-- SVIP策略 -->
+                                <div v-if="svipStrategies.length > 0">
+                                    <div class="text-xs text-purple-500/70 font-medium mb-1 flex items-center gap-1.5 cursor-pointer select-none"
+                                         @click="collapsedSvip = !collapsedSvip">
+                                        <span class="collapse-toggle" :class="{ collapsed: collapsedSvip }">▼</span>
+                                        <span class="w-2 h-2 rounded-full bg-purple-500 flex-shrink-0"></span>
+                                        SVIP 策略
+                                    </div>
+                                    <div class="collapse-content" :class="{ collapsed: collapsedSvip }" :style="{ maxHeight: collapsedSvip ? '0' : '9999px' }">
+                                    <div class="space-y-0.5">
+                                        <div v-for="s in svipStrategies" :key="s.name"
+                                             class="strategy-item rounded-lg px-2 py-2 border border-transparent group"
+                                             :class="{ active: selectedStrategy === s.name }"
+                                             @click="selectStrategy(s.name)">
+                                            <div class="flex items-center justify-between">
+                                                <div class="flex items-center gap-1 min-w-0 flex-1" @dblclick.stop="startEditName(s)">
+                                                    <span v-if="editingName !== s.name" class="font-medium text-xs truncate cursor-default">{{ s.display_name || formatStrategyName(s.name) }}</span>
+                                                    <input v-else
+                                                           v-model="editNameValue"
+                                                           @blur="saveEditName(s)"
+                                                           @keydown.enter="saveEditName(s)"
+                                                           @keydown.escape="cancelEditName"
+                                                           @click.stop
+                                                           class="bg-slate-700 text-white text-xs px-1 py-0.5 rounded border border-blue-500 outline-none w-full"
+                                                           ref="editNameInput" />
+                                                    <button v-if="editingName !== s.name" @click.stop="startEditName(s)"
+                                                            class="opacity-0 group-hover:opacity-100 transition-opacity text-slate-500 hover:text-slate-300 flex-shrink-0"
+                                                            title="编辑名称">
+                                                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
+                                                        </svg>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div class="text-xs text-slate-500 mt-0.5">{{ s.run_count }} 次回测</div>
+                                        </div>
+                                    </div>
+                                    </div>
+                                </div>
                                 <!-- 标准策略 -->
                                 <div v-if="standardStrategies.length > 0">
                                     <div class="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1.5 cursor-pointer select-none"
@@ -896,11 +935,15 @@ createApp({
         });
 
         const standardStrategies = computed(() =>
-            strategies.value.filter(s => s.source !== 'strategies_for_vip')
+            strategies.value.filter(s => s.source !== 'strategies_for_vip' && s.source !== 'strategies_for_svip')
         );
 
         const vipStrategies = computed(() =>
             strategies.value.filter(s => s.source === 'strategies_for_vip')
+        );
+
+        const svipStrategies = computed(() =>
+            strategies.value.filter(s => s.source === 'strategies_for_svip')
         );
 
         const currentStrategyDisplayName = computed(() => {
@@ -1786,7 +1829,7 @@ createApp({
             strategyCode, codeCopied,
             standardStrategies, vipStrategies, currentStrategyDisplayName,
             editingName, editNameValue,
-            collapsedAll, collapsedStandard, collapsedVip, sidebarView, sidebarOpen,
+            collapsedAll, collapsedStandard, collapsedVip, collapsedSvip, sidebarView, sidebarOpen,
             selectedRuns,
             logFile, logLoading, logCopied, logLines, logOffset, logTotalLines, logLineColor,
             cachePath, cacheParent, cacheEntries, cacheLoading, cacheViewData, cacheAllRows,

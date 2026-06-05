@@ -29,7 +29,8 @@ def _setup_debug_logging():
                    'strategies.etf_rotation_strategy',
                    'strategies.fundamental_strategy',
                    'strategies.high_dividend_strategy',
-                   'strategies_for_vip']
+                   'strategies_for_vip',
+                   'strategies_for_svip']
 
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
