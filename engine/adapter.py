@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Any
 from core.data_adapter import MarketDataAdapter, get_limit_ratio
 from core.executor import StrategyExecutor
 from core.strategy_logic import OrderInfo
-from engine.data_feed import ArrayDataFeed
+from engine.data_feed import ArrayDataFeed, LazyDataFeed
 from engine.broker import SimulatedBroker
 from engine.timeline import Timeline
 
@@ -25,10 +25,12 @@ class EngineDataAdapter(MarketDataAdapter):
     MAX_CLOSE_PRICES = 5000
 
     def __init__(self, data_feeds: Dict[str, ArrayDataFeed],
-                 timeline: Timeline, period: str = '1d'):
+                 timeline: Timeline, period: str = '1d',
+                 lazy_feeds: Dict[str, LazyDataFeed] = None):
         self._data_feeds = data_feeds
         self._timeline = timeline
         self._period = period
+        self._lazy_feeds: Dict[str, LazyDataFeed] = lazy_feeds or {}
         self._current_global_idx: int = -1
         self._current_local_indices: Dict[str, int] = {}
         self._close_prices: Dict[str, deque] = {}
@@ -158,16 +160,21 @@ class EngineDataAdapter(MarketDataAdapter):
                             })
 
     def get_current_price(self, symbol: str) -> Optional[float]:
+        # 优先从预加载feed获取
         local_idx = self._current_local_indices.get(symbol, -1)
-        if local_idx < 0:
-            return None
-        feed = self._data_feeds.get(symbol)
-        if feed is None:
-            return None
-        price = feed.get_close(local_idx)
-        if math.isnan(price):
-            return None
-        return price
+        if local_idx >= 0:
+            feed = self._data_feeds.get(symbol)
+            if feed is not None:
+                price = feed.get_close(local_idx)
+                if not math.isnan(price):
+                    return price
+        # 从lazy feed按需获取
+        lazy = self._lazy_feeds.get(symbol)
+        if lazy is not None:
+            current_date = self.get_current_date()
+            if current_date:
+                return lazy.get_close_by_date(current_date.strftime('%Y-%m-%d'))
+        return None
 
     def get_close_prices(self, symbol: str, period: int = None) -> List[float]:
         if self._is_daily():
@@ -200,13 +207,19 @@ class EngineDataAdapter(MarketDataAdapter):
         return list(self._data_feeds.keys())
 
     def is_suspended(self, symbol: str) -> bool:
+        # 优先从预加载feed判断
         local_idx = self._current_local_indices.get(symbol, -1)
-        if local_idx < 0:
-            return True
-        feed = self._data_feeds.get(symbol)
-        if feed is None:
-            return True
-        return feed.is_volume_zero_or_nan(local_idx)
+        if local_idx >= 0:
+            feed = self._data_feeds.get(symbol)
+            if feed is not None:
+                return feed.is_volume_zero_or_nan(local_idx)
+        # 从lazy feed判断
+        lazy = self._lazy_feeds.get(symbol)
+        if lazy is not None:
+            current_date = self.get_current_date()
+            if current_date:
+                return lazy.is_suspended(current_date.strftime('%Y-%m-%d'))
+        return True  # 未知symbol视为停牌
 
     def _get_prev_daily_close(self, symbol: str) -> Optional[float]:
         if self._is_daily():
@@ -225,44 +238,70 @@ class EngineDataAdapter(MarketDataAdapter):
             return None
 
     def is_limit_up(self, symbol: str) -> bool:
+        # 优先从预加载feed判断
         local_idx = self._current_local_indices.get(symbol, -1)
-        if local_idx < 0:
-            return False
-        feed = self._data_feeds.get(symbol)
-        if feed is None:
-            return False
-        try:
-            close = feed.get_close(local_idx)
-            if math.isnan(close):
-                return False
-            prev_close = self._get_prev_daily_close(symbol)
-            if prev_close is None or prev_close <= 0:
-                return False
-        except (AttributeError, IndexError):
-            return False
-        limit_ratio = get_limit_ratio(symbol)
-        limit_price = round(prev_close * (1 + limit_ratio), 2)
-        return close >= limit_price - 0.005
+        if local_idx >= 0:
+            feed = self._data_feeds.get(symbol)
+            if feed is not None:
+                try:
+                    close = feed.get_close(local_idx)
+                    if math.isnan(close):
+                        return False
+                    prev_close = self._get_prev_daily_close(symbol)
+                    if prev_close is None or prev_close <= 0:
+                        return False
+                except (AttributeError, IndexError):
+                    return False
+                limit_ratio = get_limit_ratio(symbol)
+                limit_price = round(prev_close * (1 + limit_ratio), 2)
+                return close >= limit_price - 0.005
+        # 从lazy feed判断
+        lazy = self._lazy_feeds.get(symbol)
+        if lazy is not None:
+            current_date = self.get_current_date()
+            if current_date:
+                date_str = current_date.strftime('%Y-%m-%d')
+                bar = lazy.get_bar_by_date(date_str)
+                if bar and bar.close > 0:
+                    prev_close = lazy.get_prev_close(date_str)
+                    if prev_close and prev_close > 0:
+                        limit_ratio = get_limit_ratio(symbol)
+                        limit_price = round(prev_close * (1 + limit_ratio), 2)
+                        return bar.close >= limit_price - 0.005
+        return False
 
     def is_limit_down(self, symbol: str) -> bool:
+        # 优先从预加载feed判断
         local_idx = self._current_local_indices.get(symbol, -1)
-        if local_idx < 0:
-            return False
-        feed = self._data_feeds.get(symbol)
-        if feed is None:
-            return False
-        try:
-            close = feed.get_close(local_idx)
-            if math.isnan(close):
-                return False
-            prev_close = self._get_prev_daily_close(symbol)
-            if prev_close is None or prev_close <= 0:
-                return False
-        except (AttributeError, IndexError):
-            return False
-        limit_ratio = get_limit_ratio(symbol)
-        limit_price = round(prev_close * (1 - limit_ratio), 2)
-        return close <= limit_price + 0.005
+        if local_idx >= 0:
+            feed = self._data_feeds.get(symbol)
+            if feed is not None:
+                try:
+                    close = feed.get_close(local_idx)
+                    if math.isnan(close):
+                        return False
+                    prev_close = self._get_prev_daily_close(symbol)
+                    if prev_close is None or prev_close <= 0:
+                        return False
+                except (AttributeError, IndexError):
+                    return False
+                limit_ratio = get_limit_ratio(symbol)
+                limit_price = round(prev_close * (1 - limit_ratio), 2)
+                return close <= limit_price + 0.005
+        # 从lazy feed判断
+        lazy = self._lazy_feeds.get(symbol)
+        if lazy is not None:
+            current_date = self.get_current_date()
+            if current_date:
+                date_str = current_date.strftime('%Y-%m-%d')
+                bar = lazy.get_bar_by_date(date_str)
+                if bar and bar.close > 0:
+                    prev_close = lazy.get_prev_close(date_str)
+                    if prev_close and prev_close > 0:
+                        limit_ratio = get_limit_ratio(symbol)
+                        limit_price = round(prev_close * (1 - limit_ratio), 2)
+                        return bar.close <= limit_price + 0.005
+        return False
 
     def get_ohlcv_data(self, symbol: str, period: int = None) -> List[Dict[str, float]]:
         data_list = list(self._ohlcv_data.get(symbol, []))
@@ -354,20 +393,66 @@ class EngineExecutor(StrategyExecutor):
     """
 
     def __init__(self, broker: SimulatedBroker, data_adapter: EngineDataAdapter,
-                 data_feeds: Dict[str, ArrayDataFeed]):
+                 data_feeds: Dict[str, ArrayDataFeed],
+                 lazy_feeds: Dict[str, LazyDataFeed] = None):
         self._broker = broker
         self._data_adapter = data_adapter
         self._data_feeds = data_feeds
+        self._lazy_feeds: Dict[str, LazyDataFeed] = lazy_feeds or {}
         self._bar_start_cash: float = broker.getcash()
         self._bar_start_positions: Dict[str, int] = {}
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
 
     def execute_buy(self, symbol: str, price: float, volume: int) -> Any:
+        # 预加载feed - 原有逻辑
         feed = self._data_feeds.get(symbol)
-        if feed is None:
+        if feed is not None:
+            return self._execute_buy_preloaded(symbol, price, volume, feed)
+
+        # lazy feed
+        lazy = self._lazy_feeds.get(symbol)
+        if lazy is None:
             self.logger.warning(f'[EngineExecutor] 买入失败-未找到数据源: {symbol}')
             return None
 
+        if self._data_adapter.is_suspended(symbol):
+            self.logger.warning(f'[EngineExecutor] 买入拒绝-停牌: {symbol}')
+            return None
+
+        if self._data_adapter.is_limit_up(symbol):
+            self.logger.warning(f'[EngineExecutor] 买入拒绝-涨停: {symbol}')
+            return None
+
+        current_price = self._data_adapter.get_current_price(symbol)
+        if current_price is None:
+            self.logger.warning(f'[EngineExecutor] 买入失败-无法获取价格: {symbol}')
+            return None
+
+        order_datetime = self._data_adapter.get_next_datetime()
+        order = self._broker.submit_buy_lazy(symbol, volume, current_price, order_datetime)
+
+        if order is not None and order.status == OrderInfo.STATUS_COMPLETED:
+            order_info = OrderInfo(
+                order_id=order.order_id,
+                symbol=symbol,
+                direction='buy',
+                price=order.price,
+                volume=order.size,
+                status=OrderInfo.STATUS_COMPLETED,
+                executed_volume=order.executed_size,
+                executed_price=order.executed_price,
+                commission=order.commission,
+                datetime=order_datetime,
+            )
+            logic = self._get_strategy_logic()
+            if logic:
+                logic.on_order(order_info)
+                logic.on_trade(self._convert_to_trade_info(order, order_datetime))
+
+        return order
+
+    def _execute_buy_preloaded(self, symbol: str, price: float, volume: int,
+                                feed: ArrayDataFeed) -> Any:
         local_idx = self._data_adapter._current_local_indices.get(symbol, -1)
         if local_idx < 0:
             self.logger.warning(f'[EngineExecutor] 买入失败-无当前索引: {symbol}')
@@ -412,11 +497,55 @@ class EngineExecutor(StrategyExecutor):
         return order
 
     def execute_sell(self, symbol: str, price: float, volume: int) -> Any:
+        # 预加载feed - 原有逻辑
         feed = self._data_feeds.get(symbol)
-        if feed is None:
+        if feed is not None:
+            return self._execute_sell_preloaded(symbol, price, volume, feed)
+
+        # lazy feed
+        lazy = self._lazy_feeds.get(symbol)
+        if lazy is None:
             self.logger.warning(f'[EngineExecutor] 卖出失败-未找到数据源: {symbol}')
             return None
 
+        if self._data_adapter.is_suspended(symbol):
+            self.logger.warning(f'[EngineExecutor] 卖出拒绝-停牌: {symbol}')
+            return None
+
+        if self._data_adapter.is_limit_down(symbol):
+            self.logger.warning(f'[EngineExecutor] 卖出拒绝-跌停: {symbol}')
+            return None
+
+        current_price = self._data_adapter.get_current_price(symbol)
+        if current_price is None:
+            self.logger.warning(f'[EngineExecutor] 卖出失败-无法获取价格: {symbol}')
+            return None
+
+        order_datetime = self._data_adapter.get_next_datetime()
+        order = self._broker.submit_sell_lazy(symbol, volume, current_price, order_datetime)
+
+        if order is not None and order.status == OrderInfo.STATUS_COMPLETED:
+            order_info = OrderInfo(
+                order_id=order.order_id,
+                symbol=symbol,
+                direction='sell',
+                price=order.price,
+                volume=order.size,
+                status=OrderInfo.STATUS_COMPLETED,
+                executed_volume=order.executed_size,
+                executed_price=order.executed_price,
+                commission=order.commission,
+                datetime=order_datetime,
+            )
+            logic = self._get_strategy_logic()
+            if logic:
+                logic.on_order(order_info)
+                logic.on_trade(self._convert_to_trade_info(order, order_datetime))
+
+        return order
+
+    def _execute_sell_preloaded(self, symbol: str, price: float, volume: int,
+                                 feed: ArrayDataFeed) -> Any:
         local_idx = self._data_adapter._current_local_indices.get(symbol, -1)
         if local_idx < 0:
             self.logger.warning(f'[EngineExecutor] 卖出失败-无当前索引: {symbol}')

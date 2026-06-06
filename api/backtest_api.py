@@ -76,6 +76,7 @@ class BacktestAPI(BaseAPI):
         self._data_end_date: Optional[str] = None
         self._financial_adapter: Optional[FinancialDataAdapter] = None
         self._stock_pool: Optional[List[str]] = None
+        self._lazy_mode: bool = False
         self._compare_symbols: List[str] = []
         self._ai_mode: bool = False
         self._no_record: bool = False
@@ -436,6 +437,28 @@ class BacktestAPI(BaseAPI):
         import numpy as np
         from concurrent.futures import ThreadPoolExecutor, as_completed
         load_start = _time.time()
+
+        # lazy模式：只注册lazy feed，不实际加载数据
+        # 但必须预加载benchmark作为驱动时间轴的基准feed
+        if self._lazy_mode:
+            # 确保benchmark已预加载（驱动时间轴和on_bar触发）
+            if self._benchmark and self._benchmark not in self._symbols:
+                self.add_data(self._benchmark, self._data_start_date, self._data_end_date, self._period)
+                self.logger.info(f"lazy模式: 预加载基准标的 {self._benchmark}")
+
+            for symbol in pool:
+                if symbol not in self._symbols:
+                    self._engine.add_lazy_feed(
+                        symbol, self._market_data_processor,
+                        period=self._period,
+                        start_date=self._data_start_date or '',
+                        end_date=self._data_end_date or ''
+                    )
+                    self._symbols.append(symbol)
+            self.logger.info(
+                f"lazy模式: 注册 {len(pool)} 只股票的按需加载源（不预加载）"
+            )
+            return len(pool), 0, 0
 
         loaded_count = 0
         failed_count = 0
@@ -968,6 +991,16 @@ class BacktestAPI(BaseAPI):
         except ImportError:
             pass
         self.logger.info(f"AI自动运行模式: {'开启' if enabled else '关闭'}")
+
+    def set_lazy_mode(self, lazy_mode: bool = True):
+        """启用按需加载模式
+
+        启用后，只预加载基准标的的数据，其他标的按需加载。
+        适用于动态选股策略（如DDE主力资金策略）。
+        """
+        self._lazy_mode = lazy_mode
+        self._engine.set_lazy_mode(lazy_mode)
+        self.logger.info(f"按需加载模式: {'开启' if lazy_mode else '关闭'}")
 
     def is_ai_mode(self) -> bool:
         return self._ai_mode

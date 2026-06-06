@@ -118,7 +118,7 @@ def _parse_strategy_params(params_str: str) -> dict:
 def run_backtest(strategy_name='double_ma', period='1d', pool=None,
                  start_date=None, end_date=None, proxy='', ai_mode=False,
                  no_record=False, slippage=None, data_source='qmt',
-                 strategy_params=None):
+                 strategy_params=None, lazy_mode=False):
     """运行回测"""
     _setup_debug_logging()
     log_file = Logger.setup_global_file_handler(strategy_name)
@@ -164,6 +164,8 @@ def run_backtest(strategy_name='double_ma', period='1d', pool=None,
             api.set_ai_mode(True)
         if no_record:
             api.set_no_record(True)
+        if lazy_mode:
+            api.set_lazy_mode(True)
 
         api.set_strategy_name(strategy_name)
         api.set_log_file(log_file)
@@ -310,6 +312,8 @@ def main():
                         help='禁用回测结果自动记录到本地文件')
     parser.add_argument('--slippage', type=float, default=None,
                         help='滑点百分比, 如0.001表示0.1%%, 不传则使用策略默认值')
+    parser.add_argument('--lazy', action='store_true', default=False,
+                        help='启用按需加载模式，仅预加载基准标的数据，其他标的按需从缓存加载，可大幅提升大股票池回测速度')
     parser.add_argument('--data-source', type=str, default='qmt',
                         choices=['qmt', 'open', 'futu'],
                         help='行情数据源: qmt=QMT(默认), open=OpenData, futu=富途本地数据')
@@ -337,7 +341,7 @@ def main():
 
     if args.mode == 'backtest':
         sp = _parse_strategy_params(args.strategy_params) if args.strategy_params else None
-        run_backtest(args.strategy, args.period, args.pool, args.start, args.end, args.proxy, args.ai_mode, args.no_record, args.slippage, args.data_source, sp)
+        run_backtest(args.strategy, args.period, args.pool, args.start, args.end, args.proxy, args.ai_mode, args.no_record, args.slippage, args.data_source, sp, args.lazy)
     elif args.mode == 'sim':
         run_sim_trade(args.strategy, args.qmt_path, args.account)
     elif args.mode == 'real':

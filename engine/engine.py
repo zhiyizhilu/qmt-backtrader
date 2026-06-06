@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Any, Type
 import pandas as pd
 
 from core.strategy_logic import StrategyLogic, BarData, OrderInfo
-from engine.data_feed import ArrayDataFeed
+from engine.data_feed import ArrayDataFeed, LazyDataFeed
 from engine.broker import SimulatedBroker, Order
 from engine.timeline import Timeline
 from engine.adapter import EngineDataAdapter, EngineExecutor
@@ -30,6 +30,8 @@ class BacktestEngine:
     def __init__(self):
         self._data_feeds: Dict[str, ArrayDataFeed] = {}
         self._data_feed_list: List[ArrayDataFeed] = []
+        self._lazy_feeds: Dict[str, LazyDataFeed] = {}
+        self._lazy_mode: bool = False
         self._broker: Optional[SimulatedBroker] = None
         self._timeline: Optional[Timeline] = None
         self._strategy_logic: Optional[StrategyLogic] = None
@@ -45,6 +47,17 @@ class BacktestEngine:
         feed = ArrayDataFeed(symbol, dataframe)
         self._data_feeds[symbol] = feed
         self._data_feed_list.append(feed)
+
+    def add_lazy_feed(self, symbol: str, data_processor, period: str = '1d',
+                       start_date: str = '', end_date: str = ''):
+        """注册按需加载的数据源（不立即加载数据）"""
+        self._lazy_feeds[symbol] = LazyDataFeed(
+            symbol, data_processor, period, start_date, end_date
+        )
+
+    def set_lazy_mode(self, lazy_mode: bool):
+        """启用/禁用按需加载模式"""
+        self._lazy_mode = lazy_mode
 
     def set_broker(self, broker: SimulatedBroker):
         self._broker = broker
@@ -66,14 +79,17 @@ class BacktestEngine:
         if self._broker is None:
             self._broker = SimulatedBroker()
 
-        self._timeline = Timeline(self._data_feed_list, period=self._period)
+        self._timeline = Timeline(self._data_feed_list, period=self._period,
+                                   lazy_mode=self._lazy_mode)
 
         self._data_adapter = EngineDataAdapter(
-            self._data_feeds, self._timeline, period=self._period
+            self._data_feeds, self._timeline, period=self._period,
+            lazy_feeds=self._lazy_feeds
         )
 
         self._executor = EngineExecutor(
-            self._broker, self._data_adapter, self._data_feeds
+            self._broker, self._data_adapter, self._data_feeds,
+            lazy_feeds=self._lazy_feeds
         )
 
         if self._strategy_logic:
@@ -118,7 +134,11 @@ class BacktestEngine:
                 self._strategy_logic.update_data()
 
             current_indices = self._data_adapter._current_local_indices
-            value = self._broker.getvalue(self._data_feeds, current_indices)
+            current_date_str = current_date.isoformat() if current_date else None
+            value = self._broker.getvalue(
+                self._data_feeds, current_indices,
+                lazy_feeds=self._lazy_feeds, current_date=current_date_str
+            )
 
             if self._trading_dates is not None:
                 is_trading_day = current_date in self._trading_dates
@@ -188,7 +208,16 @@ class BacktestEngine:
             })
 
         final_indices = self._data_adapter._current_local_indices
-        final_value = self._broker.getvalue(self._data_feeds, final_indices)
+        final_date_str = None
+        if self._timeline and final_indices:
+            last_global_idx = self._data_adapter._current_global_idx
+            last_date = self._timeline.get_date(last_global_idx)
+            if last_date:
+                final_date_str = last_date.isoformat()
+        final_value = self._broker.getvalue(
+            self._data_feeds, final_indices,
+            lazy_feeds=self._lazy_feeds, current_date=final_date_str
+        )
 
         result = EngineResult(
             equity_history=equity_history,

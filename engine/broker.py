@@ -120,25 +120,31 @@ class SimulatedBroker:
         return self._cash
 
     def getvalue(self, data_feeds: Dict[str, ArrayDataFeed] = None,
-                 current_indices: Dict[str, int] = None) -> float:
+                 current_indices: Dict[str, int] = None,
+                 lazy_feeds: Dict = None,
+                 current_date: str = None) -> float:
         total = self._cash
-        if data_feeds and current_indices:
-            for symbol, pos in self._positions.items():
-                if pos.size != 0:
-                    feed = data_feeds.get(symbol)
-                    idx = current_indices.get(symbol, -1)
-                    if feed and idx >= 0:
-                        price = feed.get_close(idx)
-                        if not math.isnan(price):
-                            total += pos.size * price
-                        else:
-                            total += pos.size * pos.avg_price
-                    else:
-                        total += pos.size * pos.avg_price
-        else:
-            for pos in self._positions.values():
-                if pos.size != 0:
-                    total += pos.size * pos.avg_price
+        for symbol, pos in self._positions.items():
+            if pos.size == 0:
+                continue
+            price = None
+            # 优先从预加载feed获取价格
+            if data_feeds and current_indices:
+                feed = data_feeds.get(symbol)
+                idx = current_indices.get(symbol, -1)
+                if feed and idx >= 0:
+                    p = feed.get_close(idx)
+                    if not math.isnan(p):
+                        price = p
+            # fallback到lazy feed
+            if price is None and lazy_feeds and current_date:
+                lazy = lazy_feeds.get(symbol)
+                if lazy:
+                    price = lazy.get_close_by_date(current_date)
+            # 最终fallback到持仓均价
+            if price is None or math.isnan(price) if price else True:
+                price = pos.avg_price
+            total += pos.size * price
         return total
 
     def get_position(self, symbol: str) -> Position:
@@ -290,6 +296,87 @@ class SimulatedBroker:
         self._positions[symbol] = pos
 
         order = self._create_completed_order(symbol, 'sell', actual_size, close_price,
+                                              exec_price, actual_size, comm, order_datetime)
+        return order
+
+    def submit_buy_lazy(self, symbol: str, size: int, current_price: float,
+                         order_datetime=None) -> Optional[Order]:
+        """买入lazy feed的股票（不需要data_feed和current_idx）"""
+        if current_price is None or current_price <= 0 or math.isnan(current_price):
+            return None
+
+        exec_price = current_price
+        if self._slippage > 0:
+            exec_price = exec_price * (1 + self._slippage)
+
+        comm = exec_price * size * self._commission
+        cost = exec_price * size + comm
+
+        if self._check_submit:
+            if cost > self._cash:
+                return self._create_rejected_order(symbol, 'buy', size, current_price, order_datetime)
+
+        self._cash -= cost
+
+        pos = self._positions.get(symbol, Position(symbol=symbol))
+        old_size = pos.size
+        old_avg = pos.avg_price
+
+        if old_size >= 0:
+            new_size = old_size + size
+            new_avg = exec_price if new_size > 0 else 0.0
+            if old_size > 0 and new_size > 0:
+                new_avg = (old_size * old_avg + size * exec_price) / new_size
+        else:
+            new_size = old_size + size
+            if new_size >= 0:
+                close_size = min(size, abs(old_size))
+                pnl = close_size * (old_avg - exec_price)
+                self._record_trade(symbol, 'buy', close_size, exec_price, comm, pnl, order_datetime)
+                if new_size > 0:
+                    new_avg = exec_price
+                else:
+                    new_avg = 0.0
+            else:
+                new_avg = old_avg
+
+        pos.size = new_size
+        pos.avg_price = new_avg
+        self._positions[symbol] = pos
+
+        order = self._create_completed_order(symbol, 'buy', size, current_price,
+                                              exec_price, size, comm, order_datetime)
+        return order
+
+    def submit_sell_lazy(self, symbol: str, size: int, current_price: float,
+                          order_datetime=None) -> Optional[Order]:
+        """卖出lazy feed的股票（不需要data_feed和current_idx）"""
+        if current_price is None or current_price <= 0 or math.isnan(current_price):
+            return None
+
+        exec_price = current_price
+        if self._slippage > 0:
+            exec_price = exec_price * (1 - self._slippage)
+
+        comm = exec_price * size * self._commission
+
+        pos = self._positions.get(symbol, Position(symbol=symbol))
+        if pos.size <= 0:
+            return None
+
+        actual_size = min(size, pos.size)
+        self._cash += (exec_price * actual_size - comm)
+
+        close_size = actual_size
+        pnl = close_size * (exec_price - pos.avg_price)
+        self._record_trade(symbol, 'sell', close_size, exec_price, comm, pnl, order_datetime)
+
+        new_size = pos.size - actual_size
+        pos.size = new_size
+        pos.avg_price = pos.avg_price if new_size > 0 else 0.0
+        self._positions[symbol] = pos
+
+        order = self._create_completed_order(symbol, 'sell', actual_size, current_price,
                                               exec_price, actual_size, comm, order_datetime)
         return order
 

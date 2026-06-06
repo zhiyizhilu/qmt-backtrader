@@ -21,11 +21,13 @@ class Timeline:
 
     DAILY_PERIODS = {'1d', 'day', 'daily'}
 
-    def __init__(self, data_feeds: List[ArrayDataFeed], period: str = '1d'):
+    def __init__(self, data_feeds: List[ArrayDataFeed], period: str = '1d',
+                 lazy_mode: bool = False):
         self._data_feeds = data_feeds
         self._feed_symbols = [df.symbol for df in data_feeds]
         self._period = period
         self._is_daily = period in self.DAILY_PERIODS
+        self._lazy_mode = lazy_mode
 
         self._timestamps: np.ndarray = np.array([], dtype='datetime64[ns]')
         self._ts_to_idx: Dict = {}
@@ -35,6 +37,9 @@ class Timeline:
         self._build()
 
     def _build(self):
+        # lazy_mode下只基于第一个feed（基准标的）构建时间轴
+        feeds_to_use = self._data_feeds[:1] if self._lazy_mode else self._data_feeds
+
         all_ts_set = set()
         feed_date_arrays = []
 
@@ -44,6 +49,9 @@ class Timeline:
                 continue
             dates = feed.dates
             feed_date_arrays.append(dates)
+            # lazy_mode下只收集基准feed的时间戳
+            if self._lazy_mode and feed is not self._data_feeds[0]:
+                continue
             for d in dates:
                 ts = pd.Timestamp(d)
                 if self._is_daily:

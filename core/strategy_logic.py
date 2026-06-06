@@ -651,6 +651,95 @@ class StrategyLogic:
         return getattr(self.params, 'lookback_period', 30) + 10
 
     # ================================================================
+    # 按需加载数据访问 - 通过lazy feed
+    # ================================================================
+
+    def _get_lazy_feeds(self) -> Dict:
+        """获取lazy feeds字典（内部辅助方法）"""
+        if self._data_adapter and hasattr(self._data_adapter, '_lazy_feeds'):
+            return self._data_adapter._lazy_feeds
+        return {}
+
+    def get_lazy_daily_data(self, symbol: str, n_days: int = 60) -> Optional[Any]:
+        """获取lazy feed的日线数据（按需加载）
+
+        从smart_cache磁盘缓存按需加载指定标的的日线数据，
+        首次访问约5ms/只（磁盘缓存命中），后续访问直接命中内存缓存。
+
+        Args:
+            symbol: 股票代码，如 '000001.SZ'
+            n_days: 返回最近N天的数据，默认60天
+
+        Returns:
+            日线DataFrame，包含open/high/low/close/volume列；
+            无法获取时返回None
+        """
+        lazy_feeds = self._get_lazy_feeds()
+        lazy = lazy_feeds.get(symbol)
+        if lazy is None:
+            return None
+        current_dt = self.get_current_datetime()
+        if current_dt is None:
+            return None
+        current_date = current_dt.strftime('%Y-%m-%d') if hasattr(current_dt, 'strftime') else str(current_dt)
+        return lazy.get_daily_df(end_date=current_date, n_days=n_days)
+
+    def get_lazy_current_price(self, symbol: str) -> Optional[float]:
+        """获取lazy feed的当前价格（按需加载）
+
+        通过data_adapter获取，已自动支持lazy feed的fallback逻辑。
+
+        Args:
+            symbol: 股票代码
+
+        Returns:
+            当前收盘价，无法获取时返回None
+        """
+        if self._data_adapter:
+            return self._data_adapter.get_current_price(symbol)
+        return None
+
+    def get_lazy_minute_data(self, symbol: str) -> Optional[Any]:
+        """获取lazy feed的当日1m数据（按需加载）
+
+        从smart_cache按日加载1m数据，日内缓存。
+        每日应调用clear_lazy_minute_cache()释放内存。
+
+        Args:
+            symbol: 股票代码
+
+        Returns:
+            当日1m DataFrame，无法获取时返回None
+        """
+        lazy_feeds = self._get_lazy_feeds()
+        lazy = lazy_feeds.get(symbol)
+        if lazy is None:
+            return None
+        current_dt = self.get_current_datetime()
+        if current_dt is None:
+            return None
+        date_str = current_dt.strftime('%Y-%m-%d') if hasattr(current_dt, 'strftime') else str(current_dt)
+        return lazy.get_minute_df(date_str)
+
+    def clear_lazy_minute_cache(self, symbol: str = None):
+        """清空分钟线缓存，释放内存
+
+        建议在每个交易日的on_bar结束时调用（或on_start中判断跨日时调用）。
+
+        Args:
+            symbol: 指定股票代码则只清空该股票的缓存；
+                    不指定则清空所有lazy feed的分钟线缓存
+        """
+        lazy_feeds = self._get_lazy_feeds()
+        if symbol:
+            lazy = lazy_feeds.get(symbol)
+            if lazy:
+                lazy.clear_minute_cache()
+        else:
+            for lazy in lazy_feeds.values():
+                lazy.clear_minute_cache()
+
+    # ================================================================
     # 财报数据访问 - 通过财务数据适配器
     # ================================================================
 
