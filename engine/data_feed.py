@@ -145,12 +145,13 @@ class LazyDataFeed:
     """
 
     def __init__(self, symbol: str, data_processor, period: str = '1d',
-                 start_date: str = '', end_date: str = ''):
+                 start_date: str = '', end_date: str = '', use_raw_data: bool = False):
         self.symbol = symbol
         self._data_processor = data_processor
         self._period = period
         self._start_date = start_date
         self._end_date = end_date
+        self._use_raw_data = use_raw_data
         self._cache: Optional[ArrayDataFeed] = None
         self._minute_cache: Dict[str, ArrayDataFeed] = {}
         self._date_index: Optional[pd.DatetimeIndex] = None
@@ -161,9 +162,14 @@ class LazyDataFeed:
         if self._cache is not None:
             return
         try:
-            df = self._data_processor.get_data(
-                self.symbol, self._start_date, self._end_date, period='1d'
-            )
+            if self._use_raw_data:
+                df = self._data_processor.get_raw_data(
+                    self.symbol, self._start_date, self._end_date, period='1d'
+                )
+            else:
+                df = self._data_processor.get_data(
+                    self.symbol, self._start_date, self._end_date, period='1d'
+                )
             if df is not None and not df.empty:
                 self._cache = ArrayDataFeed(self.symbol, df)
                 self._date_index = df.index if isinstance(df.index, pd.DatetimeIndex) else None
@@ -179,9 +185,14 @@ class LazyDataFeed:
             date = dt_module.datetime.strptime(date_str, '%Y-%m-%d')
             start = (date - dt_module.timedelta(days=1)).strftime('%Y-%m-%d')
             end = (date + dt_module.timedelta(days=1)).strftime('%Y-%m-%d')
-            df = self._data_processor.get_data(
-                self.symbol, start, end, period='1m'
-            )
+            if self._use_raw_data:
+                df = self._data_processor.get_raw_data(
+                    self.symbol, start, end, period='1m'
+                )
+            else:
+                df = self._data_processor.get_data(
+                    self.symbol, start, end, period='1m'
+                )
             if df is not None and not df.empty:
                 if isinstance(df.index, pd.DatetimeIndex):
                     target_date = pd.Timestamp(date_str).date()

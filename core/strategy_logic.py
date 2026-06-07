@@ -622,6 +622,41 @@ class StrategyLogic:
             return self._data_adapter.get_current_datetime()
         return None
 
+    def get_prev_trading_day(self, date=None) -> Optional[Any]:
+        """获取前一个交易日
+
+        基于基准指数的交易日历，精确获取指定日期的前一个交易日。
+
+        Args:
+            date: 指定日期，默认为当前交易日。支持 date/datetime/Timestamp/str 类型
+
+        Returns:
+            前一个交易日的 date 对象，无法获取时返回 None
+        """
+        if not self._data_adapter or not hasattr(self._data_adapter, '_timeline'):
+            return None
+        timeline = self._data_adapter._timeline
+        if timeline is None:
+            return None
+
+        import pandas as pd
+        # 确定当前日期
+        if date is None:
+            current_date = self.get_current_date()
+        else:
+            current_date = pd.Timestamp(date).date() if not isinstance(date, dt_module.date) else date
+        if current_date is None:
+            return None
+
+        # 在时间轴中查找前一个交易日
+        trading_dates = timeline.get_trading_dates()
+        for i in range(len(trading_dates) - 1, -1, -1):
+            ts = pd.Timestamp(trading_dates[i])
+            td = ts.date() if hasattr(ts, 'date') else ts
+            if td < current_date:
+                return td
+        return None
+
     def get_symbols(self) -> List[str]:
         """获取策略需要的标的列表"""
         symbol = getattr(self.params, 'symbol', None)

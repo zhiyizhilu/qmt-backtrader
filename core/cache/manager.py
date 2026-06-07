@@ -456,10 +456,10 @@ class SmartCacheManager:
                     if coverage_missing == set(req_years):
                         cached_frames = []
                     elif coverage_missing:
-                        cached_frames = [f for f in cached_frames
-                                         if not (isinstance(f.index, pd.DatetimeIndex) and
-                                                 f.index.year.unique().tolist() and
-                                                 set(f.index.year.unique()) & coverage_missing)]
+                        # 不再提前移除已有缓存帧，保留旧数据作为fallback
+                        # 如果增量获取成功，_fetch_missing_years 会返回新数据替换旧数据
+                        # 如果增量获取失败（如QMT离线），旧缓存仍然可用
+                        pass
                     truly_missing = coverage_missing
             else:
                 if missing_years and missing_years == checked_years:
@@ -757,26 +757,40 @@ class SmartCacheManager:
             self.logger.warning(f"[{namespace}] {symbol} 增量获取失败: {e}")
             # 检测退市：如果缺失年份全部在已有缓存年份之后，且获取失败，
             # 说明股票可能已退市，记录最晚数据日期以避免重复尝试
+            # 但先检查磁盘上是否已有该年数据（可能是刷新而非真正缺失）
             if actual_cached:
                 last_cached_year = max(actual_cached)
                 if all(y > last_cached_year for y in truly_missing):
-                    last_df = self.disk_cache.get_yearly(
-                        namespace, symbol, last_cached_year, period
-                    )
-                    if (last_df is not None and isinstance(last_df, pd.DataFrame)
-                            and not last_df.empty and isinstance(last_df.index, pd.DatetimeIndex)):
-                        last_date = last_df.index.max().strftime('%Y-%m-%d')
-                        # 缓存最后日期距今天超过60天，大概率退市
-                        days_inactive = (pd.Timestamp.now() - last_df.index.max()).days
-                        if days_inactive > 60:
-                            if is_raw:
-                                idx.update_latest_raw_data_date(symbol, period, last_date)
-                            else:
-                                idx.update_latest_data_date(symbol, period, last_date)
-                            self.logger.info(
-                                f"[{namespace}] {symbol} 疑似退市，记录最晚数据日期: {last_date} "
-                                f"(已{days_inactive}天无新数据)"
-                            )
+                    # 检查磁盘上是否已有"缺失"年份的数据
+                    has_disk_data = False
+                    for y in truly_missing:
+                        disk_df = self.disk_cache.get_yearly(namespace, symbol, y, period)
+                        if disk_df is not None and isinstance(disk_df, pd.DataFrame) and not disk_df.empty:
+                            has_disk_data = True
+                            break
+                    if has_disk_data:
+                        self.logger.info(
+                            f"[{namespace}] {symbol} 增量获取失败，但磁盘已有{sorted(truly_missing)}年数据，"
+                            f"使用旧缓存（可能略有过时）"
+                        )
+                    else:
+                        last_df = self.disk_cache.get_yearly(
+                            namespace, symbol, last_cached_year, period
+                        )
+                        if (last_df is not None and isinstance(last_df, pd.DataFrame)
+                                and not last_df.empty and isinstance(last_df.index, pd.DatetimeIndex)):
+                            last_date = last_df.index.max().strftime('%Y-%m-%d')
+                            # 缓存最后日期距今天超过60天，大概率退市
+                            days_inactive = (pd.Timestamp.now() - last_df.index.max()).days
+                            if days_inactive > 60:
+                                if is_raw:
+                                    idx.update_latest_raw_data_date(symbol, period, last_date)
+                                else:
+                                    idx.update_latest_data_date(symbol, period, last_date)
+                                self.logger.info(
+                                    f"[{namespace}] {symbol} 疑似退市，记录最晚数据日期: {last_date} "
+                                    f"(已{days_inactive}天无新数据)"
+                                )
             if is_raw:
                 idx.update_checked_market_raw_years(symbol, period, sorted(truly_missing))
             else:
@@ -937,22 +951,36 @@ class SmartCacheManager:
         except Exception as e:
             self.logger.warning(f"[{namespace}] {symbol} 后复权增量更新失败: {e}")
             # 检测退市：缺失年份在已有缓存之后且获取失败
+            # 但先检查磁盘上是否已有该年数据（可能是刷新而非真正缺失）
             if actual_cached:
                 last_cached_year = max(actual_cached)
                 if all(y > last_cached_year for y in truly_missing):
-                    last_df = self.disk_cache.get_yearly(
-                        namespace, symbol, last_cached_year, period
-                    )
-                    if (last_df is not None and isinstance(last_df, pd.DataFrame)
-                            and not last_df.empty and isinstance(last_df.index, pd.DatetimeIndex)):
-                        last_date = last_df.index.max().strftime('%Y-%m-%d')
-                        days_inactive = (pd.Timestamp.now() - last_df.index.max()).days
-                        if days_inactive > 60:
-                            idx.update_latest_data_date(symbol, period, last_date)
-                            self.logger.info(
-                                f"[{namespace}] {symbol} 疑似退市，记录最晚数据日期: {last_date} "
-                                f"(已{days_inactive}天无新数据)"
-                            )
+                    # 检查磁盘上是否已有"缺失"年份的数据
+                    has_disk_data = False
+                    for y in truly_missing:
+                        disk_df = self.disk_cache.get_yearly(namespace, symbol, y, period)
+                        if disk_df is not None and isinstance(disk_df, pd.DataFrame) and not disk_df.empty:
+                            has_disk_data = True
+                            break
+                    if has_disk_data:
+                        self.logger.info(
+                            f"[{namespace}] {symbol} 增量更新失败，但磁盘已有{sorted(truly_missing)}年数据，"
+                            f"使用旧缓存（可能略有过时）"
+                        )
+                    else:
+                        last_df = self.disk_cache.get_yearly(
+                            namespace, symbol, last_cached_year, period
+                        )
+                        if (last_df is not None and isinstance(last_df, pd.DataFrame)
+                                and not last_df.empty and isinstance(last_df.index, pd.DatetimeIndex)):
+                            last_date = last_df.index.max().strftime('%Y-%m-%d')
+                            days_inactive = (pd.Timestamp.now() - last_df.index.max()).days
+                            if days_inactive > 60:
+                                idx.update_latest_data_date(symbol, period, last_date)
+                                self.logger.info(
+                                    f"[{namespace}] {symbol} 疑似退市，记录最晚数据日期: {last_date} "
+                                    f"(已{days_inactive}天无新数据)"
+                                )
             idx.update_checked_market_years(symbol, period, sorted(truly_missing))
 
         return new_frames
@@ -1100,22 +1128,36 @@ class SmartCacheManager:
         except Exception as e:
             self.logger.warning(f"[{namespace}] {symbol} 后复权全量获取失败: {e}")
             # 检测退市：从已有缓存推断最晚数据日期
+            # 但先检查磁盘上是否已有该年数据
             actual_cached = sorted(set(req_years) - truly_missing)
             if actual_cached:
                 last_cached_year = max(actual_cached)
-                last_df = self.disk_cache.get_yearly(
-                    namespace, symbol, last_cached_year, period
-                )
-                if (last_df is not None and isinstance(last_df, pd.DataFrame)
-                        and not last_df.empty and isinstance(last_df.index, pd.DatetimeIndex)):
-                    last_date = last_df.index.max().strftime('%Y-%m-%d')
-                    days_inactive = (pd.Timestamp.now() - last_df.index.max()).days
-                    if days_inactive > 60:
-                        idx.update_latest_data_date(symbol, period, last_date)
-                        self.logger.info(
-                            f"[{namespace}] {symbol} 疑似退市，记录最晚数据日期: {last_date} "
-                            f"(已{days_inactive}天无新数据)"
-                        )
+                # 检查磁盘上是否已有"缺失"年份的数据
+                has_disk_data = False
+                for y in truly_missing:
+                    disk_df = self.disk_cache.get_yearly(namespace, symbol, y, period)
+                    if disk_df is not None and isinstance(disk_df, pd.DataFrame) and not disk_df.empty:
+                        has_disk_data = True
+                        break
+                if has_disk_data:
+                    self.logger.info(
+                        f"[{namespace}] {symbol} 全量获取失败，但磁盘已有{sorted(truly_missing)}年数据，"
+                        f"使用旧缓存（可能略有过时）"
+                    )
+                else:
+                    last_df = self.disk_cache.get_yearly(
+                        namespace, symbol, last_cached_year, period
+                    )
+                    if (last_df is not None and isinstance(last_df, pd.DataFrame)
+                            and not last_df.empty and isinstance(last_df.index, pd.DatetimeIndex)):
+                        last_date = last_df.index.max().strftime('%Y-%m-%d')
+                        days_inactive = (pd.Timestamp.now() - last_df.index.max()).days
+                        if days_inactive > 60:
+                            idx.update_latest_data_date(symbol, period, last_date)
+                            self.logger.info(
+                                f"[{namespace}] {symbol} 疑似退市，记录最晚数据日期: {last_date} "
+                                f"(已{days_inactive}天无新数据)"
+                            )
             idx.update_checked_market_years(symbol, period, sorted(truly_missing))
 
         return new_frames

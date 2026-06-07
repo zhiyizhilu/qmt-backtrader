@@ -394,7 +394,10 @@ class BacktestAPI(BaseAPI):
 
         loaded_count, failed_count, skipped_count = self._load_pool_market_data(pool)
 
-        self._preload_auxiliary_data(pool)
+        if not self._lazy_mode:
+            self._preload_auxiliary_data(pool)
+        else:
+            self.logger.info("lazy模式: 跳过辅助数据预加载（财务数据和不复权行情将在策略运行时按需获取）")
 
     def _load_auxiliary_symbols(self, strategy_class, kwargs):
         """自动检测策略params中的辅助标的（指数ETF等）并加载行情数据"""

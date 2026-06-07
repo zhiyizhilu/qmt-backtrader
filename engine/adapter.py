@@ -219,7 +219,9 @@ class EngineDataAdapter(MarketDataAdapter):
             current_date = self.get_current_date()
             if current_date:
                 return lazy.is_suspended(current_date.strftime('%Y-%m-%d'))
-        return True  # 未知symbol视为停牌
+        # 未知symbol：如果策略自行管理数据源（如1m策略通过QMT直接获取），
+        # 不应因框架未加载该symbol就视为停牌，返回False让策略自行判断
+        return False
 
     def _get_prev_daily_close(self, symbol: str) -> Optional[float]:
         if self._is_daily():
