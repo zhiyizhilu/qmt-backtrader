@@ -1,0 +1,18 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 2078694.1762717296,
+  "total_return_pct": 107.86941762717296,
+  "sharpe_ratio": 1.173219224815461,
+  "max_drawdown_pct": -17.61471985374244,
+  "annual_return_pct": 20.937234143287874,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 53567314.45332043,
+  "label": "r2_combo_ge",
+  "extra_params": {
+    "use_composite_score": true,
+    "sell_max_pe": 40,
+    "sell_min_dividend_yield": 0.015
+  },
+  "timestamp": "2026-06-11T20:04:54.525711"
+}

@@ -1,0 +1,17 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 2880701.647719714,
+  "total_return_pct": 188.07016477197138,
+  "sharpe_ratio": 1.6772281178371777,
+  "max_drawdown_pct": -10.38871118092239,
+  "annual_return_pct": 31.636040664751985,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 65290856.75626378,
+  "label": "r2_e1e2_sell_signals",
+  "extra_params": {
+    "sell_max_pe": 40,
+    "sell_min_dividend_yield": 0.015
+  },
+  "timestamp": "2026-06-11T19:01:18.739513"
+}

@@ -1,0 +1,14 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 1264361.2476328341,
+  "total_return_pct": 26.436124763283413,
+  "sharpe_ratio": 0.771195398295666,
+  "max_drawdown_pct": -17.08439086083161,
+  "annual_return_pct": 12.990092595089564,
+  "trading_days": 484,
+  "fee": 0,
+  "turnover": 17921725.025121637,
+  "label": "review_baseline_oos",
+  "extra_params": null,
+  "timestamp": "2026-06-11T16:59:58.477065"
+}

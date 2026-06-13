@@ -1,0 +1,17 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 2869397.9000338158,
+  "total_return_pct": 186.93979000338157,
+  "sharpe_ratio": 1.6158409468700676,
+  "max_drawdown_pct": -12.730777789561925,
+  "annual_return_pct": 31.50165297639276,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 67692775.0597643,
+  "label": "r2_c1c2_ocf_debt",
+  "extra_params": {
+    "min_ocf_ratio": 0.5,
+    "max_debt_ratio": 70
+  },
+  "timestamp": "2026-06-11T18:37:07.480622"
+}

@@ -1,0 +1,107 @@
+{
+  "optimizations": [
+    {
+      "round_id": "round_1",
+      "timestamp": "2026-06-11T12:00:00",
+      "strategy_name": "dividend_value_growth",
+      "train_period": "2020-04-28 ~ 2024-04-28",
+      "valid_period": "2024-04-28 ~ 2026-04-28",
+      "stock_pool": "中证1000",
+      "baseline": {
+        "sharpe_ratio": 1.3631,
+        "total_return_pct": 185.02,
+        "max_drawdown_pct": -17.93,
+        "annual_return_pct": 29.5
+      },
+      "optimized": null,
+      "validation": null,
+      "optimization_results": [
+        {"label": "opt01_volatility_003", "name": "波动率过滤(vol=0.03)", "params": {"max_volatility": 0.03}, "sharpe_ratio": 1.3859, "sharpe_improvement_pct": 1.7, "verdict": "无效"},
+        {"label": "opt02_stoploss_010", "name": "止损10%(回撤)", "params": {"stop_loss_pct": 0.10}, "sharpe_ratio": 1.4326, "sharpe_improvement_pct": 5.1, "verdict": "有效但样本外不通过"},
+        {"label": "opt03_industry_2", "name": "行业分散(每行业最多2只)", "params": {"max_industry_stocks": 2}, "sharpe_ratio": 1.2778, "sharpe_improvement_pct": -6.3, "verdict": "无效"},
+        {"label": "opt04_momentum_20", "name": "动量确认(20日)", "params": {"momentum_period": 20}, "sharpe_ratio": 0.8939, "sharpe_improvement_pct": -34.4, "verdict": "无效"},
+        {"label": "opt05_pe_20", "name": "收紧PE上限(20)", "params": {"max_pe": 20}, "sharpe_ratio": 1.2644, "sharpe_improvement_pct": -7.2, "verdict": "无效"},
+        {"label": "opt06_roe_8", "name": "提高ROE阈值(8%)", "params": {"min_roe": 8}, "sharpe_ratio": 1.1485, "sharpe_improvement_pct": -15.7, "verdict": "无效"},
+        {"label": "opt07_biweekly", "name": "双周调仓", "params": {"rebalance_freq": "biweekly"}, "sharpe_ratio": 1.2626, "sharpe_improvement_pct": -7.4, "verdict": "无效"},
+        {"label": "opt08_quarterly", "name": "季度调仓", "params": {"rebalance_freq": "quarterly"}, "sharpe_ratio": 0.8872, "sharpe_improvement_pct": -34.9, "verdict": "无效"},
+        {"label": "opt09_peg_15", "name": "收紧PEG上限(1.5)", "params": {"max_peg": 1.5}, "sharpe_ratio": 1.3125, "sharpe_improvement_pct": -3.7, "verdict": "无效"},
+        {"label": "opt10_pe_15", "name": "收紧PE上限(15)", "params": {"max_pe": 15}, "sharpe_ratio": 0.5631, "sharpe_improvement_pct": -58.7, "verdict": "无效"}
+      ],
+      "review_results": [
+        {
+          "label": "opt02_stoploss_010",
+          "logic_rating": "A",
+          "oos_decay_ratio": -3.80,
+          "conclusion": "不通过 - 样本外衰减比为负，过度拟合"
+        }
+      ],
+      "adopted_changes": {},
+      "rejected_changes": [
+        {"label": "opt01_volatility_003", "reason": "夏普提升仅1.7%，未达5%门槛"},
+        {"label": "opt02_stoploss_010", "reason": "样本外衰减比-3.80，验证集夏普反而下降19.4%，过度拟合"},
+        {"label": "opt03_industry_2", "reason": "行业分散限制了选股自由度，夏普下降6.3%"},
+        {"label": "opt04_momentum_20", "reason": "动量确认消除了价值股的逆向买入机会，夏普下降34.4%"},
+        {"label": "opt05_pe_20", "reason": "PE上限收紧至20排除了部分优质股票，夏普下降7.2%"},
+        {"label": "opt06_roe_8", "reason": "ROE阈值过高排除了低ROE高分红股票，夏普下降15.7%"},
+        {"label": "opt07_biweekly", "reason": "双周调仓增加换手成本，夏普下降7.4%"},
+        {"label": "opt08_quarterly", "reason": "季度调仓反应过慢，夏普下降34.9%"},
+        {"label": "opt09_peg_15", "reason": "PEG上限收紧至1.5影响有限，夏普下降3.7%"},
+        {"label": "opt10_pe_15", "reason": "PE上限15过于严格，选股池大幅缩小，夏普暴跌58.7%"}
+      ],
+      "lessons_learned": [
+        "价值策略不宜加动量确认——价值股往往在下跌时才是最好的买入时机，动量过滤会消除逆向买入机会",
+        "止损在测试集有效但验证集失效——说明止损参数对市场环境敏感，不同行情下表现差异大",
+        "收紧PE/ROE/PEG阈值反而有害——原策略的参数已经是较好的平衡点，进一步收紧会排除优质股票",
+        "月度调仓是最优频率——更频繁（双周）增加成本，更稀疏（季度）反应过慢",
+        "行业分散对高股息策略不适用——高股息股票天然集中在银行、煤炭等行业，强制分散会降低选股质量"
+      ]
+    },
+    {
+      "round_id": "round_2",
+      "timestamp": "2026-06-11T20:30:00",
+      "strategy_name": "dividend_value_growth",
+      "train_period": "2020-04-28 ~ 2024-04-28",
+      "valid_period": "2024-04-28 ~ 2026-04-28",
+      "stock_pool": "中证全指",
+      "baseline": {
+        "sharpe_ratio": 1.7569,
+        "total_return_pct": 209.26,
+        "max_drawdown_pct": -10.76,
+        "annual_return_pct": 32.7
+      },
+      "optimized": null,
+      "validation": null,
+      "optimization_results": [
+        {"label": "r2_b1_sort_peg", "name": "B1: PEG排序选股", "params": {"sort_by_peg": true}, "sharpe_ratio": 1.0664, "sharpe_improvement_pct": -39.3, "verdict": "无效"},
+        {"label": "r2_c1c2_ocf_debt", "name": "C1+C2: 现金流+负债率", "params": {"min_ocf_ratio": 0.5, "max_debt_ratio": 70}, "sharpe_ratio": 1.6158, "sharpe_improvement_pct": -8.0, "verdict": "无效"},
+        {"label": "r2_d2_hold_priority", "name": "D2: 持仓续留优先", "params": {"hold_priority": true}, "sharpe_ratio": 1.6319, "sharpe_improvement_pct": -7.1, "verdict": "无效"},
+        {"label": "r2_e1e2_sell_signals", "name": "E1+E2: 主动卖出信号", "params": {"sell_max_pe": 40, "sell_min_dividend_yield": 0.015}, "sharpe_ratio": 1.6772, "sharpe_improvement_pct": -4.5, "verdict": "接近但未达标"},
+        {"label": "r2_g1_composite_score", "name": "G1: 综合评分排序", "params": {"use_composite_score": true}, "sharpe_ratio": 1.1799, "sharpe_improvement_pct": -32.9, "verdict": "无效"},
+        {"label": "r2_h1_dividend_years", "name": "H1: 分红连续性(3年)", "params": {"min_dividend_years": 3}, "sharpe_ratio": 0.0, "sharpe_improvement_pct": -100.0, "verdict": "选股为空"},
+        {"label": "r2_combo_ge", "name": "组合: 评分+卖出", "params": {"use_composite_score": true, "sell_max_pe": 40, "sell_min_dividend_yield": 0.015}, "sharpe_ratio": 1.1732, "sharpe_improvement_pct": -33.2, "verdict": "无效"},
+        {"label": "r2_combo_ghd", "name": "组合: 评分+分红质量+续留", "params": {"use_composite_score": true, "min_dividend_years": 3, "hold_priority": true}, "sharpe_ratio": 0.0, "sharpe_improvement_pct": -100.0, "verdict": "选股为空"}
+      ],
+      "review_results": [],
+      "adopted_changes": {},
+      "rejected_changes": [
+        {"label": "r2_b1_sort_peg", "reason": "PEG排序替代股息率排序后，选出的股票偏向低增长低股息，夏普下降39.3%"},
+        {"label": "r2_c1c2_ocf_debt", "reason": "现金流和负债率过滤排除了银行股（高负债但高分红），夏普下降8.0%"},
+        {"label": "r2_d2_hold_priority", "reason": "持仓续留优先导致无法及时换出质量下降的股票，夏普下降7.1%"},
+        {"label": "r2_e1e2_sell_signals", "reason": "主动卖出信号虽接近基线（-4.5%），但未达5%提升门槛；卖出后资金闲置"},
+        {"label": "r2_g1_composite_score", "reason": "综合评分排序改变了股息率优先的核心逻辑，选出质量下降，夏普下降32.9%"},
+        {"label": "r2_h1_dividend_years", "reason": "3年分红连续性要求过于严格，导致选股池为空；get_dvps_history返回数据不足"},
+        {"label": "r2_combo_ge", "reason": "综合评分+卖出信号组合，评分排序是主要拖累，夏普下降33.2%"},
+        {"label": "r2_combo_ghd", "reason": "分红连续性导致选股为空，组合完全失效"}
+      ],
+      "lessons_learned": [
+        "股息率排序是策略核心——按PEG排序替代后大幅下降，说明高股息本身就是最强的选股信号",
+        "综合评分排序不如单一股息率排序——多因子评分稀释了股息率信号，反而引入噪音",
+        "现金流和负债率过滤对银行股不利——高股息策略天然重仓银行，负债率过滤会误伤核心持仓",
+        "持仓续留优先降低了策略灵活性——月度调仓本身频率不高，续留优先导致无法及时换股",
+        "主动卖出信号方向正确但效果不足——PE过高/股息率过低卖出逻辑合理，但卖出后资金闲置抵消了收益",
+        "分红连续性数据可能不完整——get_dvps_history返回的历史数据不足以支撑3年连续性判断",
+        "两轮18项优化全部失败，策略原始参数和逻辑已是局部最优——进一步优化空间极小"
+      ]
+    }
+  ]
+}

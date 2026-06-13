@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 1000000,
+  "total_return_pct": 0.0,
+  "sharpe_ratio": 0.0,
+  "max_drawdown_pct": 0.0,
+  "annual_return_pct": 0.0,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 0.0,
+  "label": "r2_h1_dividend_years",
+  "extra_params": {
+    "min_dividend_years": 3
+  },
+  "timestamp": "2026-06-11T19:43:44.178759"
+}

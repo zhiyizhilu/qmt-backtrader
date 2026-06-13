@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 2759012.025008931,
+  "total_return_pct": 175.90120250089308,
+  "sharpe_ratio": 1.6319383686685998,
+  "max_drawdown_pct": -11.031781292539042,
+  "annual_return_pct": 30.168247321709597,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 35056134.40751615,
+  "label": "r2_d2_hold_priority",
+  "extra_params": {
+    "hold_priority": true
+  },
+  "timestamp": "2026-06-11T18:47:49.717653"
+}

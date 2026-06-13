@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 3080190.71100984,
+  "total_return_pct": 208.01907110098398,
+  "sharpe_ratio": 1.432567816596784,
+  "max_drawdown_pct": -17.878664111337613,
+  "annual_return_pct": 33.945904766845445,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 106665338.64124927,
+  "label": "opt02_stoploss_010",
+  "extra_params": {
+    "stop_loss_pct": 0.1
+  },
+  "timestamp": "2026-06-11T15:22:35.926489"
+}
