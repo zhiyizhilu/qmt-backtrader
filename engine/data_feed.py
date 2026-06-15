@@ -299,6 +299,17 @@ class LazyDataFeed:
             return close if not math.isnan(close) else None
         return None
 
+    def get_open_by_date(self, date_str: str) -> Optional[float]:
+        """获取指定日期的开盘价"""
+        self._ensure_daily_loaded()
+        if self._cache is None:
+            return None
+        idx = self._find_idx_by_date(date_str)
+        if idx >= 0:
+            open_price = self._cache.get_open(idx)
+            return open_price if not math.isnan(open_price) else None
+        return None
+
     def get_bar_by_date(self, date_str: str) -> Optional[BarData]:
         """获取指定日期的BarData"""
         self._ensure_daily_loaded()

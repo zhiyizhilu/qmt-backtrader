@@ -624,9 +624,16 @@ class QMTDataProcessor(DataProcessor):
             return self._download_single_stocks(stocks_to_download, tables, start_time, end_time, batch_desc)
 
         # 步骤3: 轮询等待新数据同步
-        max_wait = 30  # 减少最大等待时间
-        wait_interval = 0.3
+        # 优化：先等待一段时间让QMT同步数据，再开始轮询检查
+        # 频繁调用get_financial_data会给QMT造成负载，导致数据同步变慢
+        max_wait = 60  # 增加最大等待时间
+        initial_wait = 5  # 首次等待5秒，让QMT有时间同步
+        wait_interval = 2  # 轮询间隔从0.3秒增加到2秒
         waited = 0
+
+        # 先等待initial_wait秒，不打扰QMT
+        time.sleep(initial_wait)
+        waited = initial_wait
 
         while waited <= max_wait:
             ready_now, missing_now = self._check_data_ready(
@@ -724,9 +731,11 @@ class QMTDataProcessor(DataProcessor):
                 # 单只下载
                 self.xtdata.download_financial_data2([stock], tables, start_time=start_time, end_time=end_time)
 
-                # 等待这只股票的数据就绪（最多10秒）
-                max_wait = 10
-                waited = 0
+                # 等待这只股票的数据就绪（最多15秒）
+                # 先等3秒让QMT同步，再轮询检查
+                time.sleep(3)
+                max_wait = 15
+                waited = 3
                 stock_ready = False
                 while waited <= max_wait:
                     ready, missing = self._check_data_ready([stock], tables, start_time, end_time)
@@ -735,8 +744,8 @@ class QMTDataProcessor(DataProcessor):
                         stock_ready = True
                         break
                     if waited < max_wait:
-                        time.sleep(0.2)
-                        waited += 0.2
+                        time.sleep(2)
+                        waited += 2
                     else:
                         break
 
@@ -800,23 +809,57 @@ class QMTDataProcessor(DataProcessor):
         total = len(active_stocks)
 
         start_ts = time.time()
-        all_success = set()
 
-        # 小批量处理，每批10只
-        batch_size = 10
+        # 优化：先一次性发起所有下载请求，再统一等待和检查
+        # 避免频繁轮询get_financial_data导致QMT负载过高
+        batch_size = 50  # 增大批次，减少下载调用次数
         total_batches = (total + batch_size - 1) // batch_size
+
+        self.logger.info(f"分 {total_batches} 批发起下载请求（每批{batch_size}只）...")
 
         for batch_start in range(0, total, batch_size):
             batch_end = min(batch_start + batch_size, total)
             batch = active_stocks[batch_start:batch_end]
             batch_idx = batch_start // batch_size + 1
-
             try:
-                success = self._download_batch(batch, tables, start_time, end_time, batch_idx, total_batches)
-                all_success.update(success)
+                self.xtdata.download_financial_data2(
+                    batch, tables, start_time=start_time, end_time=end_time
+                )
+                self.logger.info(f"[{batch_idx}/{total_batches}] 已发起下载请求: {len(batch)}只")
             except Exception as e:
-                self.logger.warning(f"批次 {batch_idx} 处理失败: {e}")
-                continue
+                self.logger.warning(f"[{batch_idx}/{total_batches}] 下载请求失败: {e}")
+
+        # 等待QMT同步数据
+        wait_time = max(15, total // 10)  # 根据股票数量动态调整等待时间
+        self.logger.info(f"等待 {wait_time} 秒让QMT同步数据...")
+        time.sleep(wait_time)
+
+        # 统一检查哪些股票数据已就绪
+        all_success = set()
+        check_batch_size = 50
+        for check_start in range(0, total, check_batch_size):
+            check_end = min(check_start + check_batch_size, total)
+            check_batch = active_stocks[check_start:check_end]
+            try:
+                ready, missing = self._check_data_ready(check_batch, tables, start_time, end_time)
+                all_success.update(ready)
+            except Exception:
+                pass
+
+        # 如果还有缺失的，再等待一轮
+        all_missing = set(active_stocks) - all_success
+        if all_missing and len(all_missing) < total:
+            self.logger.info(f"第一轮检查: {len(all_success)}/{total} 只就绪，等待15秒后重试 {len(all_missing)} 只...")
+            time.sleep(15)
+            try:
+                ready2, missing2 = self._check_data_ready(list(all_missing), tables, start_time, end_time)
+                all_success.update(ready2)
+            except Exception:
+                pass
+
+        all_missing = set(active_stocks) - all_success
+        if all_missing:
+            self.logger.warning(f"仍有 {len(all_missing)} 只股票数据未就绪")
 
         # 下载完成后，对所有传入的股票调用 get_financial_data 保存到缓存
         # 注意：这里使用 active_stocks 而不是 all_success，因为即使 _download_batch

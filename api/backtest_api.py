@@ -239,6 +239,9 @@ class BacktestAPI(BaseAPI):
                         available_years = cache_manager.disk_cache.list_yearly_files(namespace, stock, table_suffix)
                     checked_years = cache_manager.index_manager.get_checked_financial_years(stock, table_suffix)
                     missing_years = set(req_years) - set(available_years) - set(checked_years)
+                    # 当年及未来年份的财报可能尚未公布，不应因此触发重新下载
+                    current_year = pd.Timestamp.now().year
+                    missing_years = {y for y in missing_years if y < current_year}
                     if missing_years:
                         all_tables_cached = False
                         break

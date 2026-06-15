@@ -62,6 +62,11 @@ class EngineDataAdapter(MarketDataAdapter):
     def period(self, value: str) -> None:
         self._period = value
 
+    def register_lazy_feed(self, symbol: str, lazy_feed) -> None:
+        """注册额外的按需加载数据源（用于行业宽度等辅助计算）"""
+        if symbol not in self._lazy_feeds:
+            self._lazy_feeds[symbol] = lazy_feed
+
     def _is_daily(self) -> bool:
         return self._period in self.DAILY_PERIODS
 
@@ -176,6 +181,28 @@ class EngineDataAdapter(MarketDataAdapter):
                 return lazy.get_close_by_date(current_date.strftime('%Y-%m-%d'))
         return None
 
+    def get_open_price(self, symbol: str) -> Optional[float]:
+        """获取当日开盘价"""
+        # 优先从缓存获取
+        open_price = self._current_day_open.get(symbol)
+        if open_price is not None:
+            return open_price
+        # 从feed获取
+        local_idx = self._current_local_indices.get(symbol, -1)
+        if local_idx >= 0:
+            feed = self._data_feeds.get(symbol)
+            if feed is not None:
+                price = feed.get_open(local_idx)
+                if not math.isnan(price):
+                    return price
+        # 从lazy feed按需获取
+        lazy = self._lazy_feeds.get(symbol)
+        if lazy is not None:
+            current_date = self.get_current_date()
+            if current_date:
+                return lazy.get_open_by_date(current_date.strftime('%Y-%m-%d'))
+        return None
+
     def get_close_prices(self, symbol: str, period: int = None) -> List[float]:
         if self._is_daily():
             prices = list(self._close_prices.get(symbol, []))
@@ -183,6 +210,20 @@ class EngineDataAdapter(MarketDataAdapter):
             prices = list(self._daily_close_prices.get(symbol, []))
             if self._current_day_close.get(symbol) is not None:
                 prices.append(self._current_day_close[symbol])
+
+        # lazy feed回退: 如果主数据源无该股票的收盘价序列，尝试从lazy feed获取
+        if not prices and symbol in self._lazy_feeds:
+            lazy = self._lazy_feeds[symbol]
+            current_date = self.get_current_date()
+            if current_date:
+                end_date = current_date.strftime('%Y-%m-%d')
+                n_days = period if period else 30
+                df = lazy.get_daily_df(end_date=end_date, n_days=n_days)
+                if df is not None and not df.empty and 'close' in df.columns:
+                    prices = df['close'].tolist()
+                    # 过滤NaN
+                    prices = [p for p in prices if not (isinstance(p, float) and math.isnan(p))]
+
         if period is not None:
             result = prices[-period:] if len(prices) >= period else prices
             return result

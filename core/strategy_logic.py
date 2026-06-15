@@ -514,6 +514,9 @@ class StrategyLogic:
     def _get_unadjusted_price_from_df_cache(self, symbol: str, current_date) -> Optional[float]:
         import pandas as pd
 
+        # 确保DF缓存已加载
+        self._load_unadjusted_df_cache(symbol, current_date)
+
         cached_df = self._unadjusted_price_df_cache.get(symbol)
         if cached_df is not None and not cached_df.empty:
             if isinstance(cached_df.index, pd.DatetimeIndex):
@@ -525,10 +528,68 @@ class StrategyLogic:
                         return price
             return self.get_current_price(symbol)
 
+        return self.get_current_price(symbol)
+
+    def get_unadjusted_close_prices(self, symbol: str, period: int = None) -> List[float]:
+        """获取指定标的的不复权收盘价序列
+
+        用于行业宽度等需要不复权价格序列计算均线的场景。
+        复用 _unadjusted_price_df_cache 缓存机制，首次访问时加载整个回测期间数据。
+
+        Args:
+            symbol: 股票代码
+            period: 需要的交易日数量，None返回全部
+
+        Returns:
+            不复权收盘价列表，无法获取时返回空列表
+        """
+        import pandas as pd
+
+        current_date = self.get_current_date()
+        if current_date is None:
+            return []
+
+        # 确保DF缓存已加载
+        cached_df = self._unadjusted_price_df_cache.get(symbol)
+        if cached_df is None:
+            # 触发加载（与 get_unadjusted_price 相同的加载逻辑）
+            self._load_unadjusted_df_cache(symbol, current_date)
+            cached_df = self._unadjusted_price_df_cache.get(symbol)
+
+        if cached_df is None or cached_df.empty:
+            return []
+
+        if not isinstance(cached_df.index, pd.DatetimeIndex) or 'close' not in cached_df.columns:
+            return []
+
+        # 截取到前一天的数据（与聚宽 get_price(end_date=yesterday) 对齐）
+        # 聚宽策略用 end_date=context.previous_date，即上一个交易日
+        # 本地回测引擎在当天09:30执行，当天收盘价不应参与MA20计算
+        # 使用 < current_date 来排除当天数据
+        ts = pd.Timestamp(current_date)
+        mask = cached_df.index < ts
+        df_up_to_date = cached_df.loc[mask]
+
+        if df_up_to_date.empty:
+            return []
+
+        closes = df_up_to_date['close'].tolist()
+        closes = [c for c in closes if c is not None and not (isinstance(c, float) and c != c) and c > 0]
+
+        if period is not None:
+            return closes[-period:] if len(closes) >= period else closes
+        return closes
+
+    def _load_unadjusted_df_cache(self, symbol: str, current_date):
+        """加载不复权数据到DF缓存（供 get_unadjusted_price 和 get_unadjusted_close_prices 共用）"""
+        import pandas as pd
+
+        if symbol in self._unadjusted_price_df_cache:
+            return
+
         if self._data_processor is not None and hasattr(self._data_processor, 'get_raw_data'):
             if current_date is None:
-                return self.get_current_price(symbol)
-
+                return
             start_str = self._data_start_date if self._data_start_date else (self._backtest_start_date.strftime('%Y-%m-%d') if self._backtest_start_date else current_date.strftime('%Y-%m-%d'))
             end_str = self._data_end_date if self._data_end_date else (self._backtest_end_date.strftime('%Y-%m-%d') if self._backtest_end_date else current_date.strftime('%Y-%m-%d'))
             try:
@@ -538,24 +599,11 @@ class StrategyLogic:
                 if raw_df is not None and not raw_df.empty:
                     if isinstance(raw_df.index, pd.DatetimeIndex) and 'close' in raw_df.columns:
                         self._unadjusted_price_df_cache[symbol] = raw_df
-                    ts = pd.Timestamp(current_date)
-                    if isinstance(raw_df.index, pd.DatetimeIndex):
-                        pos = raw_df.index.searchsorted(ts, side='right') - 1
-                        if pos >= 0 and 'close' in raw_df.columns:
-                            price = float(raw_df.iloc[pos]['close'])
-                            if price > 0:
-                                return price
-                    if 'close' in raw_df.columns:
-                        price = float(raw_df['close'].iloc[-1])
-                        if price > 0:
-                            return price
             except Exception as e:
                 from core.data.futu import FutuServiceError
                 if isinstance(e, FutuServiceError):
                     raise
-                self.logger.debug(f"获取不复权价格失败 {symbol}: {e}")
-
-        return self.get_current_price(symbol)
+                self.logger.debug(f"加载不复权数据失败 {symbol}: {e}")
 
     def get_close_prices(self, symbol: str, period: int = None) -> List[float]:
         """获取指定标的的收盘价序列"""
