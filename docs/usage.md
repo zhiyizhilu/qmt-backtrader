@@ -17,6 +17,11 @@ python main.py --mode backtest --strategy ivff3 --period 1d --pool 中证1000 --
 python main.py --mode backtest --strategy undervalued --period 1d --pool 沪深300 --start 2020-04-28 --end 2026-04-28 --debug
 ```
 
+**银行轮动策略：**
+```bash
+python main.py --mode backtest --strategy bank_rotation --period 1d --start 2020-04-28 --end 2026-04-28 --ai-mode
+```
+
 **指定数据源回测：**
 ```bash
 # OpenData 数据源（免费，无需 QMT）
@@ -35,7 +40,7 @@ python main.py --mode backtest --strategy small_cap --period 1d --pool 中证100
 ```bash
 # 策略在 @register_strategy 的 default_kwargs 中指定 dividend_type='none'，
 # 运行方式与普通回测相同：
-python main.py --mode backtest --strategy dde_main_capital --ai-mode
+python main.py --mode backtest --strategy <策略名> --ai-mode
 ```
 
 > 不复权数据回测需要预先下载不复权数据到 `market_raw` 目录：
@@ -51,7 +56,7 @@ python main.py --mode backtest --strategy small_cap --config config/backtest.yam
 
 **参数说明**：
 - `--mode`：运行模式，可选值：`backtest`（回测）、`sim`（模拟交易）、`real`（实盘交易）、`instances`（多策略实例）
-- `--strategy`：策略类型，可选值：`small_cap`、`ivff3`、`undervalued`、`jq_small_cap` 等
+- `--strategy`：策略类型，可选值：`small_cap`、`ivff3`、`undervalued`、`jq_small_cap`、`bank_rotation`、`dividend_value_growth`、`medical_multi_factor`、`twenty_eight_rotation`、`first_board_low_open`、`rothman_value` 等（详见 [策略开发文档](strategy-development.md#内置策略)）
 - `--period`：数据周期，可选值：`1d`（日线）、`1m`、`5m`、`15m`、`30m`、`60m`、`tick`
 - `--pool`：股票池板块名称，如 `沪深300`、`沪深A股`、`上证50`、`中证500`、`中证1000`、`中小综指`
 - `--start`：回测起始日期，格式：`YYYY-MM-DD`
@@ -67,20 +72,69 @@ python main.py --mode backtest --strategy small_cap --config config/backtest.yam
 - `--ai-mode`：启用 AI 自动运行模式，跳过所有图形界面渲染，适用于自动化策略优化
 - `--no-record`：禁用回测结果自动记录到本地文件
 - `--slippage`：滑点百分比，如 `0.001` 表示 0.1%，不传则使用策略默认值
+- `--strategy-params`：策略参数动态覆盖，格式为 JSON 字符串，如 `"symbol=000001.SZ"` 或 `'{"max_stocks": 20}'`，覆盖策略 `default_kwargs` 中的同名参数
 
-## 2. 运行模拟交易
+## 2. 查看回测结果
+
+回测结束后，框架会根据运行模式自动展示结果：
+
+### GUI 模式（默认）
+
+不带 `--ai-mode` 参数运行回测时，回测结束后会自动弹出基于 PyQt5 + pyqtgraph 的回测报告窗口。
+
+**启动方式：**
+```bash
+python main.py --mode backtest --strategy small_cap --period 1d --pool 中证1000 --start 2020-04-28 --end 2026-04-28
+```
+
+**窗口包含 7 个标签页：**
+
+| 标签页 | 内容 |
+|--------|------|
+| **总览** | 核心指标面板（整体表现、风险评估、交易统计、基准分析）+ 权益曲线图 |
+| **K线图** | 日K线蜡烛图 + 均线（MA5/MA10/MA20/MA60）+ 买卖标记 + 成交量 + 十字光标悬浮提示 |
+| **每日收益** | 每日盈亏柱状图（红色盈利、绿色亏损）+ 十字光标悬浮提示 |
+| **交易明细** | 交易统计面板 + 交易记录表格（支持排序、列筛选、标的显隐切换） |
+| **每日持仓收益** | 持仓收益统计面板 + 每日持仓明细表格（支持排序、列筛选） |
+| **基准对比** | 策略与基准的归一化收益曲线对比图 |
+| **换手率评估** | 换手率统计面板（日/周/月）+ 换手率趋势图 |
+
+**交互功能：**
+
+- **K线图**：鼠标滚轮缩放、拖拽平移、向左拖拽加载更多历史数据、十字光标显示 OHLC 信息
+- **权益曲线/基准对比**：鼠标悬浮显示日期和数值、滚轮缩放、拖拽平移
+- **交易明细表格**：点击列头排序、列头右侧筛选按钮按值过滤、`隐藏标的` 按钮切换标的列显隐
+- **每日持仓收益表格**：同交易明细，支持排序、筛选、标的显隐
+
+> **注意**：K线图标签页仅在策略提供了 `instrument_id`、`exchange`、`kline_style` 参数时显示；多标的选股策略会自动使用基准数据生成K线图。
+
+### AI 模式
+
+添加 `--ai-mode` 参数时，跳过所有 GUI 渲染，仅在终端输出回测结果摘要：
+
+```bash
+python main.py --mode backtest --strategy small_cap --period 1d --pool 中证1000 --start 2020-04-28 --end 2026-04-28 --ai-mode
+```
+
+适用于自动化策略优化、CI/CD 流水线、远程服务器等无图形界面的场景。
+
+### HTML 可视化报告
+
+框架支持基于 Plotly 的 HTML 可视化报告，可在浏览器中查看。通过回测结果记录器自动生成，详见 [回测结果记录文档](backtest-recorder.md)。
+
+## 3. 运行模拟交易
 
 ```bash
 python main.py --mode sim --strategy small_cap --qmt-path D:\qmt\userdata_mini
 ```
 
-## 3. 运行实盘交易
+## 4. 运行实盘交易
 
 ```bash
 python main.py --mode real --strategy small_cap --qmt-path D:\qmt\userdata_mini --account 12345678
 ```
 
-## 4. 运行多策略实例
+## 5. 运行多策略实例
 
 当需要在同一账户下同时运行多个策略时，使用多策略实例模式。每个策略实例拥有独立的虚拟持仓簿，实现持仓和资金的策略级隔离。
 
@@ -128,7 +182,7 @@ python main.py --mode instances --instances config/instances.json
 
 > **注意**：单策略模式（`sim`/`real`）也默认启用虚拟簿记，无需额外配置即可享受策略级隔离。
 
-## 5. 数据预下载
+## 6. 数据预下载
 
 在运行回测前，可以预先下载行情和财务数据到本地缓存，避免回测时逐只下载导致等待过长：
 
@@ -157,7 +211,7 @@ python download_qmt_financial_data.py --pool 中证1000 --start 2020-01-01
 clean_old_logs.bat
 ```
 
-## 6. Web 回测查看器
+## 7. Web 回测查看器
 
 框架提供了基于 Flask + Vue3 + ECharts 的 Web 界面，用于浏览和对比策略回测结果。
 
