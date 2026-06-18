@@ -91,11 +91,20 @@ class BacktestAPI(BaseAPI):
                   data_lookback_days: int = 40, benchmark: str = '000300.SH',
                   period: str = '1d', trade_start_date: Optional[str] = None,
                   slippage: float = 0.0, compare_symbols: Optional[List[str]] = None,
+                  open_commission: float = 1.0 / 10000,
+                  close_commission: float = 1.0 / 10000,
+                  close_tax: float = 0.0005,
+                  min_commission: float = 5.0,
                   **kwargs):
         self.set_cash(cash)
         self.set_commission(commission)
         self.set_slippage(slippage)
         self.set_benchmark(benchmark)
+        # 默认使用聚宽式佣金结构
+        self.set_order_cost(open_commission=open_commission,
+                            close_commission=close_commission,
+                            close_tax=close_tax,
+                            min_commission=min_commission)
         self._period = period
         self._compare_symbols = compare_symbols or []
 
@@ -786,6 +795,21 @@ class BacktestAPI(BaseAPI):
 
     def set_commission(self, commission: float):
         self._broker.setcommission(commission)
+
+    def set_order_cost(self, open_commission: float = 0.0,
+                       close_commission: float = 0.0,
+                       close_tax: float = 0.0,
+                       min_commission: float = 0.0):
+        """设置聚宽式佣金结构
+
+        Args:
+            open_commission: 买入佣金率（如 2.5/10000 = 0.00025）
+            close_commission: 卖出佣金率（如 2.5/10000 = 0.00025）
+            close_tax: 卖出印花税率（如 0.001 = 千1）
+            min_commission: 最低佣金（元，如 5）
+        """
+        self._broker.set_order_cost(open_commission, close_commission,
+                                    close_tax, min_commission)
 
     def set_slippage(self, slippage: float):
         if slippage > 0:

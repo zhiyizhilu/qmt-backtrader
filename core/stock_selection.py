@@ -189,6 +189,7 @@ class StockSelectionStrategy(StrategyLogic):
         if not target_stocks:
             self.log(f'调仓日 {current_date}: 选股结果为空，清仓')
             self._sell_all()
+            self._last_rebalance_date = current_date
             return
 
         max_stocks = getattr(self.params, 'max_stocks', 10)

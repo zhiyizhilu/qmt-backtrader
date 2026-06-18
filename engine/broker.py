@@ -72,6 +72,7 @@ class SimulatedBroker:
     - 支持限价单（order_type='limit'）
     - 支持大单冲击成本模型（impact_model='linear'）
     - 支持成交量限制（max_participation_rate）
+    - 支持聚宽式佣金结构：买入/卖出分离费率 + 印花税 + 最低佣金
     """
 
     def __init__(self, cash: float = 200000.0, commission: float = 0.0001,
@@ -94,6 +95,11 @@ class SimulatedBroker:
         self._order_counter = 0
         self._trade_counter = 0
         self._closed_trade_pnl: Dict[str, float] = {}
+        # 聚宽式佣金参数
+        self._open_commission: Optional[float] = None   # 买入佣金率
+        self._close_commission: Optional[float] = None  # 卖出佣金率
+        self._close_tax: float = 0.0                    # 卖出印花税率
+        self._min_commission: float = 0.0               # 最低佣金(元)
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
 
     @property
@@ -106,6 +112,62 @@ class SimulatedBroker:
 
     def setcommission(self, commission: float):
         self._commission = commission
+
+    def set_order_cost(self, open_commission: float = 0.0,
+                       close_commission: float = 0.0,
+                       close_tax: float = 0.0,
+                       min_commission: float = 0.0):
+        """设置聚宽式佣金结构
+
+        Args:
+            open_commission: 买入佣金率（如 2.5/10000 = 0.00025）
+            close_commission: 卖出佣金率（如 2.5/10000 = 0.00025）
+            close_tax: 卖出印花税率（如 0.001 = 千1）
+            min_commission: 最低佣金（元，如 5）
+        """
+        self._open_commission = open_commission
+        self._close_commission = close_commission
+        self._close_tax = close_tax
+        self._min_commission = min_commission
+
+    @staticmethod
+    def _is_stamp_tax_exempt(symbol: str) -> bool:
+        """判断标的是否免征印花税（ETF、债券等）
+
+        A股印花税规则：仅股票卖出征收万5印花税，ETF/债券/基金免征
+        """
+        if not symbol or '.' not in symbol:
+            return False
+        code, suffix = symbol.rsplit('.', 1)
+        # 沪市基金: 50xxxx(ETF)、51xxxx(ETF)、52xxxx(ETF)、56xxxx(ETF)、58xxxx(ETF)
+        if suffix == 'SH' and code[:2] in ('50', '51', '52', '56', '58'):
+            return True
+        # 深市基金: 15xxxx(ETF/LOF)、16xxxx(LOF)、18xxxx(封闭式基金)
+        if suffix == 'SZ' and code[:2] in ('15', '16', '18'):
+            return True
+        return False
+
+    def _calc_commission(self, amount: float, direction: str,
+                         symbol: str = '') -> float:
+        """计算佣金
+
+        如果设置了聚宽式佣金参数(_open_commission)，则使用聚宽式计算：
+        - 买入: max(amount * open_commission, min_commission)
+        - 卖出: max(amount * close_commission, min_commission) + amount * close_tax (股票)
+                ETF/基金卖出免征印花税
+        否则使用统一的 _commission 费率
+        """
+        if self._open_commission is not None:
+            if direction == 'buy':
+                comm = max(amount * self._open_commission, self._min_commission)
+            else:
+                comm = max(amount * self._close_commission, self._min_commission)
+                # 仅股票卖出征收印花税，ETF/基金免征
+                if not self._is_stamp_tax_exempt(symbol):
+                    comm += amount * self._close_tax
+            return comm
+        else:
+            return amount * self._commission
 
     def set_slippage_perc(self, slippage: float):
         self._slippage = slippage
@@ -209,7 +271,7 @@ class SimulatedBroker:
 
         exec_price = self._apply_impact_cost(exec_price, size, data_feed, current_idx, 'buy')
 
-        comm = exec_price * size * self._commission
+        comm = self._calc_commission(exec_price * size, 'buy', symbol)
 
         cost = exec_price * size + comm
         if self._check_submit:
@@ -276,7 +338,7 @@ class SimulatedBroker:
 
         exec_price = self._apply_impact_cost(exec_price, size, data_feed, current_idx, 'sell')
 
-        comm = exec_price * size * self._commission
+        comm = self._calc_commission(exec_price * size, 'sell', symbol)
 
         pos = self._positions.get(symbol, Position(symbol=symbol))
         if pos.size <= 0:
@@ -309,7 +371,7 @@ class SimulatedBroker:
         if self._slippage > 0:
             exec_price = exec_price * (1 + self._slippage)
 
-        comm = exec_price * size * self._commission
+        comm = self._calc_commission(exec_price * size, 'buy', symbol)
         cost = exec_price * size + comm
 
         if self._check_submit:
@@ -358,7 +420,7 @@ class SimulatedBroker:
         if self._slippage > 0:
             exec_price = exec_price * (1 - self._slippage)
 
-        comm = exec_price * size * self._commission
+        comm = self._calc_commission(exec_price * size, 'sell', symbol)
 
         pos = self._positions.get(symbol, Position(symbol=symbol))
         if pos.size <= 0:
@@ -437,7 +499,7 @@ class SimulatedBroker:
 
                 exec_price = self._apply_impact_cost(exec_price, size, feed, idx, order.direction)
 
-                comm = exec_price * size * self._commission
+                comm = self._calc_commission(exec_price * size, 'buy' if order.is_buy else 'sell', order.symbol)
 
                 if order.is_buy:
                     cost = exec_price * size + comm
