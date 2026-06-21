@@ -193,6 +193,7 @@ class StockSelectionStrategy(StrategyLogic):
             return
 
         max_stocks = getattr(self.params, 'max_stocks', 10)
+        max_stocks = int(max_stocks)
         target_stocks = target_stocks[:max_stocks]
 
         self._selected_stocks = target_stocks

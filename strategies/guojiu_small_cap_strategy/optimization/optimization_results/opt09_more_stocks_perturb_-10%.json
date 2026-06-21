@@ -1,0 +1,16 @@
+{
+  "initial_capital": 100000,
+  "final_value": 441248.46337634156,
+  "total_return_pct": 341.24846337634153,
+  "sharpe_ratio": 2.05609769015966,
+  "max_drawdown_pct": -12.131335791364393,
+  "annual_return_pct": 47.05666381923188,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 18061737.383226436,
+  "label": "opt09_more_stocks_perturb_-10%",
+  "extra_params": {
+    "max_stocks": 5.4
+  },
+  "timestamp": "2026-06-20T23:02:32.892659"
+}

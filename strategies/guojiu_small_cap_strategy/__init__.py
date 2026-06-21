@@ -1,0 +1,1 @@
+from .guojiu_small_cap_strategy import GuojiuSmallCapStrategy
