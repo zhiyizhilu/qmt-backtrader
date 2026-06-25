@@ -5,7 +5,7 @@ from strategies import register_strategy
 
 
 @register_strategy('guojiu_small_cap',
-                   default_kwargs={'max_stocks': 6},
+                   default_kwargs={'max_stocks': 8},
                    backtest_config={'cash': 100000,
                                     'start_date': '2020-04-28', 'end_date': '2026-04-28',
                                     'period': '1d', 'pool': '中小综指'})
@@ -39,7 +39,7 @@ class GuojiuSmallCapStrategy(StockSelectionStrategy):
 
     params = (
         ('rebalance_freq', 'weekly'),
-        ('max_stocks', 6),
+        ('max_stocks', 8),
         ('position_ratio', 0.95),
         ('stock_pool', None),
         # 策略特有参数
@@ -54,7 +54,7 @@ class GuojiuSmallCapStrategy(StockSelectionStrategy):
         ('ma_period', 10),              # 动态持股MA周期
         # MA差值与持股数量映射阈值
         ('ma_diff_tiers', (500, 200, -200, -500)),
-        ('ma_stock_nums', (4, 5, 6, 7, 8)),
+        ('ma_stock_nums', (5, 6, 8, 9, 10)),
         # 优化参数（默认禁用，启用时才生效）
         ('max_volatility', None),        # 日波动率上限（如0.05），过滤近20日波动率超限的股票
         ('volatility_lookback', 20),     # 波动率计算回溯天数
@@ -63,6 +63,7 @@ class GuojiuSmallCapStrategy(StockSelectionStrategy):
         ('min_roe', None),               # ROE下限（如0.08）
         ('keep_existing', False),        # 已持有且仍在候选池的股票优先保留
         ('min_revenue_growth', None),    # 营收同比增长率下限（如0.0表示正增长）
+        ('switch_threshold', None),      # 换仓阈值：新候选股市值需比当前持仓小此比例才换仓（如0.05表示5%）
     )
 
     def __init__(self, executor=None, **kwargs):
@@ -168,35 +169,40 @@ class GuojiuSmallCapStrategy(StockSelectionStrategy):
         # 步骤5: 取前N只，过滤股价超限
         # 与原版一致：取 stock_num*3 只候选，再过滤股价
         candidates = sorted_stocks[:max_stocks * 3]
-        selected = []
-        # 优化：keep_existing - 已持有且仍在候选池的优先保留
-        if self.params.keep_existing:
-            holdings = set(self._current_holdings.keys())
-            for stock, mc in candidates:
-                if stock in holdings and len(selected) < max_stocks:
-                    price = self.get_current_price(stock)
-                    if price and price > 0:
-                        selected.append(stock)
-            # 剩余位置从候选中按市值升序补充
-            for stock, mc in candidates:
-                if len(selected) >= max_stocks:
-                    break
-                if stock in selected:
-                    continue
-                price = self.get_current_price(stock)
-                # 已持有的股票不受股价上限限制
-                if stock not in self._current_holdings and price and price > self.params.max_stock_price:
-                    continue
-                selected.append(stock)
+
+        # 优化：换仓阈值 - 减少不必要换仓
+        if self.params.switch_threshold is not None and self.params.switch_threshold > 0:
+            selected = self._apply_switch_threshold(candidates, max_stocks, market_caps)
         else:
-            for stock, mc in candidates:
-                if len(selected) >= max_stocks:
-                    break
-                price = self.get_current_price(stock)
-                # 已持有的股票不受股价上限限制
-                if stock not in self._current_holdings and price and price > self.params.max_stock_price:
-                    continue
-                selected.append(stock)
+            selected = []
+            # 优化：keep_existing - 已持有且仍在候选池的优先保留
+            if self.params.keep_existing:
+                holdings = set(self._current_holdings.keys())
+                for stock, mc in candidates:
+                    if stock in holdings and len(selected) < max_stocks:
+                        price = self.get_current_price(stock)
+                        if price and price > 0:
+                            selected.append(stock)
+                # 剩余位置从候选中按市值升序补充
+                for stock, mc in candidates:
+                    if len(selected) >= max_stocks:
+                        break
+                    if stock in selected:
+                        continue
+                    price = self.get_current_price(stock)
+                    # 已持有的股票不受股价上限限制
+                    if stock not in self._current_holdings and price and price > self.params.max_stock_price:
+                        continue
+                    selected.append(stock)
+            else:
+                for stock, mc in candidates:
+                    if len(selected) >= max_stocks:
+                        break
+                    price = self.get_current_price(stock)
+                    # 已持有的股票不受股价上限限制
+                    if stock not in self._current_holdings and price and price > self.params.max_stock_price:
+                        continue
+                    selected.append(stock)
 
         # 优化：行业分散 - 限制同行业最多持股数
         if self.params.max_same_industry is not None:
@@ -449,6 +455,83 @@ class GuojiuSmallCapStrategy(StockSelectionStrategy):
                     industry_count[industry] = industry_count.get(industry, 0) + 1
 
         return final_selected
+
+    def _apply_switch_threshold(self, candidates, max_stocks: int, market_caps: Dict[str, float]) -> List[str]:
+        """换仓阈值：新候选股市值需比当前持仓小threshold比例才值得换仓
+
+        逻辑：
+        1. 以市值升序排列的候选池为基础
+        2. 当前持仓中仍在候选池的，优先保留
+        3. 新候选股只有当市值比被替换的持仓小超过threshold比例时才换入
+        4. 这样减少不必要换仓，降低交易成本
+        """
+        threshold = self.params.switch_threshold
+        holdings = set(self._current_holdings.keys())
+
+        # 构建有效候选列表（过滤股价超限）
+        valid = []
+        for stock, mc in candidates:
+            price = self.get_current_price(stock)
+            # 已持有的股票不受股价上限限制
+            if stock not in holdings and price and price > self.params.max_stock_price:
+                continue
+            valid.append(stock)
+
+        if not valid:
+            return []
+
+        # 理想组合：市值最小的前N只
+        ideal = valid[:max_stocks]
+
+        # 无持仓时直接返回理想组合
+        if not holdings:
+            return ideal
+
+        # 构建最终组合
+        result = []
+        result_set = set()
+
+        # 步骤1：当前持仓中在理想组合内的，直接保留
+        for stock in ideal:
+            if stock in holdings:
+                result.append(stock)
+                result_set.add(stock)
+
+        # 步骤2：对剩余位置，在新候选和未入选持仓间选择
+        for stock in ideal:
+            if len(result) >= max_stocks:
+                break
+            if stock in result_set:
+                continue
+
+            # 查找未入选的持仓中市值最小的
+            unselected_holdings = [h for h in holdings if h not in result_set and h in market_caps]
+            if unselected_holdings:
+                best_holding = min(unselected_holdings, key=lambda h: market_caps[h])
+                best_holding_mc = market_caps[best_holding]
+                candidate_mc = market_caps.get(stock, float('inf'))
+
+                # 只有当新候选市值比持仓小超过threshold时才换仓
+                if candidate_mc < best_holding_mc * (1 - threshold):
+                    result.append(stock)
+                    result_set.add(stock)
+                else:
+                    # 保留当前持仓，不换仓
+                    result.append(best_holding)
+                    result_set.add(best_holding)
+            else:
+                result.append(stock)
+                result_set.add(stock)
+
+        # 步骤3：如果位置还没填满，从候选池补充
+        for stock in valid:
+            if len(result) >= max_stocks:
+                break
+            if stock not in result_set:
+                result.append(stock)
+                result_set.add(stock)
+
+        return result[:max_stocks]
 
     def _get_market_cap(self, stock: str) -> Optional[float]:
         """获取总市值 = 总股本 × 当前价格

@@ -1,0 +1,21 @@
+{
+  "sharpe_ratio": 2.025659745724126,
+  "max_drawdown_pct": -12.493873747030174,
+  "total_return_pct": 270.3520092894025,
+  "final_value": 370352.00928940246,
+  "annual_return_pct": 40.51496618273613,
+  "trading_days": 970,
+  "turnover": 15841595.049388291,
+  "label": "r2_combo_vol3_stocks8",
+  "extra_params": {
+    "max_volatility": 0.03,
+    "max_stocks": 8,
+    "ma_stock_nums": [
+      5,
+      6,
+      8,
+      9,
+      10
+    ]
+  }
+}

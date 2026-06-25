@@ -1,0 +1,16 @@
+{
+  "initial_capital": 100000,
+  "final_value": 428408.4278564155,
+  "total_return_pct": 328.4084278564155,
+  "sharpe_ratio": 2.033626918787202,
+  "max_drawdown_pct": -11.058459815789917,
+  "annual_return_pct": 45.93276176410528,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 15589842.04161833,
+  "label": "r2_opt09_min_market_cap_5",
+  "extra_params": {
+    "min_market_cap": 5
+  },
+  "timestamp": "2026-06-21T17:49:10.200368"
+}

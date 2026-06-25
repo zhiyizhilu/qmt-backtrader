@@ -1,0 +1,16 @@
+{
+  "sharpe_ratio": 1.469605800061336,
+  "max_drawdown_pct": -8.45693228092129,
+  "total_return_pct": 15.679507895773263,
+  "label": "r2_temporal_opt_2020",
+  "extra_params": {
+    "max_stocks": 8,
+    "ma_stock_nums": [
+      5,
+      6,
+      8,
+      9,
+      10
+    ]
+  }
+}

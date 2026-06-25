@@ -1,0 +1,108 @@
+{
+  "optimizations": [
+    {
+      "round_id": "round_1",
+      "timestamp": "2026-06-21T10:00:00",
+      "strategy_name": "guojiu_small_cap",
+      "train_period": "2020-04-28 ~ 2024-04-28",
+      "valid_period": "2024-04-28 ~ 2026-04-28",
+      "baseline": {
+        "sharpe_ratio": 1.8945,
+        "total_return_pct": 303.75,
+        "max_drawdown_pct": -13.51
+      },
+      "optimized": {
+        "sharpe_ratio": 2.0177,
+        "total_return_pct": 323.99,
+        "max_drawdown_pct": -12.54
+      },
+      "adopted_changes": {
+        "max_stocks": {"old": 4, "new": 6, "reason": "增加持仓分散风险"},
+        "ma_stock_nums": {"old": [3,3,4,5,6], "new": [4,5,6,7,8], "reason": "同步调整动态持股数量"}
+      },
+      "lessons_learned": [
+        "持仓数量是最有效的优化方向",
+        "波动率过滤5%接近有效(+3.16%)但未达5%阈值",
+        "止损参数变化(7%/12%)对结果0%影响，说明止损机制可能未生效"
+      ]
+    },
+    {
+      "round_id": "round_2",
+      "timestamp": "2026-06-21T16:30:00",
+      "strategy_name": "guojiu_small_cap",
+      "train_period": "2020-04-28 ~ 2024-04-28",
+      "valid_period": "2024-04-28 ~ 2026-04-28",
+      "baseline": {
+        "sharpe_ratio": 2.0177,
+        "total_return_pct": 324.00,
+        "max_drawdown_pct": -12.54,
+        "annual_return_pct": 45.54
+      },
+      "optimized": {
+        "sharpe_ratio": 2.1938,
+        "total_return_pct": 373.17,
+        "max_drawdown_pct": -12.44,
+        "annual_return_pct": 49.75
+      },
+      "validation": {
+        "sharpe_ratio": 1.3257,
+        "total_return_pct": 78.77,
+        "max_drawdown_pct": -18.05,
+        "decay_ratio": 1.18,
+        "baseline_oos_sharpe": 1.2018
+      },
+      "optimization_results": [
+        {"label": "r2_opt01_volatility_3pct", "name": "波动率过滤(3%)", "sharpe_ratio": 2.1111, "sharpe_improvement_pct": 4.6, "verdict": "无效(接近)"},
+        {"label": "r2_opt02_volatility_4pct", "name": "波动率过滤(4%)", "sharpe_ratio": 1.9388, "sharpe_improvement_pct": -3.9, "verdict": "无效"},
+        {"label": "r2_opt03_switch_5pct", "name": "换仓阈值(5%)", "sharpe_ratio": 1.9169, "sharpe_improvement_pct": -5.0, "verdict": "无效"},
+        {"label": "r2_opt04_switch_10pct", "name": "换仓阈值(10%)", "sharpe_ratio": 2.0228, "sharpe_improvement_pct": 0.3, "verdict": "无效"},
+        {"label": "r2_opt05_take_profit_15x", "name": "止盈50%(1.5x)", "sharpe_ratio": 2.0177, "sharpe_improvement_pct": 0.0, "verdict": "无效(未触发)"},
+        {"label": "r2_opt06_market_stoploss_3pct", "name": "市场止损(3%)", "sharpe_ratio": 1.7505, "sharpe_improvement_pct": -13.2, "verdict": "无效"},
+        {"label": "r2_opt07_ma_period_20", "name": "MA周期20日", "sharpe_ratio": 2.0177, "sharpe_improvement_pct": 0.0, "verdict": "无效(未触发)"},
+        {"label": "r2_opt08_max_stocks_8", "name": "持仓8只", "sharpe_ratio": 2.1938, "sharpe_improvement_pct": 8.7, "verdict": "有效"},
+        {"label": "r2_opt09_min_market_cap_5", "name": "最小市值5亿", "sharpe_ratio": 2.0336, "sharpe_improvement_pct": 0.8, "verdict": "无效"},
+        {"label": "r2_opt10_skip_months_124", "name": "空仓月份(1,2,4)", "sharpe_ratio": 1.8828, "sharpe_improvement_pct": -6.7, "verdict": "无效"}
+      ],
+      "review_results": [
+        {
+          "label": "r2_opt08_max_stocks_8",
+          "logic_rating": "A",
+          "decay_ratio": 1.18,
+          "sensitivity_ratio": 0.0814,
+          "temporal_consistency": 0.67,
+          "conclusion": "通过"
+        }
+      ],
+      "adopted_changes": {
+        "max_stocks": {"old": 6, "new": 8, "reason": "增加持仓进一步分散非系统性风险，Round 1和Round 2均验证持仓数量是最有效优化方向"},
+        "ma_stock_nums": {"old": [4,5,6,7,8], "new": [5,6,8,9,10], "reason": "同步调整动态持股数量映射"}
+      },
+      "rejected_changes": [
+        {"label": "r2_opt01_volatility_3pct", "reason": "夏普+4.6%接近但未达5%阈值，且组合后拖累收益(373%→270%)"},
+        {"label": "r2_opt02_volatility_4pct", "reason": "夏普-3.9%，过滤过多优质小市值股"},
+        {"label": "r2_opt03_switch_5pct", "reason": "夏普-5.0%，换仓阈值过低导致保留劣质持仓"},
+        {"label": "r2_opt04_switch_10pct", "reason": "夏普+0.3%微弱，组合后无协同效应"},
+        {"label": "r2_opt05_take_profit_15x", "reason": "0%变化，止盈机制未触发(avg_cost可能返回None)"},
+        {"label": "r2_opt06_market_stoploss_3pct", "reason": "夏普-13.2%，过于敏感频繁清仓"},
+        {"label": "r2_opt07_ma_period_20", "reason": "0%变化，MA20与MA10产生相同持股数"},
+        {"label": "r2_opt09_min_market_cap_5", "reason": "夏普+0.8%微弱，但回撤改善(-12.5%→-11.1%)"},
+        {"label": "r2_opt10_skip_months_124", "reason": "夏普-6.7%，2月是小市值策略有效月份不应空仓"}
+      ],
+      "combo_results": [
+        {"label": "r2_combo_vol3_stocks8", "name": "波动率3%+持仓8只", "sharpe": 2.0257, "improvement": 0.4, "verdict": "无效"},
+        {"label": "r2_combo_switch10_stocks8", "name": "换仓10%+持仓8只", "sharpe": 2.1202, "improvement": 5.1, "verdict": "有效但低于单项"},
+        {"label": "r2_combo_all3", "name": "三项全部", "sharpe": 2.0056, "improvement": -0.6, "verdict": "无效"}
+      ],
+      "lessons_learned": [
+        "持仓数量是此策略最持续有效的优化方向(R1: 4→6 +6.5%, R2: 6→8 +8.7%)",
+        "波动率过滤不适合此策略，与small_cap策略表现不同(可能因为周调仓频率更高)",
+        "换仓阈值在ETF轮动中极有效(+48%组合)但在此策略中无效，说明策略类型决定优化方向",
+        "止盈/止损机制可能因avg_cost返回None而完全未生效，是潜在bug",
+        "市场止损3%有害，5%是合理阈值",
+        "2月空仓有害，春节效应在小市值策略中不存在",
+        "参数极鲁棒(max_stocks 6~10夏普仅波动0.18)，选择8是保守中间值",
+        "样本外衰减比1.18说明优化不是过度拟合，反而样本外效果更好"
+      ]
+    }
+  ]
+}

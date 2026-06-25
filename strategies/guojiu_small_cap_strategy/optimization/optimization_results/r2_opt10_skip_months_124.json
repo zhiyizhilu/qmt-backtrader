@@ -1,0 +1,20 @@
+{
+  "initial_capital": 100000,
+  "final_value": 326335.29717409844,
+  "total_return_pct": 226.33529717409843,
+  "sharpe_ratio": 1.882830707237528,
+  "max_drawdown_pct": -12.524422261577643,
+  "annual_return_pct": 35.971141346219056,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 11655556.58658097,
+  "label": "r2_opt10_skip_months_124",
+  "extra_params": {
+    "skip_months": [
+      1,
+      2,
+      4
+    ]
+  },
+  "timestamp": "2026-06-21T17:58:26.057617"
+}

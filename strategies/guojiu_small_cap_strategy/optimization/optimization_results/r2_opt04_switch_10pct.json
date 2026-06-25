@@ -1,0 +1,16 @@
+{
+  "initial_capital": 100000,
+  "final_value": 453054.40363312967,
+  "total_return_pct": 353.05440363312965,
+  "sharpe_ratio": 2.0227715787421037,
+  "max_drawdown_pct": -13.623545693564063,
+  "annual_return_pct": 48.06888425000204,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 10199275.505539797,
+  "label": "r2_opt04_switch_10pct",
+  "extra_params": {
+    "switch_threshold": 0.1
+  },
+  "timestamp": "2026-06-21T17:01:12.304106"
+}

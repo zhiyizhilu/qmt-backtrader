@@ -1,0 +1,11 @@
+{
+  "sharpe_ratio": 1.2018491247624759,
+  "max_drawdown_pct": -19.85920185244492,
+  "total_return_pct": 70.76987626764844,
+  "final_value": 170769.87626764845,
+  "annual_return_pct": 32.13185055626489,
+  "trading_days": 484,
+  "turnover": 4411773.9632193,
+  "label": "r2_baseline_oos",
+  "extra_params": null
+}

@@ -1,0 +1,20 @@
+{
+  "sharpe_ratio": 1.3257106292419023,
+  "max_drawdown_pct": -18.049487443679187,
+  "total_return_pct": 78.76716235131468,
+  "final_value": 178767.16235131468,
+  "annual_return_pct": 35.31826786075158,
+  "trading_days": 484,
+  "turnover": 4686091.043805101,
+  "label": "r2_opt08_max_stocks_8_oos",
+  "extra_params": {
+    "max_stocks": 8,
+    "ma_stock_nums": [
+      5,
+      6,
+      8,
+      9,
+      10
+    ]
+  }
+}

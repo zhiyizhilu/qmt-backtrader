@@ -1,0 +1,16 @@
+{
+  "sharpe_ratio": 2.1831948744019978,
+  "max_drawdown_pct": -12.573076893072024,
+  "total_return_pct": 354.1188551045497,
+  "label": "r2_sensitivity_stocks10",
+  "extra_params": {
+    "max_stocks": 10,
+    "ma_stock_nums": [
+      6,
+      7,
+      10,
+      11,
+      12
+    ]
+  }
+}
