@@ -1,0 +1,9 @@
+{
+  "sharpe_ratio": 1.1898768454174635,
+  "total_return_pct": 25.549213634248684,
+  "max_drawdown_pct": -15.653603933650443,
+  "label": "opt04_arbr_period_short_temp_2021",
+  "extra_params": {
+    "arbr_period": 14
+  }
+}

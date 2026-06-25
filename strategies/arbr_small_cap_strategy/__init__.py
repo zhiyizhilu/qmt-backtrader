@@ -1,0 +1,1 @@
+from .arbr_small_cap_strategy import ARBRSmallCapStrategy

@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 3374517.2895163666,
+  "total_return_pct": 237.45172895163665,
+  "sharpe_ratio": 1.3353187918047231,
+  "max_drawdown_pct": -34.86964772720083,
+  "annual_return_pct": 37.15957203471898,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 258605082.23132777,
+  "label": "opt04_arbr_period_short",
+  "extra_params": {
+    "arbr_period": 14
+  },
+  "timestamp": "2026-06-22T16:54:41.127548"
+}

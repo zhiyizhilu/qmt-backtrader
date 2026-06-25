@@ -1,0 +1,9 @@
+{
+  "sharpe_ratio": 0.7593595734481365,
+  "total_return_pct": 37.500044592471326,
+  "max_drawdown_pct": -17.48851635064926,
+  "label": "opt07_turnover_control_oos",
+  "extra_params": {
+    "max_turnover_ratio": 0.5
+  }
+}

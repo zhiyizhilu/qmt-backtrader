@@ -1,0 +1,7 @@
+{
+  "sharpe_ratio": 0.7881276146986133,
+  "total_return_pct": 38.634771765871065,
+  "max_drawdown_pct": -17.342607661103816,
+  "label": "baseline_oos",
+  "extra_params": null
+}

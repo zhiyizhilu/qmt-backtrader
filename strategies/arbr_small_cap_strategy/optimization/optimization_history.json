@@ -1,0 +1,158 @@
+{
+  "optimizations": [
+    {
+      "round_id": "round_1",
+      "timestamp": "2026-06-22T17:30:00",
+      "strategy_name": "arbr_small_cap",
+      "train_period": "2020-04-28 ~ 2024-04-28",
+      "valid_period": "2024-04-28 ~ 2026-04-28",
+      "pool": "中证1000",
+      "baseline": {
+        "sharpe_ratio": 1.0835,
+        "total_return_pct": 158.59,
+        "max_drawdown_pct": -37.88,
+        "annual_return_pct": 24.5
+      },
+      "optimized": {
+        "sharpe_ratio": 1.0835,
+        "total_return_pct": 158.59,
+        "max_drawdown_pct": -37.88,
+        "annual_return_pct": 24.5
+      },
+      "validation": {
+        "sharpe_ratio": 0.7881,
+        "decay_ratio": null,
+        "note": "无有效优化通过审查，策略保持原样"
+      },
+      "optimization_results": [
+        {
+          "label": "opt01_volatility_filter",
+          "name": "波动率过滤 (vol=0.03)",
+          "params": {"max_volatility": 0.03},
+          "sharpe_ratio": 1.1895,
+          "sharpe_improvement_pct": 9.8,
+          "verdict": "样本外不通过"
+        },
+        {
+          "label": "opt02_rebalance_stoploss",
+          "name": "调仓止损 (5%)",
+          "params": {"rebalance_stoploss": 0.05},
+          "sharpe_ratio": 1.0835,
+          "sharpe_improvement_pct": 0.0,
+          "verdict": "无效"
+        },
+        {
+          "label": "opt03_industry_limit",
+          "name": "行业分散 (同行业最多1只)",
+          "params": {"max_same_industry": 1},
+          "sharpe_ratio": 1.1039,
+          "sharpe_improvement_pct": 1.9,
+          "verdict": "无效"
+        },
+        {
+          "label": "opt04_arbr_period_short",
+          "name": "ARBR短周期 (14)",
+          "params": {"arbr_period": 14},
+          "sharpe_ratio": 1.3353,
+          "sharpe_improvement_pct": 23.2,
+          "verdict": "样本外不通过"
+        },
+        {
+          "label": "opt05_max_stocks_5",
+          "name": "持仓数量5只",
+          "params": {"max_stocks": 5},
+          "sharpe_ratio": 1.0086,
+          "sharpe_improvement_pct": -6.9,
+          "verdict": "无效"
+        },
+        {
+          "label": "opt06_arbr_range_narrow",
+          "name": "ARBR范围收窄 (-0.5, 0.5)",
+          "params": {"arbr_low": -0.5, "arbr_high": 0.5},
+          "sharpe_ratio": 0.8394,
+          "sharpe_improvement_pct": -22.5,
+          "verdict": "无效"
+        },
+        {
+          "label": "opt07_turnover_control",
+          "name": "换手率控制 (50%)",
+          "params": {"max_turnover_ratio": 0.5},
+          "sharpe_ratio": 1.2195,
+          "sharpe_improvement_pct": 12.6,
+          "verdict": "样本外不通过"
+        },
+        {
+          "label": "opt08_volume_confirm",
+          "name": "成交量确认 (ratio=0.8)",
+          "params": {"min_volume_ratio": 0.8},
+          "sharpe_ratio": 0.9603,
+          "sharpe_improvement_pct": -11.4,
+          "verdict": "无效"
+        },
+        {
+          "label": "opt09_biweekly_rebalance",
+          "name": "双周调仓",
+          "params": {"rebalance_freq": "biweekly"},
+          "sharpe_ratio": 0.9419,
+          "sharpe_improvement_pct": -13.1,
+          "verdict": "无效"
+        },
+        {
+          "label": "opt10_min_market_cap",
+          "name": "市值下限10亿",
+          "params": {"min_market_cap": 10},
+          "sharpe_ratio": 1.0835,
+          "sharpe_improvement_pct": 0.0,
+          "verdict": "无效"
+        }
+      ],
+      "review_results": [
+        {
+          "label": "opt01_volatility_filter",
+          "logic_rating": "A",
+          "decay_ratio": -6.95,
+          "sensitivity_ratio": 0.108,
+          "temporal_consistency": 0.6,
+          "conclusion": "不通过 - 样本外严重恶化(衰减比-6.95)"
+        },
+        {
+          "label": "opt04_arbr_period_short",
+          "logic_rating": "B",
+          "decay_ratio": -1.71,
+          "sensitivity_ratio": 0.221,
+          "temporal_consistency": 1.0,
+          "conclusion": "不通过 - 样本外严重恶化(衰减比-1.71)"
+        },
+        {
+          "label": "opt07_turnover_control",
+          "logic_rating": "A",
+          "decay_ratio": -0.29,
+          "sensitivity_ratio": 0.0,
+          "temporal_consistency": 0.8,
+          "conclusion": "不通过 - 样本外恶化+实际未触发(敏感度0)"
+        }
+      ],
+      "adopted_changes": {},
+      "rejected_changes": [
+        {"label": "opt01_volatility_filter", "reason": "样本外衰减比-6.95，严重过度拟合"},
+        {"label": "opt02_rebalance_stoploss", "reason": "夏普提升0%，无效果"},
+        {"label": "opt03_industry_limit", "reason": "夏普提升仅1.9%，不足5%"},
+        {"label": "opt04_arbr_period_short", "reason": "样本外衰减比-1.71，过度拟合"},
+        {"label": "opt05_max_stocks_5", "reason": "夏普下降6.9%"},
+        {"label": "opt06_arbr_range_narrow", "reason": "夏普下降22.5%"},
+        {"label": "opt07_turnover_control", "reason": "样本外衰减比-0.29，且参数敏感度为0(实际未触发)"},
+        {"label": "opt08_volume_confirm", "reason": "夏普下降11.4%"},
+        {"label": "opt09_biweekly_rebalance", "reason": "夏普下降13.1%"},
+        {"label": "opt10_min_market_cap", "reason": "夏普提升0%，无效果"}
+      ],
+      "lessons_learned": [
+        "ARBR+小市值策略在中证1000上对参数优化高度敏感，样本外衰减严重",
+        "波动率过滤在测试集有效但样本外恶化，说明小市值策略的波动率特征在2024-2026发生了结构性变化",
+        "ARBR短周期(14)在测试集提升23.2%但样本外恶化39.7%，是典型的过度拟合",
+        "换手率控制在3只持仓下实际未触发(50%换手率>33%实际换手)，虚假有效",
+        "策略当前参数(arbr_period=26, max_stocks=3)已经是相对稳健的配置",
+        "小市值策略的改进应更多关注选股逻辑本身而非参数调优"
+      ]
+    }
+  ]
+}

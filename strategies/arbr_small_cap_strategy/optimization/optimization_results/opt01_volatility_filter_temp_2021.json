@@ -1,0 +1,9 @@
+{
+  "sharpe_ratio": 1.3606498969455318,
+  "total_return_pct": 30.827291719496923,
+  "max_drawdown_pct": -15.201053316212482,
+  "label": "opt01_volatility_filter_temp_2021",
+  "extra_params": {
+    "max_volatility": 0.03
+  }
+}
