@@ -1,0 +1,151 @@
+{
+  "baseline_oos": {
+    "label": "baseline_oos",
+    "sharpe_ratio": 1.1002,
+    "total_return_pct": 62.6189,
+    "max_drawdown_pct": -17.4026,
+    "annual_return_pct": 28.8097
+  },
+  "oos_results": {
+    "baseline": {
+      "label": "baseline_oos",
+      "sharpe_ratio": 1.1002,
+      "total_return_pct": 62.6189,
+      "max_drawdown_pct": -17.4026,
+      "annual_return_pct": 28.8097
+    },
+    "opt01_volatility_filter": {
+      "label": "opt01_volatility_filter_oos",
+      "sharpe_ratio": 1.1094,
+      "total_return_pct": 63.1465,
+      "max_drawdown_pct": -17.4087,
+      "annual_return_pct": 29.0271
+    },
+    "opt04_switch_threshold": {
+      "label": "opt04_switch_threshold_oos",
+      "sharpe_ratio": 1.2413,
+      "total_return_pct": 72.8505,
+      "max_drawdown_pct": -17.3894,
+      "annual_return_pct": 32.9676
+    },
+    "opt05_relaxed_small": {
+      "label": "opt05_relaxed_small_oos",
+      "sharpe_ratio": 1.5944,
+      "total_return_pct": 114.41,
+      "max_drawdown_pct": -17.3511,
+      "annual_return_pct": 48.7533
+    },
+    "opt07_long_momentum": {
+      "label": "opt07_long_momentum_oos",
+      "sharpe_ratio": 0.8124,
+      "total_return_pct": 37.1846,
+      "max_drawdown_pct": -22.5663,
+      "annual_return_pct": 17.8934
+    },
+    "opt09_dual_period": {
+      "label": "opt09_dual_period_oos",
+      "sharpe_ratio": 0.9458,
+      "total_return_pct": 45.7804,
+      "max_drawdown_pct": -17.3474,
+      "annual_return_pct": 21.6835
+    }
+  },
+  "train_results": {
+    "opt01_volatility_filter": {
+      "label": "opt01_volatility_filter",
+      "extra_params": {
+        "max_volatility": 0.02
+      },
+      "initial_capital": 1000000,
+      "final_value": 1296043.3001704565,
+      "total_return_pct": 29.6043,
+      "sharpe_ratio": 0.3985,
+      "max_drawdown_pct": -50.5104,
+      "annual_return_pct": 6.969,
+      "trading_days": 970,
+      "fee": 12684.01,
+      "turnover": 49433519.37,
+      "timestamp": "2026-06-25T18:38:14.320743"
+    },
+    "opt04_switch_threshold": {
+      "label": "opt04_switch_threshold",
+      "extra_params": {
+        "switch_threshold": 0.05
+      },
+      "initial_capital": 1000000,
+      "final_value": 1357766.9469647119,
+      "total_return_pct": 35.7767,
+      "sharpe_ratio": 0.5798,
+      "max_drawdown_pct": -34.8703,
+      "annual_return_pct": 8.2698,
+      "trading_days": 970,
+      "fee": 3640.41,
+      "turnover": 13908665.83,
+      "timestamp": "2026-06-25T19:01:29.818354"
+    },
+    "opt05_relaxed_small": {
+      "label": "opt05_relaxed_small",
+      "extra_params": {
+        "small_min_roe_relaxed": 0.08,
+        "small_min_roa_relaxed": 0.05
+      },
+      "initial_capital": 1000000,
+      "final_value": 1269829.5469316123,
+      "total_return_pct": 26.983,
+      "sharpe_ratio": 0.3811,
+      "max_drawdown_pct": -44.0407,
+      "annual_return_pct": 6.4026,
+      "trading_days": 970,
+      "fee": 16385.63,
+      "turnover": 61619976.5,
+      "timestamp": "2026-06-25T19:10:00.357767"
+    },
+    "opt07_long_momentum": {
+      "label": "opt07_long_momentum",
+      "extra_params": {
+        "momentum_days_long": 20
+      },
+      "initial_capital": 1000000,
+      "final_value": 1342204.9324088162,
+      "total_return_pct": 34.2205,
+      "sharpe_ratio": 0.4823,
+      "max_drawdown_pct": -29.4031,
+      "annual_return_pct": 7.946,
+      "trading_days": 970,
+      "fee": 8768.3,
+      "turnover": 36464860.26,
+      "timestamp": "2026-06-25T19:22:51.270198"
+    },
+    "opt09_dual_period": {
+      "label": "opt09_dual_period",
+      "extra_params": {
+        "dual_period_momentum": true
+      },
+      "initial_capital": 1000000,
+      "final_value": 1882228.1956913904,
+      "total_return_pct": 88.2228,
+      "sharpe_ratio": 0.8684,
+      "max_drawdown_pct": -27.5426,
+      "annual_return_pct": 17.8578,
+      "trading_days": 970,
+      "fee": 12168.28,
+      "turnover": 50763116.07,
+      "timestamp": "2026-06-25T20:06:30.158187"
+    },
+    "baseline": {
+      "label": "baseline",
+      "extra_params": null,
+      "initial_capital": 1000000,
+      "final_value": 1234224.0182994558,
+      "total_return_pct": 23.4224,
+      "sharpe_ratio": 0.3473,
+      "max_drawdown_pct": -50.5615,
+      "annual_return_pct": 5.6194,
+      "trading_days": 970,
+      "fee": 12329.84,
+      "turnover": 47473396.13,
+      "timestamp": "2026-06-25T18:32:05.706035"
+    }
+  },
+  "timestamp": "2026-06-25T21:14:58.709571"
+}

@@ -1,0 +1,16 @@
+{
+  "label": "opt10_gold_etf",
+  "extra_params": {
+    "prefer_gold_etf": true
+  },
+  "initial_capital": 1000000,
+  "final_value": 1038281.3685272003,
+  "total_return_pct": 3.8281,
+  "sharpe_ratio": 0.163,
+  "max_drawdown_pct": -50.5842,
+  "annual_return_pct": 0.9807,
+  "trading_days": 970,
+  "fee": 10675.39,
+  "turnover": 49050326.22,
+  "timestamp": "2026-06-25T20:13:17.474119"
+}

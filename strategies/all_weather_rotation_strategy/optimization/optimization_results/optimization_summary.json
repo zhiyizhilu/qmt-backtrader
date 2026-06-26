@@ -1,0 +1,126 @@
+{
+  "baseline_sharpe": 0.3473,
+  "results": [
+    {
+      "label": "baseline",
+      "name": "基线策略",
+      "params": null,
+      "sharpe": 0.3473,
+      "total_return": 23.4224,
+      "max_drawdown": -50.5615,
+      "annual_return": 5.6194
+    },
+    {
+      "label": "opt01_volatility_filter",
+      "name": "波动率过滤 (vol=0.02)",
+      "params": {
+        "max_volatility": 0.02
+      },
+      "sharpe": 0.3985,
+      "total_return": 29.6043,
+      "max_drawdown": -50.5104,
+      "annual_return": 6.969
+    },
+    {
+      "label": "opt02_rebalance_stop_loss",
+      "name": "调仓止损 (5%)",
+      "params": {
+        "rebalance_stop_loss": 0.05
+      },
+      "sharpe": 0.163,
+      "total_return": 4.3655,
+      "max_drawdown": -50.6368,
+      "annual_return": 1.1163
+    },
+    {
+      "label": "opt03_momentum_confirm",
+      "name": "动量确认",
+      "params": {
+        "require_positive_momentum": true
+      },
+      "sharpe": 0.3473,
+      "total_return": 23.4224,
+      "max_drawdown": -50.5615,
+      "annual_return": 5.6194
+    },
+    {
+      "label": "opt04_switch_threshold",
+      "name": "换仓阈值 (5%)",
+      "params": {
+        "switch_threshold": 0.05
+      },
+      "sharpe": 0.5798,
+      "total_return": 35.7767,
+      "max_drawdown": -34.8703,
+      "annual_return": 8.2698
+    },
+    {
+      "label": "opt05_relaxed_small",
+      "name": "放宽SMALL (ROE>8%,ROA>5%)",
+      "params": {
+        "small_min_roe_relaxed": 0.08,
+        "small_min_roa_relaxed": 0.05
+      },
+      "sharpe": 0.3811,
+      "total_return": 26.983,
+      "max_drawdown": -44.0407,
+      "annual_return": 6.4026
+    },
+    {
+      "label": "opt06_low_threshold",
+      "name": "降低无敌阈值 (5%)",
+      "params": {
+        "momentum_threshold_low": 5
+      },
+      "sharpe": 0.3473,
+      "total_return": 23.4224,
+      "max_drawdown": -50.5615,
+      "annual_return": 5.6194
+    },
+    {
+      "label": "opt07_long_momentum",
+      "name": "20日动量",
+      "params": {
+        "momentum_days_long": 20
+      },
+      "sharpe": 0.4823,
+      "total_return": 34.2205,
+      "max_drawdown": -29.4031,
+      "annual_return": 7.946
+    },
+    {
+      "label": "opt08_max_position",
+      "name": "持仓集中度限制 (15%)",
+      "params": {
+        "max_position_ratio": 0.15
+      },
+      "sharpe": 0.3473,
+      "total_return": 23.4224,
+      "max_drawdown": -50.5615,
+      "annual_return": 5.6194
+    },
+    {
+      "label": "opt09_dual_period",
+      "name": "双周期动量验证",
+      "params": {
+        "dual_period_momentum": true
+      },
+      "sharpe": 0.8684,
+      "total_return": 88.2228,
+      "max_drawdown": -27.5426,
+      "annual_return": 17.8578
+    },
+    {
+      "label": "opt10_gold_etf",
+      "name": "优先黄金ETF",
+      "params": {
+        "prefer_gold_etf": true
+      },
+      "sharpe": 0.163,
+      "total_return": 3.8281,
+      "max_drawdown": -50.5842,
+      "annual_return": 0.9807
+    }
+  ],
+  "timestamp": "2026-06-25T20:13:17.475632"
+}

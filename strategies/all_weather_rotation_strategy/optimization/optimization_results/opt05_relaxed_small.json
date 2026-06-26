@@ -1,0 +1,17 @@
+{
+  "label": "opt05_relaxed_small",
+  "extra_params": {
+    "small_min_roe_relaxed": 0.08,
+    "small_min_roa_relaxed": 0.05
+  },
+  "initial_capital": 1000000,
+  "final_value": 1269829.5469316123,
+  "total_return_pct": 26.983,
+  "sharpe_ratio": 0.3811,
+  "max_drawdown_pct": -44.0407,
+  "annual_return_pct": 6.4026,
+  "trading_days": 970,
+  "fee": 16385.63,
+  "turnover": 61619976.5,
+  "timestamp": "2026-06-25T19:10:00.357767"
+}

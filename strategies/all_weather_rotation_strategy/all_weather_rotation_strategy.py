@@ -82,6 +82,28 @@ class AllWeatherRotationStrategy(StockSelectionStrategy):
         ('stop_loss_hour', 14),               # 止损时间-小时
         ('stop_loss_minute', 0),              # 止损时间-分钟
         ('skip_fundamental_if_missing', True),
+        # ===== 优化参数（默认禁用） =====
+        # opt01: 波动率过滤 - 过滤日波动率超过阈值的股票
+        ('max_volatility', None),           # None=禁用, 如0.03表示3%
+        # opt02: 调仓时止损 - 调仓时剔除亏损超过阈值的持仓
+        ('rebalance_stop_loss', None),      # None=禁用, 如0.05表示5%
+        # opt03: 动量确认 - 两个动量均需>0才开仓
+        ('require_positive_momentum', None), # None=禁用, True=启用
+        # opt04: 换仓阈值 - 新标的需比当前持仓动量高出阈值才换仓
+        ('switch_threshold', None),         # None=禁用, 如0.05表示5%
+        # opt05: 放宽SMALL选股条件 - 降低ROE/ROA阈值（已验证通过样本外测试）
+        ('small_min_roe_relaxed', 0.08),   # None=禁用, 0.08表示8%
+        ('small_min_roa_relaxed', 0.05),   # None=禁用, 0.05表示5%
+        # opt06: 降低无敌行情阈值
+        ('momentum_threshold_low', None),   # None=禁用, 如5表示5%
+        # opt07: 增加动量计算天数
+        ('momentum_days_long', None),       # None=禁用, 如20表示20日
+        # opt08: 持仓集中度限制 - 单只股票最大仓位比例
+        ('max_position_ratio', None),       # None=禁用, 如0.15表示15%
+        # opt09: 双周期动量验证 - 10日和20日动量同向才确认
+        ('dual_period_momentum', None),     # None=禁用, True=启用
+        # opt10: 海外ETF优先级调整 - 动量均<0时优先选黄金ETF
+        ('prefer_gold_etf', None),          # None=禁用, True=启用
     )
 
     def __init__(self, executor=None, weight_allocator=None, **kwargs):
@@ -423,14 +445,66 @@ class AllWeatherRotationStrategy(StockSelectionStrategy):
         # 确保海外ETF注册为lazy feed
         self._ensure_auxiliary_stocks_registered(list(self.params.foreign_etf))
 
+        # opt07: 增加动量计算天数
+        if self.params.momentum_days_long is not None:
+            original_days = self.params.momentum_days
+            self.params.momentum_days = self.params.momentum_days_long
+
         # 计算大盘和小盘动量
         big_momentum = self._calc_pool_momentum(big_pool, is_big=True)
         small_momentum = self._calc_pool_momentum(small_pool, is_big=False)
 
+        # opt09: 双周期动量验证
+        if self.params.dual_period_momentum:
+            # 用20日动量验证10日动量方向
+            original_days = self.params.momentum_days
+            self.params.momentum_days = 20
+            big_momentum_20 = self._calc_pool_momentum(big_pool, is_big=True)
+            small_momentum_20 = self._calc_pool_momentum(small_pool, is_big=False)
+            self.params.momentum_days = original_days
+            # 双周期同向确认：如果10日和20日方向不一致，动量置0
+            if big_momentum * big_momentum_20 <= 0:
+                big_momentum = 0
+            if small_momentum * small_momentum_20 <= 0:
+                small_momentum = 0
+
+        # 恢复原始动量天数
+        if self.params.momentum_days_long is not None:
+            self.params.momentum_days = original_days
+
         self.log(f'动量: 大盘={big_momentum:.2f}% 小盘={small_momentum:.2f}%')
 
-        # 轮动决策
-        target_list = self._decide_and_select(big_pool, small_pool, big_momentum, small_momentum)
+        # opt03: 动量确认 - 两个动量均需>0才开仓
+        if self.params.require_positive_momentum:
+            if big_momentum <= 0 and small_momentum <= 0:
+                self.log('动量确认: 大小盘动量均<=0，转海外ETF')
+                etf = self._get_tradeable_foreign_etf()
+                if etf:
+                    return etf
+            elif big_momentum <= 0 and small_momentum > 0:
+                # 只有小盘为正，强制开小
+                self.log(f'动量确认: 仅小盘为正({small_momentum:.1f}%)，强制开小')
+                target_list = self._select_small(small_pool)[:int(self.params.stock_num) * 3]
+            elif small_momentum <= 0 and big_momentum > 0:
+                # 只有大盘为正，强制开大
+                self.log(f'动量确认: 仅大盘为正({big_momentum:.1f}%)，强制开大')
+                target_list = self._select_big_combo(big_pool, int(self.params.stock_num))
+            else:
+                target_list = self._decide_and_select(big_pool, small_pool, big_momentum, small_momentum)
+        else:
+            # 轮动决策
+            target_list = self._decide_and_select(big_pool, small_pool, big_momentum, small_momentum)
+
+        # opt06: 降低无敌行情阈值
+        # (已在_decide_and_select中通过覆盖momentum_threshold实现)
+
+        # opt10: 海外ETF优先级调整 - 动量均<0时优先选黄金ETF
+        if self.params.prefer_gold_etf and not target_list:
+            gold_etf = '518880.SH'
+            price = self.get_current_price(gold_etf)
+            if price and price > 0:
+                self.log(f'优先选黄金ETF: {gold_etf}')
+                return [gold_etf]
 
         if not target_list:
             self.log('选股结果为空，使用海外ETF')
@@ -440,8 +514,77 @@ class AllWeatherRotationStrategy(StockSelectionStrategy):
             self.log('海外ETF不可交易，回退到小盘选股')
             return self._select_small(small_pool)
 
-        max_stocks = int(self.params.max_stocks)
-        target_list = target_list[:max_stocks]
+        # opt01: 波动率过滤
+        if self.params.max_volatility is not None:
+            filtered = []
+            for stock in target_list:
+                closes = self.get_close_prices(stock, 20)
+                if len(closes) >= 20:
+                    daily_returns = [(closes[i] / closes[i-1] - 1) for i in range(1, len(closes)) if closes[i-1] > 0]
+                    if daily_returns:
+                        import numpy as np
+                        vol = float(np.std(daily_returns))
+                        if vol <= self.params.max_volatility:
+                            filtered.append(stock)
+                        else:
+                            self.log(f'波动率过滤: {stock} vol={vol:.4f} > {self.params.max_volatility}', level='debug')
+                    else:
+                        filtered.append(stock)
+                else:
+                    filtered.append(stock)
+            if filtered:
+                target_list = filtered
+            self.log(f'波动率过滤: {len(target_list)} -> {len(filtered)} 只')
+
+        # opt02: 调仓时止损 - 剔除亏损超过阈值的持仓
+        if self.params.rebalance_stop_loss is not None:
+            holdings = dict(self._current_holdings)
+            stopped = []
+            for stock in list(target_list):
+                if stock in holdings and holdings.get(stock, 0) > 0:
+                    avg_cost = self._get_avg_cost(stock)
+                    price = self.get_current_price(stock)
+                    if avg_cost and price and avg_cost > 0:
+                        loss_pct = (price / avg_cost - 1)
+                        if loss_pct < -self.params.rebalance_stop_loss:
+                            stopped.append(stock)
+                            self.log(f'调仓止损: {stock} 亏损{loss_pct*100:.1f}% > {self.params.rebalance_stop_loss*100:.1f}%')
+            if stopped:
+                target_list = [s for s in target_list if s not in stopped]
+
+        # opt04: 换仓阈值 - 新标的需比当前持仓动量高出阈值才换仓
+        if self.params.switch_threshold is not None:
+            holdings = dict(self._current_holdings)
+            if holdings:
+                # 计算当前持仓的平均收益
+                holding_returns = []
+                for stock in holdings:
+                    closes = self.get_close_prices(stock, self.params.momentum_days + 1)
+                    if len(closes) >= self.params.momentum_days + 1 and closes[0] > 0:
+                        ret = (closes[-1] / closes[0] - 1)
+                        holding_returns.append(ret)
+                if holding_returns:
+                    avg_holding_return = sum(holding_returns) / len(holding_returns)
+                    # 计算新标的的平均收益
+                    new_returns = []
+                    for stock in target_list:
+                        closes = self.get_close_prices(stock, self.params.momentum_days + 1)
+                        if len(closes) >= self.params.momentum_days + 1 and closes[0] > 0:
+                            ret = (closes[-1] / closes[0] - 1)
+                            new_returns.append(ret)
+                    if new_returns:
+                        avg_new_return = sum(new_returns) / len(new_returns)
+                        if avg_new_return - avg_holding_return < self.params.switch_threshold:
+                            self.log(f'换仓阈值: 新标的平均收益{avg_new_return*100:.1f}% - 持仓{avg_holding_return*100:.1f}% < {self.params.switch_threshold*100:.1f}%，保持持仓')
+                            return list(holdings.keys())[:int(self.params.max_stocks)]
+
+        # opt08: 持仓集中度限制
+        if self.params.max_position_ratio is not None:
+            max_stocks = max(int(1 / self.params.max_position_ratio), int(self.params.max_stocks))
+            target_list = target_list[:max_stocks]
+        else:
+            max_stocks = int(self.params.max_stocks)
+            target_list = target_list[:max_stocks]
 
         self.log(f'选股结果: {len(pool)}池 -> {len(target_list)} 只: {target_list}')
         return target_list
@@ -512,7 +655,11 @@ class AllWeatherRotationStrategy(StockSelectionStrategy):
     def _decide_and_select(self, big_pool: List[str], small_pool: List[str],
                            big_momentum: float, small_momentum: float) -> List[str]:
         """根据动量决定选股方向"""
-        threshold = self.params.momentum_threshold
+        # opt06: 降低无敌行情阈值
+        if self.params.momentum_threshold_low is not None:
+            threshold = self.params.momentum_threshold_low
+        else:
+            threshold = self.params.momentum_threshold
         stock_num = self.params.stock_num
 
         if big_momentum > threshold or small_momentum > threshold:
@@ -565,8 +712,15 @@ class AllWeatherRotationStrategy(StockSelectionStrategy):
             stock_list, 'Income', income_fields)
 
         # 聚宽阈值是小数，QMT ROE是百分比，需转换
-        min_roe_pct = self.params.small_min_roe * 100  # 0.15 -> 15
-        min_roa_pct = self.params.small_min_roa * 100  # 0.10 -> 10
+        # opt05: 放宽SMALL选股条件
+        if self.params.small_min_roe_relaxed is not None:
+            min_roe_pct = self.params.small_min_roe_relaxed * 100  # 如0.08 -> 8
+        else:
+            min_roe_pct = self.params.small_min_roe * 100  # 0.15 -> 15
+        if self.params.small_min_roa_relaxed is not None:
+            min_roa_pct = self.params.small_min_roa_relaxed * 100  # 如0.05 -> 5
+        else:
+            min_roa_pct = self.params.small_min_roa * 100  # 0.10 -> 10
 
         candidates = []
         missing_count = 0

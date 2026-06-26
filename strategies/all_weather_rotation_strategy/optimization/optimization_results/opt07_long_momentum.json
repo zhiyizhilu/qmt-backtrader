@@ -1,0 +1,16 @@
+{
+  "label": "opt07_long_momentum",
+  "extra_params": {
+    "momentum_days_long": 20
+  },
+  "initial_capital": 1000000,
+  "final_value": 1342204.9324088162,
+  "total_return_pct": 34.2205,
+  "sharpe_ratio": 0.4823,
+  "max_drawdown_pct": -29.4031,
+  "annual_return_pct": 7.946,
+  "trading_days": 970,
+  "fee": 8768.3,
+  "turnover": 36464860.26,
+  "timestamp": "2026-06-25T19:22:51.270198"
+}

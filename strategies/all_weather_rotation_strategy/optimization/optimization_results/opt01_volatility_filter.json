@@ -1,0 +1,16 @@
+{
+  "label": "opt01_volatility_filter",
+  "extra_params": {
+    "max_volatility": 0.02
+  },
+  "initial_capital": 1000000,
+  "final_value": 1296043.3001704565,
+  "total_return_pct": 29.6043,
+  "sharpe_ratio": 0.3985,
+  "max_drawdown_pct": -50.5104,
+  "annual_return_pct": 6.969,
+  "trading_days": 970,
+  "fee": 12684.01,
+  "turnover": 49433519.37,
+  "timestamp": "2026-06-25T18:38:14.320743"
+}

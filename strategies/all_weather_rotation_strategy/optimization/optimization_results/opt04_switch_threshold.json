@@ -1,0 +1,16 @@
+{
+  "label": "opt04_switch_threshold",
+  "extra_params": {
+    "switch_threshold": 0.05
+  },
+  "initial_capital": 1000000,
+  "final_value": 1357766.9469647119,
+  "total_return_pct": 35.7767,
+  "sharpe_ratio": 0.5798,
+  "max_drawdown_pct": -34.8703,
+  "annual_return_pct": 8.2698,
+  "trading_days": 970,
+  "fee": 3640.41,
+  "turnover": 13908665.83,
+  "timestamp": "2026-06-25T19:01:29.818354"
+}

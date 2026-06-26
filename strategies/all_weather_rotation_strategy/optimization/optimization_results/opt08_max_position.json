@@ -1,0 +1,16 @@
+{
+  "label": "opt08_max_position",
+  "extra_params": {
+    "max_position_ratio": 0.15
+  },
+  "initial_capital": 1000000,
+  "final_value": 1234224.0182994558,
+  "total_return_pct": 23.4224,
+  "sharpe_ratio": 0.3473,
+  "max_drawdown_pct": -50.5615,
+  "annual_return_pct": 5.6194,
+  "trading_days": 970,
+  "fee": 12329.84,
+  "turnover": 47473396.13,
+  "timestamp": "2026-06-25T19:46:01.558380"
+}

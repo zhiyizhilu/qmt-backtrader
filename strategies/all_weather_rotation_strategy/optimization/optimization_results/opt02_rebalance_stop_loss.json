@@ -1,0 +1,16 @@
+{
+  "label": "opt02_rebalance_stop_loss",
+  "extra_params": {
+    "rebalance_stop_loss": 0.05
+  },
+  "initial_capital": 1000000,
+  "final_value": 1043655.1803244553,
+  "total_return_pct": 4.3655,
+  "sharpe_ratio": 0.163,
+  "max_drawdown_pct": -50.6368,
+  "annual_return_pct": 1.1163,
+  "trading_days": 970,
+  "fee": 11577.24,
+  "turnover": 45222016.0,
+  "timestamp": "2026-06-25T18:44:02.104747"
+}

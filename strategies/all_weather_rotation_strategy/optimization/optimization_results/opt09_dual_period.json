@@ -1,0 +1,16 @@
+{
+  "label": "opt09_dual_period",
+  "extra_params": {
+    "dual_period_momentum": true
+  },
+  "initial_capital": 1000000,
+  "final_value": 1882228.1956913904,
+  "total_return_pct": 88.2228,
+  "sharpe_ratio": 0.8684,
+  "max_drawdown_pct": -27.5426,
+  "annual_return_pct": 17.8578,
+  "trading_days": 970,
+  "fee": 12168.28,
+  "turnover": 50763116.07,
+  "timestamp": "2026-06-25T20:06:30.158187"
+}
