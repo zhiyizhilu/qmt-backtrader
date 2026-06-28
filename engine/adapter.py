@@ -472,7 +472,7 @@ class EngineExecutor(StrategyExecutor):
             return None
 
         order_datetime = self._data_adapter.get_next_datetime()
-        order = self._broker.submit_buy_lazy(symbol, volume, current_price, order_datetime)
+        order = self._broker.submit_buy_lazy(symbol, volume, price if price and price > 0 else current_price, order_datetime)
 
         if order is not None and order.status == OrderInfo.STATUS_COMPLETED:
             order_info = OrderInfo(
@@ -517,7 +517,7 @@ class EngineExecutor(StrategyExecutor):
             return None
 
         order_datetime = self._data_adapter.get_next_datetime()
-        order = self._broker.submit_buy(symbol, volume, feed, local_idx, order_datetime)
+        order = self._broker.submit_buy(symbol, volume, feed, local_idx, order_datetime, exec_price=price)
 
         if order is not None and order.status == OrderInfo.STATUS_COMPLETED:
             order_info = OrderInfo(
@@ -565,7 +565,7 @@ class EngineExecutor(StrategyExecutor):
             return None
 
         order_datetime = self._data_adapter.get_next_datetime()
-        order = self._broker.submit_sell_lazy(symbol, volume, current_price, order_datetime)
+        order = self._broker.submit_sell_lazy(symbol, volume, price if price and price > 0 else current_price, order_datetime)
 
         if order is not None and order.status == OrderInfo.STATUS_COMPLETED:
             order_info = OrderInfo(
@@ -610,7 +610,7 @@ class EngineExecutor(StrategyExecutor):
             return None
 
         order_datetime = self._data_adapter.get_next_datetime()
-        order = self._broker.submit_sell(symbol, volume, feed, local_idx, order_datetime)
+        order = self._broker.submit_sell(symbol, volume, feed, local_idx, order_datetime, exec_price=price)
 
         if order is not None and order.status == OrderInfo.STATUS_COMPLETED:
             order_info = OrderInfo(
