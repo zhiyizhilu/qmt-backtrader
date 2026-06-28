@@ -1,0 +1,9 @@
+{
+  "label": "review_baseline_oos",
+  "sharpe_ratio": 1.8794,
+  "total_return_pct": 104.6837,
+  "max_drawdown_pct": -11.4044,
+  "annual_return_pct": 45.2008,
+  "extra_params": null,
+  "timestamp": "2026-06-27T13:17:59.237078"
+}

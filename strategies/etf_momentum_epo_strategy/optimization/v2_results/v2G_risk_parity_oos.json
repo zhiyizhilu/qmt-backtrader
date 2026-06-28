@@ -1,0 +1,11 @@
+{
+  "label": "v2G_risk_parity_oos",
+  "sharpe_ratio": 1.9626,
+  "total_return_pct": 101.0101,
+  "max_drawdown_pct": -11.9486,
+  "annual_return_pct": 43.8381,
+  "extra_params": {
+    "use_risk_parity": true
+  },
+  "timestamp": "2026-06-27T14:14:07.838211"
+}

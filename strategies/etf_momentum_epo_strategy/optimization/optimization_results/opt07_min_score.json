@@ -1,0 +1,16 @@
+{
+  "label": "opt07_min_score",
+  "extra_params": {
+    "min_score": 0.05
+  },
+  "initial_capital": 100000,
+  "final_value": 242879.66287999996,
+  "total_return_pct": 142.8797,
+  "sharpe_ratio": 1.5179,
+  "max_drawdown_pct": -17.7568,
+  "annual_return_pct": 25.928,
+  "trading_days": 970,
+  "fee": 1273.24,
+  "turnover": 5673223.9,
+  "timestamp": "2026-06-27T13:11:59.598365"
+}

@@ -1,0 +1,11 @@
+{
+  "label": "combo05_vol004_oos",
+  "sharpe_ratio": 1.8696,
+  "total_return_pct": 103.903,
+  "max_drawdown_pct": -11.3874,
+  "annual_return_pct": 44.9122,
+  "extra_params": {
+    "max_volatility": 0.04
+  },
+  "timestamp": "2026-06-27T13:22:18.862261"
+}

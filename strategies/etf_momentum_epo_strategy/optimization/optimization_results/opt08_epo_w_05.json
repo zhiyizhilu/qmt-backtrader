@@ -1,0 +1,16 @@
+{
+  "label": "opt08_epo_w_05",
+  "extra_params": {
+    "epo_w_opt": 0.5
+  },
+  "initial_capital": 100000,
+  "final_value": 212508.91859999995,
+  "total_return_pct": 112.5089,
+  "sharpe_ratio": 1.44,
+  "max_drawdown_pct": -18.3181,
+  "annual_return_pct": 21.6328,
+  "trading_days": 970,
+  "fee": 1340.18,
+  "turnover": 5332317.6,
+  "timestamp": "2026-06-27T13:12:05.449761"
+}

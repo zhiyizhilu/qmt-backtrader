@@ -1,0 +1,368 @@
+{
+  "baseline_is_sharpe": 1.4319,
+  "baseline_oos_sharpe": 1.8794,
+  "is_results": [
+    {
+      "label": "baseline_is",
+      "sharpe_ratio": 1.4319,
+      "total_return_pct": 127.472,
+      "max_drawdown_pct": -17.9405,
+      "annual_return_pct": 23.802,
+      "extra_params": null,
+      "timestamp": "2026-06-27T14:11:36.505564",
+      "name": "基线策略",
+      "label_key": "baseline"
+    },
+    {
+      "label": "v2A_multi_period_is",
+      "sharpe_ratio": 1.4319,
+      "total_return_pct": 127.472,
+      "max_drawdown_pct": -17.9405,
+      "annual_return_pct": 23.802,
+      "extra_params": {
+        "multi_period_weights": "0.3,0.4,0.3"
+      },
+      "timestamp": "2026-06-27T14:11:42.226257",
+      "name": "多周期融合(0.3/0.4/0.3)",
+      "label_key": "v2A_multi_period"
+    },
+    {
+      "label": "v2A_multi_period_02060_is",
+      "sharpe_ratio": 1.4319,
+      "total_return_pct": 127.472,
+      "max_drawdown_pct": -17.9405,
+      "annual_return_pct": 23.802,
+      "extra_params": {
+        "multi_period_weights": "0.2,0.6,0.2"
+      },
+      "timestamp": "2026-06-27T14:11:47.503154",
+      "name": "多周期融合(0.2/0.6/0.2)",
+      "label_key": "v2A_multi_period_02060"
+    },
+    {
+      "label": "v2B_accel_05_is",
+      "sharpe_ratio": 1.7635,
+      "total_return_pct": 206.7872,
+      "max_drawdown_pct": -12.1046,
+      "annual_return_pct": 33.8065,
+      "extra_params": {
+        "momentum_accel_bonus": 0.5
+      },
+      "timestamp": "2026-06-27T14:11:53.381516",
+      "name": "动量加速度(bonus=0.5)",
+      "label_key": "v2B_accel_05"
+    },
+    {
+      "label": "v2B_accel_10_is",
+      "sharpe_ratio": 1.543,
+      "total_return_pct": 190.2121,
+      "max_drawdown_pct": -17.1695,
+      "annual_return_pct": 31.8896,
+      "extra_params": {
+        "momentum_accel_bonus": 1.0
+      },
+      "timestamp": "2026-06-27T14:12:00.255988",
+      "name": "动量加速度(bonus=1.0)",
+      "label_key": "v2B_accel_10"
+    },
+    {
+      "label": "v2C_volume_confirm_is",
+      "sharpe_ratio": 1.1519,
+      "total_return_pct": 82.2065,
+      "max_drawdown_pct": -17.0689,
+      "annual_return_pct": 16.8673,
+      "extra_params": {
+        "volume_confirm": true
+      },
+      "timestamp": "2026-06-27T14:12:06.464167",
+      "name": "成交量确认动量",
+      "label_key": "v2C_volume_confirm"
+    },
+    {
+      "label": "v2D_breadth_is",
+      "sharpe_ratio": 1.421,
+      "total_return_pct": 116.8714,
+      "max_drawdown_pct": -18.0137,
+      "annual_return_pct": 22.2766,
+      "extra_params": {
+        "market_breadth_sizing": true
+      },
+      "timestamp": "2026-06-27T14:12:21.227712",
+      "name": "市场宽度仓位",
+      "label_key": "v2D_breadth"
+    },
+    {
+      "label": "v2E_strength_010_is",
+      "sharpe_ratio": 1.4284,
+      "total_return_pct": 126.882,
+      "max_drawdown_pct": -17.9405,
+      "annual_return_pct": 23.7185,
+      "extra_params": {
+        "trend_strength_ref": 0.1
+      },
+      "timestamp": "2026-06-27T14:12:28.621399",
+      "name": "趋势强度仓位(ref=0.10)",
+      "label_key": "v2E_strength_010"
+    },
+    {
+      "label": "v2E_strength_020_is",
+      "sharpe_ratio": 1.3558,
+      "total_return_pct": 115.6379,
+      "max_drawdown_pct": -17.8975,
+      "annual_return_pct": 22.0955,
+      "extra_params": {
+        "trend_strength_ref": 0.2
+      },
+      "timestamp": "2026-06-27T14:12:34.670242",
+      "name": "趋势强度仓位(ref=0.20)",
+      "label_key": "v2E_strength_020"
+    },
+    {
+      "label": "v2F_corr_07_is",
+      "sharpe_ratio": 1.4212,
+      "total_return_pct": 129.1163,
+      "max_drawdown_pct": -18.2096,
+      "annual_return_pct": 24.0339,
+      "extra_params": {
+        "correlation_threshold": 0.7
+      },
+      "timestamp": "2026-06-27T14:12:40.639766",
+      "name": "低相关性优选(corr>0.7替换)",
+      "label_key": "v2F_corr_07"
+    },
+    {
+      "label": "v2F_corr_08_is",
+      "sharpe_ratio": 1.4212,
+      "total_return_pct": 129.1163,
+      "max_drawdown_pct": -18.2096,
+      "annual_return_pct": 24.0339,
+      "extra_params": {
+        "correlation_threshold": 0.8
+      },
+      "timestamp": "2026-06-27T14:12:46.646120",
+      "name": "低相关性优选(corr>0.8替换)",
+      "label_key": "v2F_corr_08"
+    },
+    {
+      "label": "v2G_risk_parity_is",
+      "sharpe_ratio": 1.1083,
+      "total_return_pct": 80.3716,
+      "max_drawdown_pct": -17.6277,
+      "annual_return_pct": 16.5604,
+      "extra_params": {
+        "use_risk_parity": true
+      },
+      "timestamp": "2026-06-27T14:12:52.576925",
+      "name": "风险平价权重",
+      "label_key": "v2G_risk_parity"
+    },
+    {
+      "label": "v2H_skip_stable_is",
+      "sharpe_ratio": 1.4319,
+      "total_return_pct": 127.472,
+      "max_drawdown_pct": -17.9405,
+      "annual_return_pct": 23.802,
+      "extra_params": {
+        "skip_stable_rank": true
+      },
+      "timestamp": "2026-06-27T14:12:58.754827",
+      "name": "排名稳定跳过调仓",
+      "label_key": "v2H_skip_stable"
+    },
+    {
+      "label": "v2I_quarterly_is",
+      "sharpe_ratio": 0.7029,
+      "total_return_pct": 59.113,
+      "max_drawdown_pct": -19.8108,
+      "annual_return_pct": 12.8241,
+      "extra_params": {
+        "quarterly_rebalance": true
+      },
+      "timestamp": "2026-06-27T14:13:05.025368",
+      "name": "季频调仓",
+      "label_key": "v2I_quarterly"
+    }
+  ],
+  "oos_results": [
+    {
+      "label": "baseline_oos",
+      "sharpe_ratio": 1.8794,
+      "total_return_pct": 104.6837,
+      "max_drawdown_pct": -11.4044,
+      "annual_return_pct": 45.2008,
+      "extra_params": null,
+      "timestamp": "2026-06-27T14:13:11.042369",
+      "name": "基线策略",
+      "label_key": "baseline"
+    },
+    {
+      "label": "v2A_multi_period_oos",
+      "sharpe_ratio": 1.8794,
+      "total_return_pct": 104.6837,
+      "max_drawdown_pct": -11.4044,
+      "annual_return_pct": 45.2008,
+      "extra_params": {
+        "multi_period_weights": "0.3,0.4,0.3"
+      },
+      "timestamp": "2026-06-27T14:13:16.179987",
+      "name": "多周期融合(0.3/0.4/0.3)",
+      "label_key": "v2A_multi_period"
+    },
+    {
+      "label": "v2A_multi_period_02060_oos",
+      "sharpe_ratio": 1.8794,
+      "total_return_pct": 104.6837,
+      "max_drawdown_pct": -11.4044,
+      "annual_return_pct": 45.2008,
+      "extra_params": {
+        "multi_period_weights": "0.2,0.6,0.2"
+      },
+      "timestamp": "2026-06-27T14:13:21.248181",
+      "name": "多周期融合(0.2/0.6/0.2)",
+      "label_key": "v2A_multi_period_02060"
+    },
+    {
+      "label": "v2B_accel_05_oos",
+      "sharpe_ratio": 1.4504,
+      "total_return_pct": 74.9909,
+      "max_drawdown_pct": -13.0404,
+      "annual_return_pct": 33.8224,
+      "extra_params": {
+        "momentum_accel_bonus": 0.5
+      },
+      "timestamp": "2026-06-27T14:13:26.326969",
+      "name": "动量加速度(bonus=0.5)",
+      "label_key": "v2B_accel_05"
+    },
+    {
+      "label": "v2B_accel_10_oos",
+      "sharpe_ratio": 1.1883,
+      "total_return_pct": 40.6981,
+      "max_drawdown_pct": -13.7429,
+      "annual_return_pct": 19.456,
+      "extra_params": {
+        "momentum_accel_bonus": 1.0
+      },
+      "timestamp": "2026-06-27T14:13:31.469302",
+      "name": "动量加速度(bonus=1.0)",
+      "label_key": "v2B_accel_10"
+    },
+    {
+      "label": "v2C_volume_confirm_oos",
+      "sharpe_ratio": 1.4959,
+      "total_return_pct": 79.9866,
+      "max_drawdown_pct": -16.9936,
+      "annual_return_pct": 35.7981,
+      "extra_params": {
+        "volume_confirm": true
+      },
+      "timestamp": "2026-06-27T14:13:36.519427",
+      "name": "成交量确认动量",
+      "label_key": "v2C_volume_confirm"
+    },
+    {
+      "label": "v2D_breadth_oos",
+      "sharpe_ratio": 1.5344,
+      "total_return_pct": 75.2174,
+      "max_drawdown_pct": -12.4744,
+      "annual_return_pct": 33.9125,
+      "extra_params": {
+        "market_breadth_sizing": true
+      },
+      "timestamp": "2026-06-27T14:13:41.766418",
+      "name": "市场宽度仓位",
+      "label_key": "v2D_breadth"
+    },
+    {
+      "label": "v2E_strength_010_oos",
+      "sharpe_ratio": 1.7849,
+      "total_return_pct": 100.3192,
+      "max_drawdown_pct": -12.4839,
+      "annual_return_pct": 43.5804,
+      "extra_params": {
+        "trend_strength_ref": 0.1
+      },
+      "timestamp": "2026-06-27T14:13:46.771480",
+      "name": "趋势强度仓位(ref=0.10)",
+      "label_key": "v2E_strength_010"
+    },
+    {
+      "label": "v2E_strength_020_oos",
+      "sharpe_ratio": 1.638,
+      "total_return_pct": 90.7683,
+      "max_drawdown_pct": -12.4804,
+      "annual_return_pct": 39.9744,
+      "extra_params": {
+        "trend_strength_ref": 0.2
+      },
+      "timestamp": "2026-06-27T14:13:52.041751",
+      "name": "趋势强度仓位(ref=0.20)",
+      "label_key": "v2E_strength_020"
+    },
+    {
+      "label": "v2F_corr_07_oos",
+      "sharpe_ratio": 1.8794,
+      "total_return_pct": 104.6837,
+      "max_drawdown_pct": -11.4044,
+      "annual_return_pct": 45.2008,
+      "extra_params": {
+        "correlation_threshold": 0.7
+      },
+      "timestamp": "2026-06-27T14:13:57.337899",
+      "name": "低相关性优选(corr>0.7替换)",
+      "label_key": "v2F_corr_07"
+    },
+    {
+      "label": "v2F_corr_08_oos",
+      "sharpe_ratio": 1.8794,
+      "total_return_pct": 104.6837,
+      "max_drawdown_pct": -11.4044,
+      "annual_return_pct": 45.2008,
+      "extra_params": {
+        "correlation_threshold": 0.8
+      },
+      "timestamp": "2026-06-27T14:14:02.808882",
+      "name": "低相关性优选(corr>0.8替换)",
+      "label_key": "v2F_corr_08"
+    },
+    {
+      "label": "v2G_risk_parity_oos",
+      "sharpe_ratio": 1.9626,
+      "total_return_pct": 101.0101,
+      "max_drawdown_pct": -11.9486,
+      "annual_return_pct": 43.8381,
+      "extra_params": {
+        "use_risk_parity": true
+      },
+      "timestamp": "2026-06-27T14:14:07.838211",
+      "name": "风险平价权重",
+      "label_key": "v2G_risk_parity"
+    },
+    {
+      "label": "v2H_skip_stable_oos",
+      "sharpe_ratio": 1.8794,
+      "total_return_pct": 104.6837,
+      "max_drawdown_pct": -11.4044,
+      "annual_return_pct": 45.2008,
+      "extra_params": {
+        "skip_stable_rank": true
+      },
+      "timestamp": "2026-06-27T14:14:12.939670",
+      "name": "排名稳定跳过调仓",
+      "label_key": "v2H_skip_stable"
+    },
+    {
+      "label": "v2I_quarterly_oos",
+      "sharpe_ratio": 1.0368,
+      "total_return_pct": 43.7483,
+      "max_drawdown_pct": -17.8833,
+      "annual_return_pct": 20.7974,
+      "extra_params": {
+        "quarterly_rebalance": true
+      },
+      "timestamp": "2026-06-27T14:14:18.184188",
+      "name": "季频调仓",
+      "label_key": "v2I_quarterly"
+    }
+  ]
+}

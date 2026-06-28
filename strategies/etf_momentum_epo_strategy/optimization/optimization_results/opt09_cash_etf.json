@@ -1,0 +1,16 @@
+{
+  "label": "opt09_cash_etf",
+  "extra_params": {
+    "cash_etf_code": "511880.SH"
+  },
+  "initial_capital": 100000,
+  "final_value": 178274.3425,
+  "total_return_pct": 78.2743,
+  "sharpe_ratio": 1.4875,
+  "max_drawdown_pct": -15.5358,
+  "annual_return_pct": 16.2067,
+  "trading_days": 970,
+  "fee": 635.56,
+  "turnover": 2320750.4,
+  "timestamp": "2026-06-27T13:12:11.145001"
+}

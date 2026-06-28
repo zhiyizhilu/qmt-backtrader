@@ -1,0 +1,11 @@
+{
+  "label": "opt03_min_r_squared_sens_-10%",
+  "sharpe_ratio": 1.5174,
+  "total_return_pct": 142.7557,
+  "max_drawdown_pct": -17.6584,
+  "annual_return_pct": 25.9113,
+  "extra_params": {
+    "min_r_squared": 0.18
+  },
+  "timestamp": "2026-06-27T13:16:27.429975"
+}

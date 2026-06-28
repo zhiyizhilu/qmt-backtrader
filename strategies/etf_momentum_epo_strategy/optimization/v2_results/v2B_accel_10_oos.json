@@ -1,0 +1,11 @@
+{
+  "label": "v2B_accel_10_oos",
+  "sharpe_ratio": 1.1883,
+  "total_return_pct": 40.6981,
+  "max_drawdown_pct": -13.7429,
+  "annual_return_pct": 19.456,
+  "extra_params": {
+    "momentum_accel_bonus": 1.0
+  },
+  "timestamp": "2026-06-27T14:13:31.469302"
+}

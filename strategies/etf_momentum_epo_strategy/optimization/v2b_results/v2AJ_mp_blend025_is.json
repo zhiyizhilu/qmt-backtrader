@@ -1,0 +1,12 @@
+{
+  "label": "v2AJ_mp_blend025_is",
+  "sharpe_ratio": 1.0913,
+  "total_return_pct": 104.7857,
+  "max_drawdown_pct": -21.7735,
+  "annual_return_pct": 20.4686,
+  "extra_params": {
+    "multi_period_weights": "0.3|0.4|0.3",
+    "risk_parity_blend": 0.25
+  },
+  "timestamp": "2026-06-27T14:19:11.655216"
+}

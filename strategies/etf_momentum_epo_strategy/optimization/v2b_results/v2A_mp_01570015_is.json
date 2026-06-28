@@ -1,0 +1,11 @@
+{
+  "label": "v2A_mp_01570015_is",
+  "sharpe_ratio": 1.1397,
+  "total_return_pct": 112.8059,
+  "max_drawdown_pct": -21.2265,
+  "annual_return_pct": 21.6769,
+  "extra_params": {
+    "multi_period_weights": "0.15|0.7|0.15"
+  },
+  "timestamp": "2026-06-27T14:18:48.433550"
+}

@@ -1,0 +1,11 @@
+{
+  "label": "opt01_volatility_filter_year_2023",
+  "sharpe_ratio": -0.1087,
+  "total_return_pct": -1.4749,
+  "max_drawdown_pct": -6.9002,
+  "annual_return_pct": -1.5354,
+  "extra_params": {
+    "max_volatility": 0.03
+  },
+  "timestamp": "2026-06-27T13:15:28.282828"
+}

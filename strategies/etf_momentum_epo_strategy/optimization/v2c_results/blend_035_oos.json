@@ -1,0 +1,11 @@
+{
+  "label": "blend_035_oos",
+  "sharpe_ratio": 2.0907,
+  "total_return_pct": 110.7728,
+  "max_drawdown_pct": -9.045,
+  "annual_return_pct": 47.434,
+  "extra_params": {
+    "risk_parity_blend": 0.35
+  },
+  "timestamp": "2026-06-27T14:22:07.855654"
+}

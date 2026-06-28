@@ -1,0 +1,11 @@
+{
+  "label": "v2H_skip_stable_is",
+  "sharpe_ratio": 1.4319,
+  "total_return_pct": 127.472,
+  "max_drawdown_pct": -17.9405,
+  "annual_return_pct": 23.802,
+  "extra_params": {
+    "skip_stable_rank": true
+  },
+  "timestamp": "2026-06-27T14:12:58.754827"
+}

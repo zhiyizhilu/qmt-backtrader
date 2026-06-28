@@ -1,0 +1,11 @@
+{
+  "label": "v2C_volume_confirm_is",
+  "sharpe_ratio": 1.1519,
+  "total_return_pct": 82.2065,
+  "max_drawdown_pct": -17.0689,
+  "annual_return_pct": 16.8673,
+  "extra_params": {
+    "volume_confirm": true
+  },
+  "timestamp": "2026-06-27T14:12:06.464167"
+}

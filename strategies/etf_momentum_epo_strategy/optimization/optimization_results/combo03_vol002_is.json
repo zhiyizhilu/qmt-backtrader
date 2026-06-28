@@ -1,0 +1,11 @@
+{
+  "label": "combo03_vol002_is",
+  "sharpe_ratio": 1.2942,
+  "total_return_pct": 76.8703,
+  "max_drawdown_pct": -17.8082,
+  "annual_return_pct": 15.9683,
+  "extra_params": {
+    "max_volatility": 0.02
+  },
+  "timestamp": "2026-06-27T13:21:41.155427"
+}

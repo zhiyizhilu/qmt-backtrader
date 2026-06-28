@@ -1,0 +1,268 @@
+{
+  "baseline_is_sharpe": 1.4319,
+  "baseline_oos_sharpe": 1.8794,
+  "is_results": [
+    {
+      "label": "baseline_is",
+      "sharpe_ratio": 1.4319,
+      "total_return_pct": 127.472,
+      "max_drawdown_pct": -17.9405,
+      "annual_return_pct": 23.802,
+      "extra_params": null,
+      "timestamp": "2026-06-27T14:18:25.475157",
+      "name": "基线策略",
+      "label_key": "baseline"
+    },
+    {
+      "label": "v2A_mp_03403_is",
+      "sharpe_ratio": 1.0685,
+      "total_return_pct": 104.5518,
+      "max_drawdown_pct": -22.3556,
+      "annual_return_pct": 20.4328,
+      "extra_params": {
+        "multi_period_weights": "0.3|0.4|0.3"
+      },
+      "timestamp": "2026-06-27T14:18:31.362548",
+      "name": "多周期融合(0.3/0.4/0.3)",
+      "label_key": "v2A_mp_03403"
+    },
+    {
+      "label": "v2A_mp_0255025_is",
+      "sharpe_ratio": 1.1005,
+      "total_return_pct": 108.9302,
+      "max_drawdown_pct": -22.3556,
+      "annual_return_pct": 21.0973,
+      "extra_params": {
+        "multi_period_weights": "0.25|0.5|0.25"
+      },
+      "timestamp": "2026-06-27T14:18:36.978273",
+      "name": "多周期融合(0.25/0.5/0.25)",
+      "label_key": "v2A_mp_0255025"
+    },
+    {
+      "label": "v2A_mp_020602_is",
+      "sharpe_ratio": 1.1065,
+      "total_return_pct": 110.1143,
+      "max_drawdown_pct": -22.3556,
+      "annual_return_pct": 21.2752,
+      "extra_params": {
+        "multi_period_weights": "0.2|0.6|0.2"
+      },
+      "timestamp": "2026-06-27T14:18:42.706216",
+      "name": "多周期融合(0.2/0.6/0.2)",
+      "label_key": "v2A_mp_020602"
+    },
+    {
+      "label": "v2A_mp_01570015_is",
+      "sharpe_ratio": 1.1397,
+      "total_return_pct": 112.8059,
+      "max_drawdown_pct": -21.2265,
+      "annual_return_pct": 21.6769,
+      "extra_params": {
+        "multi_period_weights": "0.15|0.7|0.15"
+      },
+      "timestamp": "2026-06-27T14:18:48.433550",
+      "name": "多周期融合(0.15/0.7/0.15)",
+      "label_key": "v2A_mp_01570015"
+    },
+    {
+      "label": "v2J_blend_025_is",
+      "sharpe_ratio": 1.4094,
+      "total_return_pct": 120.9104,
+      "max_drawdown_pct": -18.1607,
+      "annual_return_pct": 22.8642,
+      "extra_params": {
+        "risk_parity_blend": 0.25
+      },
+      "timestamp": "2026-06-27T14:18:54.050648",
+      "name": "EPO/RP混合(blend=0.25)",
+      "label_key": "v2J_blend_025"
+    },
+    {
+      "label": "v2J_blend_050_is",
+      "sharpe_ratio": 1.4114,
+      "total_return_pct": 120.2509,
+      "max_drawdown_pct": -18.2304,
+      "annual_return_pct": 22.7688,
+      "extra_params": {
+        "risk_parity_blend": 0.5
+      },
+      "timestamp": "2026-06-27T14:18:59.825715",
+      "name": "EPO/RP混合(blend=0.50)",
+      "label_key": "v2J_blend_050"
+    },
+    {
+      "label": "v2J_blend_075_is",
+      "sharpe_ratio": 1.3258,
+      "total_return_pct": 106.054,
+      "max_drawdown_pct": -18.2246,
+      "annual_return_pct": 20.662,
+      "extra_params": {
+        "risk_parity_blend": 0.75
+      },
+      "timestamp": "2026-06-27T14:19:05.883725",
+      "name": "EPO/RP混合(blend=0.75)",
+      "label_key": "v2J_blend_075"
+    },
+    {
+      "label": "v2AJ_mp_blend025_is",
+      "sharpe_ratio": 1.0913,
+      "total_return_pct": 104.7857,
+      "max_drawdown_pct": -21.7735,
+      "annual_return_pct": 20.4686,
+      "extra_params": {
+        "multi_period_weights": "0.3|0.4|0.3",
+        "risk_parity_blend": 0.25
+      },
+      "timestamp": "2026-06-27T14:19:11.655216",
+      "name": "多周期(03403)+混合(0.25)",
+      "label_key": "v2AJ_mp_blend025"
+    },
+    {
+      "label": "v2AJ_mp_blend050_is",
+      "sharpe_ratio": 1.0579,
+      "total_return_pct": 97.1425,
+      "max_drawdown_pct": -21.3867,
+      "annual_return_pct": 19.284,
+      "extra_params": {
+        "multi_period_weights": "0.3|0.4|0.3",
+        "risk_parity_blend": 0.5
+      },
+      "timestamp": "2026-06-27T14:19:17.287189",
+      "name": "多周期(03403)+混合(0.50)",
+      "label_key": "v2AJ_mp_blend050"
+    }
+  ],
+  "oos_results": [
+    {
+      "label": "baseline_oos",
+      "sharpe_ratio": 1.8794,
+      "total_return_pct": 104.6837,
+      "max_drawdown_pct": -11.4044,
+      "annual_return_pct": 45.2008,
+      "extra_params": null,
+      "timestamp": "2026-06-27T14:19:22.739689",
+      "name": "基线策略",
+      "label_key": "baseline"
+    },
+    {
+      "label": "v2A_mp_03403_oos",
+      "sharpe_ratio": 0.6233,
+      "total_return_pct": 26.3208,
+      "max_drawdown_pct": -22.0153,
+      "annual_return_pct": 12.9364,
+      "extra_params": {
+        "multi_period_weights": "0.3|0.4|0.3"
+      },
+      "timestamp": "2026-06-27T14:19:27.895247",
+      "name": "多周期融合(0.3/0.4/0.3)",
+      "label_key": "v2A_mp_03403"
+    },
+    {
+      "label": "v2A_mp_0255025_oos",
+      "sharpe_ratio": 0.6161,
+      "total_return_pct": 25.9649,
+      "max_drawdown_pct": -21.9262,
+      "annual_return_pct": 12.7707,
+      "extra_params": {
+        "multi_period_weights": "0.25|0.5|0.25"
+      },
+      "timestamp": "2026-06-27T14:19:33.114545",
+      "name": "多周期融合(0.25/0.5/0.25)",
+      "label_key": "v2A_mp_0255025"
+    },
+    {
+      "label": "v2A_mp_020602_oos",
+      "sharpe_ratio": 0.9,
+      "total_return_pct": 42.5058,
+      "max_drawdown_pct": -21.865,
+      "annual_return_pct": 20.2527,
+      "extra_params": {
+        "multi_period_weights": "0.2|0.6|0.2"
+      },
+      "timestamp": "2026-06-27T14:19:38.238845",
+      "name": "多周期融合(0.2/0.6/0.2)",
+      "label_key": "v2A_mp_020602"
+    },
+    {
+      "label": "v2A_mp_01570015_oos",
+      "sharpe_ratio": 0.9,
+      "total_return_pct": 42.5058,
+      "max_drawdown_pct": -21.865,
+      "annual_return_pct": 20.2527,
+      "extra_params": {
+        "multi_period_weights": "0.15|0.7|0.15"
+      },
+      "timestamp": "2026-06-27T14:19:43.387310",
+      "name": "多周期融合(0.15/0.7/0.15)",
+      "label_key": "v2A_mp_01570015"
+    },
+    {
+      "label": "v2J_blend_025_oos",
+      "sharpe_ratio": 1.9427,
+      "total_return_pct": 105.8417,
+      "max_drawdown_pct": -10.8882,
+      "annual_return_pct": 45.6279,
+      "extra_params": {
+        "risk_parity_blend": 0.25
+      },
+      "timestamp": "2026-06-27T14:19:48.553005",
+      "name": "EPO/RP混合(blend=0.25)",
+      "label_key": "v2J_blend_025"
+    },
+    {
+      "label": "v2J_blend_050_oos",
+      "sharpe_ratio": 2.0586,
+      "total_return_pct": 106.9072,
+      "max_drawdown_pct": -9.1477,
+      "annual_return_pct": 46.0199,
+      "extra_params": {
+        "risk_parity_blend": 0.5
+      },
+      "timestamp": "2026-06-27T14:19:53.833796",
+      "name": "EPO/RP混合(blend=0.50)",
+      "label_key": "v2J_blend_050"
+    },
+    {
+      "label": "v2J_blend_075_oos",
+      "sharpe_ratio": 1.9485,
+      "total_return_pct": 99.4748,
+      "max_drawdown_pct": -10.7632,
+      "annual_return_pct": 43.265,
+      "extra_params": {
+        "risk_parity_blend": 0.75
+      },
+      "timestamp": "2026-06-27T14:19:58.984996",
+      "name": "EPO/RP混合(blend=0.75)",
+      "label_key": "v2J_blend_075"
+    },
+    {
+      "label": "v2AJ_mp_blend025_oos",
+      "sharpe_ratio": 0.7228,
+      "total_return_pct": 30.2698,
+      "max_drawdown_pct": -19.1779,
+      "annual_return_pct": 14.7611,
+      "extra_params": {
+        "multi_period_weights": "0.3|0.4|0.3",
+        "risk_parity_blend": 0.25
+      },
+      "timestamp": "2026-06-27T14:20:04.305800",
+      "name": "多周期(03403)+混合(0.25)",
+      "label_key": "v2AJ_mp_blend025"
+    },
+    {
+      "label": "v2AJ_mp_blend050_oos",
+      "sharpe_ratio": 0.8062,
+      "total_return_pct": 32.865,
+      "max_drawdown_pct": -17.466,
+      "annual_return_pct": 15.9458,
+      "extra_params": {
+        "multi_period_weights": "0.3|0.4|0.3",
+        "risk_parity_blend": 0.5
+      },
+      "timestamp": "2026-06-27T14:20:09.447121",
+      "name": "多周期(03403)+混合(0.50)",
+      "label_key": "v2AJ_mp_blend050"
+    }
+  ]
+}

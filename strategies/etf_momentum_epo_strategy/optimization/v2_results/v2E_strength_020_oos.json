@@ -1,0 +1,11 @@
+{
+  "label": "v2E_strength_020_oos",
+  "sharpe_ratio": 1.638,
+  "total_return_pct": 90.7683,
+  "max_drawdown_pct": -12.4804,
+  "annual_return_pct": 39.9744,
+  "extra_params": {
+    "trend_strength_ref": 0.2
+  },
+  "timestamp": "2026-06-27T14:13:52.041751"
+}

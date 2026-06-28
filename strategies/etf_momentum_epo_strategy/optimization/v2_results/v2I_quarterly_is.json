@@ -1,0 +1,11 @@
+{
+  "label": "v2I_quarterly_is",
+  "sharpe_ratio": 0.7029,
+  "total_return_pct": 59.113,
+  "max_drawdown_pct": -19.8108,
+  "annual_return_pct": 12.8241,
+  "extra_params": {
+    "quarterly_rebalance": true
+  },
+  "timestamp": "2026-06-27T14:13:05.025368"
+}

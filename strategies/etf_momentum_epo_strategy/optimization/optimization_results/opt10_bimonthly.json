@@ -1,0 +1,16 @@
+{
+  "label": "opt10_bimonthly",
+  "extra_params": {
+    "rebalance_freq": 2
+  },
+  "initial_capital": 100000,
+  "final_value": 205977.84598000004,
+  "total_return_pct": 105.9778,
+  "sharpe_ratio": 1.3567,
+  "max_drawdown_pct": -13.5948,
+  "annual_return_pct": 20.6504,
+  "trading_days": 970,
+  "fee": 739.25,
+  "turnover": 3296447.7,
+  "timestamp": "2026-06-27T13:12:16.760075"
+}

@@ -1,0 +1,212 @@
+{
+  "baseline_is_sharpe": 1.4319,
+  "baseline_oos_sharpe": 1.8794,
+  "is_results": [
+    {
+      "label": "baseline_is",
+      "sharpe_ratio": 1.4319,
+      "total_return_pct": 127.472,
+      "max_drawdown_pct": -17.9405,
+      "annual_return_pct": 23.802,
+      "extra_params": null,
+      "timestamp": "2026-06-27T14:21:17.224304",
+      "name": "基线策略",
+      "label_key": "baseline"
+    },
+    {
+      "label": "blend_035_is",
+      "sharpe_ratio": 1.3921,
+      "total_return_pct": 118.3328,
+      "max_drawdown_pct": -18.2415,
+      "annual_return_pct": 22.4901,
+      "extra_params": {
+        "risk_parity_blend": 0.35
+      },
+      "timestamp": "2026-06-27T14:21:22.865075",
+      "name": "blend=0.35",
+      "label_key": "blend_035"
+    },
+    {
+      "label": "blend_040_is",
+      "sharpe_ratio": 1.3927,
+      "total_return_pct": 118.0672,
+      "max_drawdown_pct": -18.2463,
+      "annual_return_pct": 22.4514,
+      "extra_params": {
+        "risk_parity_blend": 0.4
+      },
+      "timestamp": "2026-06-27T14:21:28.683308",
+      "name": "blend=0.40",
+      "label_key": "blend_040"
+    },
+    {
+      "label": "blend_045_is",
+      "sharpe_ratio": 1.391,
+      "total_return_pct": 117.6678,
+      "max_drawdown_pct": -18.2677,
+      "annual_return_pct": 22.3931,
+      "extra_params": {
+        "risk_parity_blend": 0.45
+      },
+      "timestamp": "2026-06-27T14:21:34.444050",
+      "name": "blend=0.45",
+      "label_key": "blend_045"
+    },
+    {
+      "label": "blend_050_is",
+      "sharpe_ratio": 1.4114,
+      "total_return_pct": 120.2509,
+      "max_drawdown_pct": -18.2304,
+      "annual_return_pct": 22.7688,
+      "extra_params": {
+        "risk_parity_blend": 0.5
+      },
+      "timestamp": "2026-06-27T14:21:39.963164",
+      "name": "blend=0.50",
+      "label_key": "blend_050"
+    },
+    {
+      "label": "blend_055_is",
+      "sharpe_ratio": 1.4441,
+      "total_return_pct": 124.6022,
+      "max_drawdown_pct": -18.2683,
+      "annual_return_pct": 23.3943,
+      "extra_params": {
+        "risk_parity_blend": 0.55
+      },
+      "timestamp": "2026-06-27T14:21:45.632297",
+      "name": "blend=0.55",
+      "label_key": "blend_055"
+    },
+    {
+      "label": "blend_060_is",
+      "sharpe_ratio": 1.3861,
+      "total_return_pct": 114.7503,
+      "max_drawdown_pct": -18.2595,
+      "annual_return_pct": 21.9648,
+      "extra_params": {
+        "risk_parity_blend": 0.6
+      },
+      "timestamp": "2026-06-27T14:21:51.211683",
+      "name": "blend=0.60",
+      "label_key": "blend_060"
+    },
+    {
+      "label": "blend_065_is",
+      "sharpe_ratio": 1.371,
+      "total_return_pct": 111.9368,
+      "max_drawdown_pct": -18.2821,
+      "annual_return_pct": 21.5476,
+      "extra_params": {
+        "risk_parity_blend": 0.65
+      },
+      "timestamp": "2026-06-27T14:21:56.752115",
+      "name": "blend=0.65",
+      "label_key": "blend_065"
+    }
+  ],
+  "oos_results": [
+    {
+      "label": "baseline_oos",
+      "sharpe_ratio": 1.8794,
+      "total_return_pct": 104.6837,
+      "max_drawdown_pct": -11.4044,
+      "annual_return_pct": 45.2008,
+      "extra_params": null,
+      "timestamp": "2026-06-27T14:22:02.323664",
+      "name": "基线策略",
+      "label_key": "baseline"
+    },
+    {
+      "label": "blend_035_oos",
+      "sharpe_ratio": 2.0907,
+      "total_return_pct": 110.7728,
+      "max_drawdown_pct": -9.045,
+      "annual_return_pct": 47.434,
+      "extra_params": {
+        "risk_parity_blend": 0.35
+      },
+      "timestamp": "2026-06-27T14:22:07.855654",
+      "name": "blend=0.35",
+      "label_key": "blend_035"
+    },
+    {
+      "label": "blend_040_oos",
+      "sharpe_ratio": 2.0983,
+      "total_return_pct": 110.4857,
+      "max_drawdown_pct": -8.9353,
+      "annual_return_pct": 47.3294,
+      "extra_params": {
+        "risk_parity_blend": 0.4
+      },
+      "timestamp": "2026-06-27T14:22:12.968482",
+      "name": "blend=0.40",
+      "label_key": "blend_040"
+    },
+    {
+      "label": "blend_045_oos",
+      "sharpe_ratio": 2.0919,
+      "total_return_pct": 109.6996,
+      "max_drawdown_pct": -8.8402,
+      "annual_return_pct": 47.0427,
+      "extra_params": {
+        "risk_parity_blend": 0.45
+      },
+      "timestamp": "2026-06-27T14:22:18.124662",
+      "name": "blend=0.45",
+      "label_key": "blend_045"
+    },
+    {
+      "label": "blend_050_oos",
+      "sharpe_ratio": 2.0586,
+      "total_return_pct": 106.9072,
+      "max_drawdown_pct": -9.1477,
+      "annual_return_pct": 46.0199,
+      "extra_params": {
+        "risk_parity_blend": 0.5
+      },
+      "timestamp": "2026-06-27T14:22:23.205970",
+      "name": "blend=0.50",
+      "label_key": "blend_050"
+    },
+    {
+      "label": "blend_055_oos",
+      "sharpe_ratio": 1.7965,
+      "total_return_pct": 91.7725,
+      "max_drawdown_pct": -10.7192,
+      "annual_return_pct": 40.3576,
+      "extra_params": {
+        "risk_parity_blend": 0.55
+      },
+      "timestamp": "2026-06-27T14:22:28.808794",
+      "name": "blend=0.55",
+      "label_key": "blend_055"
+    },
+    {
+      "label": "blend_060_oos",
+      "sharpe_ratio": 2.0615,
+      "total_return_pct": 107.4846,
+      "max_drawdown_pct": -9.4157,
+      "annual_return_pct": 46.2319,
+      "extra_params": {
+        "risk_parity_blend": 0.6
+      },
+      "timestamp": "2026-06-27T14:22:33.858396",
+      "name": "blend=0.60",
+      "label_key": "blend_060"
+    },
+    {
+      "label": "blend_065_oos",
+      "sharpe_ratio": 1.9866,
+      "total_return_pct": 100.8307,
+      "max_drawdown_pct": -10.2199,
+      "annual_return_pct": 43.7712,
+      "extra_params": {
+        "risk_parity_blend": 0.65
+      },
+      "timestamp": "2026-06-27T14:22:38.957038",
+      "name": "blend=0.65",
+      "label_key": "blend_065"
+    }
+  ]
+}

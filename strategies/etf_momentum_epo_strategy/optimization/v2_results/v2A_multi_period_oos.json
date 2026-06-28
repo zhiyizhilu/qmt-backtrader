@@ -1,0 +1,11 @@
+{
+  "label": "v2A_multi_period_oos",
+  "sharpe_ratio": 1.8794,
+  "total_return_pct": 104.6837,
+  "max_drawdown_pct": -11.4044,
+  "annual_return_pct": 45.2008,
+  "extra_params": {
+    "multi_period_weights": "0.3,0.4,0.3"
+  },
+  "timestamp": "2026-06-27T14:13:16.179987"
+}

@@ -1,0 +1,13 @@
+{
+  "label": "combo02_vol_r2_score_oos",
+  "sharpe_ratio": 1.3741,
+  "total_return_pct": 62.1671,
+  "max_drawdown_pct": -19.9253,
+  "annual_return_pct": 28.6232,
+  "extra_params": {
+    "max_volatility": 0.03,
+    "min_r_squared": 0.2,
+    "min_score": 0.05
+  },
+  "timestamp": "2026-06-27T13:22:03.448945"
+}

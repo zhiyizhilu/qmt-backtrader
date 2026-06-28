@@ -1,0 +1,16 @@
+{
+  "label": "opt03_min_r_squared",
+  "extra_params": {
+    "min_r_squared": 0.2
+  },
+  "initial_capital": 100000,
+  "final_value": 242755.6719399999,
+  "total_return_pct": 142.7557,
+  "sharpe_ratio": 1.5174,
+  "max_drawdown_pct": -17.6584,
+  "annual_return_pct": 25.9113,
+  "trading_days": 970,
+  "fee": 1288.53,
+  "turnover": 5661532.8,
+  "timestamp": "2026-06-27T13:11:36.123377"
+}

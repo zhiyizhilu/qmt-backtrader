@@ -1,0 +1,11 @@
+{
+  "label": "opt01_volatility_filter_oos",
+  "sharpe_ratio": 1.8097,
+  "total_return_pct": 86.5826,
+  "max_drawdown_pct": -12.5316,
+  "annual_return_pct": 38.3668,
+  "extra_params": {
+    "max_volatility": 0.03
+  },
+  "timestamp": "2026-06-27T13:14:01.244221"
+}

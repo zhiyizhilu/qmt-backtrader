@@ -1,0 +1,251 @@
+{
+  "opt01_volatility_filter": {
+    "oos": {
+      "label": "opt01_volatility_filter",
+      "train_period": "2020-04-28 ~ 2024-04-28",
+      "valid_period": "2024-04-28 ~ 2026-04-28",
+      "in_sample_sharpe": 1.5642,
+      "out_sample_sharpe": 1.8097,
+      "baseline_is_sharpe": 1.4319,
+      "baseline_oos_sharpe": 1.8794,
+      "is_improvement_pct": 9.239472030169711,
+      "oos_improvement_pct": -3.708630413961896,
+      "decay_ratio": -0.40138986317097775
+    },
+    "sensitivity": {
+      "label": "opt01_volatility_filter",
+      "param_name": "max_volatility",
+      "base_param": 0.03,
+      "base_sharpe": 1.5642,
+      "perturbation_results": {
+        "perturb_-20%": {
+          "param_value": 0.024,
+          "sharpe_ratio": 1.3876
+        },
+        "perturb_-10%": {
+          "param_value": 0.027,
+          "sharpe_ratio": 1.4196
+        },
+        "perturb_+10%": {
+          "param_value": 0.033,
+          "sharpe_ratio": 1.4617
+        },
+        "perturb_+20%": {
+          "param_value": 0.036,
+          "sharpe_ratio": 1.4296
+        }
+      },
+      "sharpe_range": 0.07410000000000005,
+      "sensitivity_ratio": 0.0474
+    },
+    "temporal": {
+      "label": "opt01_volatility_filter",
+      "yearly_results": [
+        {
+          "year": 2020,
+          "opt_sharpe": 3.6537,
+          "base_sharpe": 3.2634,
+          "improvement": 0.3903,
+          "is_positive": true
+        },
+        {
+          "year": 2021,
+          "opt_sharpe": 0.7236,
+          "base_sharpe": 0.8488,
+          "improvement": -0.1252,
+          "is_positive": false
+        },
+        {
+          "year": 2022,
+          "opt_sharpe": 0.5541,
+          "base_sharpe": 0.2608,
+          "improvement": 0.2933,
+          "is_positive": true
+        },
+        {
+          "year": 2023,
+          "opt_sharpe": -0.1087,
+          "base_sharpe": -0.0544,
+          "improvement": -0.0543,
+          "is_positive": false
+        },
+        {
+          "year": 2024,
+          "opt_sharpe": 0.9225,
+          "base_sharpe": 0.925,
+          "improvement": -0.0025,
+          "is_positive": false
+        }
+      ],
+      "positive_years": 2,
+      "total_years": 5,
+      "consistency_ratio": 0.4
+    }
+  },
+  "opt03_min_r_squared": {
+    "oos": {
+      "label": "opt03_min_r_squared",
+      "train_period": "2020-04-28 ~ 2024-04-28",
+      "valid_period": "2024-04-28 ~ 2026-04-28",
+      "in_sample_sharpe": 1.5174,
+      "out_sample_sharpe": 1.2278,
+      "baseline_is_sharpe": 1.4319,
+      "baseline_oos_sharpe": 1.8794,
+      "is_improvement_pct": 5.971087366436214,
+      "oos_improvement_pct": -34.67063956581888,
+      "decay_ratio": -5.80641974202292
+    },
+    "sensitivity": {
+      "label": "opt03_min_r_squared",
+      "param_name": "min_r_squared",
+      "base_param": 0.2,
+      "base_sharpe": 1.5174,
+      "perturbation_results": {
+        "perturb_-20%": {
+          "param_value": 0.16,
+          "sharpe_ratio": 1.5174
+        },
+        "perturb_-10%": {
+          "param_value": 0.18,
+          "sharpe_ratio": 1.5174
+        },
+        "perturb_+10%": {
+          "param_value": 0.22,
+          "sharpe_ratio": 1.5242
+        },
+        "perturb_+20%": {
+          "param_value": 0.24,
+          "sharpe_ratio": 1.5242
+        }
+      },
+      "sharpe_range": 0.006799999999999917,
+      "sensitivity_ratio": 0.0045
+    },
+    "temporal": {
+      "label": "opt03_min_r_squared",
+      "yearly_results": [
+        {
+          "year": 2020,
+          "opt_sharpe": 3.2634,
+          "base_sharpe": 3.2634,
+          "improvement": 0.0,
+          "is_positive": false
+        },
+        {
+          "year": 2021,
+          "opt_sharpe": 0.8506,
+          "base_sharpe": 0.8488,
+          "improvement": 0.0018,
+          "is_positive": true
+        },
+        {
+          "year": 2022,
+          "opt_sharpe": 0.2624,
+          "base_sharpe": 0.2608,
+          "improvement": 0.0016,
+          "is_positive": true
+        },
+        {
+          "year": 2023,
+          "opt_sharpe": 0.0855,
+          "base_sharpe": -0.0544,
+          "improvement": 0.1399,
+          "is_positive": true
+        },
+        {
+          "year": 2024,
+          "opt_sharpe": 2.2848,
+          "base_sharpe": 0.925,
+          "improvement": 1.3598,
+          "is_positive": true
+        }
+      ],
+      "positive_years": 4,
+      "total_years": 5,
+      "consistency_ratio": 0.8
+    }
+  },
+  "opt07_min_score": {
+    "oos": {
+      "label": "opt07_min_score",
+      "train_period": "2020-04-28 ~ 2024-04-28",
+      "valid_period": "2024-04-28 ~ 2026-04-28",
+      "in_sample_sharpe": 1.5179,
+      "out_sample_sharpe": 1.2278,
+      "baseline_is_sharpe": 1.4319,
+      "baseline_oos_sharpe": 1.8794,
+      "is_improvement_pct": 6.006006006006012,
+      "oos_improvement_pct": -34.67063956581888,
+      "decay_ratio": -5.772661487708838
+    },
+    "sensitivity": {
+      "label": "opt07_min_score",
+      "param_name": "min_score",
+      "base_param": 0.05,
+      "base_sharpe": 1.5179,
+      "perturbation_results": {
+        "perturb_-20%": {
+          "param_value": 0.04,
+          "sharpe_ratio": 1.5179
+        },
+        "perturb_-10%": {
+          "param_value": 0.045,
+          "sharpe_ratio": 1.5179
+        },
+        "perturb_+10%": {
+          "param_value": 0.055,
+          "sharpe_ratio": 1.5204
+        },
+        "perturb_+20%": {
+          "param_value": 0.06,
+          "sharpe_ratio": 1.518
+        }
+      },
+      "sharpe_range": 0.0024999999999999467,
+      "sensitivity_ratio": 0.0016
+    },
+    "temporal": {
+      "label": "opt07_min_score",
+      "yearly_results": [
+        {
+          "year": 2020,
+          "opt_sharpe": 3.2634,
+          "base_sharpe": 3.2634,
+          "improvement": 0.0,
+          "is_positive": false
+        },
+        {
+          "year": 2021,
+          "opt_sharpe": 0.8488,
+          "base_sharpe": 0.8488,
+          "improvement": 0.0,
+          "is_positive": false
+        },
+        {
+          "year": 2022,
+          "opt_sharpe": 0.2608,
+          "base_sharpe": 0.2608,
+          "improvement": 0.0,
+          "is_positive": false
+        },
+        {
+          "year": 2023,
+          "opt_sharpe": 0.0855,
+          "base_sharpe": -0.0544,
+          "improvement": 0.1399,
+          "is_positive": true
+        },
+        {
+          "year": 2024,
+          "opt_sharpe": 2.2848,
+          "base_sharpe": 0.925,
+          "improvement": 1.3598,
+          "is_positive": true
+        }
+      ],
+      "positive_years": 2,
+      "total_years": 5,
+      "consistency_ratio": 0.4
+    }
+  }
+}

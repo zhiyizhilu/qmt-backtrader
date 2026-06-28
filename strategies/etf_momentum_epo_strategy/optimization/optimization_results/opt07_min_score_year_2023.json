@@ -1,0 +1,11 @@
+{
+  "label": "opt07_min_score_year_2023",
+  "sharpe_ratio": 0.0855,
+  "total_return_pct": 0.3313,
+  "max_drawdown_pct": -6.9002,
+  "annual_return_pct": 0.345,
+  "extra_params": {
+    "min_score": 0.05
+  },
+  "timestamp": "2026-06-27T13:19:09.789753"
+}

@@ -1,0 +1,16 @@
+{
+  "label": "opt06_max_weight",
+  "extra_params": {
+    "max_weight": 0.4
+  },
+  "initial_capital": 100000,
+  "final_value": 224498.90765999994,
+  "total_return_pct": 124.4989,
+  "sharpe_ratio": 1.3644,
+  "max_drawdown_pct": -18.4812,
+  "annual_return_pct": 23.3796,
+  "trading_days": 970,
+  "fee": 1119.59,
+  "turnover": 4743190.7,
+  "timestamp": "2026-06-27T13:11:53.754486"
+}

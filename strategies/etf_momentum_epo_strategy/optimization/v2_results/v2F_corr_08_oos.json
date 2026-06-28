@@ -1,0 +1,11 @@
+{
+  "label": "v2F_corr_08_oos",
+  "sharpe_ratio": 1.8794,
+  "total_return_pct": 104.6837,
+  "max_drawdown_pct": -11.4044,
+  "annual_return_pct": 45.2008,
+  "extra_params": {
+    "correlation_threshold": 0.8
+  },
+  "timestamp": "2026-06-27T14:14:02.808882"
+}

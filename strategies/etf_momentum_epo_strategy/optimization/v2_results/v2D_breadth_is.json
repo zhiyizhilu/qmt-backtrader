@@ -1,0 +1,11 @@
+{
+  "label": "v2D_breadth_is",
+  "sharpe_ratio": 1.421,
+  "total_return_pct": 116.8714,
+  "max_drawdown_pct": -18.0137,
+  "annual_return_pct": 22.2766,
+  "extra_params": {
+    "market_breadth_sizing": true
+  },
+  "timestamp": "2026-06-27T14:12:21.227712"
+}

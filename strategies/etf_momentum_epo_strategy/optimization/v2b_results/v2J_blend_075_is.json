@@ -1,0 +1,11 @@
+{
+  "label": "v2J_blend_075_is",
+  "sharpe_ratio": 1.3258,
+  "total_return_pct": 106.054,
+  "max_drawdown_pct": -18.2246,
+  "annual_return_pct": 20.662,
+  "extra_params": {
+    "risk_parity_blend": 0.75
+  },
+  "timestamp": "2026-06-27T14:19:05.883725"
+}
