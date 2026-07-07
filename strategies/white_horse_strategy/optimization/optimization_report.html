@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>白马攻防策略优化分析报告</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; line-height: 1.6; }
+.container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
+h1 { font-size: 2.2em; text-align: center; background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+h2 { font-size: 1.4em; color: #60a5fa; margin: 40px 0 20px; border-bottom: 1px solid #1e293b; padding-bottom: 10px; }
+.summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin: 30px 0; }
+.card { background: #1e293b; border-radius: 12px; padding: 24px; border: 1px solid #334155; }
+.card-label { font-size: 0.85em; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
+.card-value { font-size: 2em; font-weight: 700; }
+.up { color: #34d399; }
+.down { color: #f87171; }
+.neutral { color: #fbbf24; }
+.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 24px 0; }
+.chart-box { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; }
+.chart-box.full { grid-column: 1 / -1; }
+table { width: 100%; border-collapse: collapse; margin: 16px 0; background: #1e293b; border-radius: 12px; overflow: hidden; }
+th { background: #0f172a; color: #94a3b8; font-weight: 600; font-size: 0.85em; text-transform: uppercase; padding: 14px 16px; text-align: left; }
+td { padding: 12px 16px; border-top: 1px solid #334155; font-size: 0.92em; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; margin-right: 6px; }
+.effective-badge { background: rgba(52, 211, 153, 0.2); color: #34d399; }
+.ineffective-badge { background: rgba(248, 113, 113, 0.15); color: #f87171; }
+.negative-badge { background: rgba(248, 113, 113, 0.3); color: #ef4444; }
+.oof-badge { background: rgba(251, 191, 36, 0.2); color: #fbbf24; }
+.insight-box { background: #1e293b; border-radius: 12px; padding: 24px; border: 1px solid #334155; margin: 16px 0; }
+.insight-box ul { padding-left: 20px; }
+.insight-box li { margin: 8px 0; }
+.insight-box code { background: #334155; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; color: #60a5fa; }
+.warn-box { background: rgba(248, 113, 113, 0.1); border: 1px solid rgba(248, 113, 113, 0.3); border-radius: 12px; padding: 24px; margin: 16px 0; }
+.warn-box h3 { color: #f87171; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>白马攻防策略优化分析报告</h1>
+<p style="text-align:center;color:#94a3b8;margin-bottom:40px;">测试集: 2020-04-28 ~ 2024-04-28 | 验证集: 2024-04-28 ~ 2026-04-28 | 股票池: 沪深300</p>
+
+<!-- 一、优化总览 -->
+<h2>一、优化总览</h2>
+<div class="summary-cards">
+    <div class="card"><div class="card-label">夏普比率变化</div><div class="card-value neutral">0.9065 -> 0.9065</div><div style="color:#94a3b8;font-size:0.85em;margin-top:8px">无变化（无有效优化被采纳）</div></div>
+    <div class="card"><div class="card-label">总收益率变化</div><div class="card-value neutral">81.41% -> 81.41%</div><div style="color:#94a3b8;font-size:0.85em;margin-top:8px">无变化</div></div>
+    <div class="card"><div class="card-label">最大回撤变化</div><div class="card-value neutral">-23.05% -> -23.05%</div><div style="color:#94a3b8;font-size:0.85em;margin-top:8px">无变化</div></div>
+    <div class="card"><div class="card-label">年化收益率变化</div><div class="card-value neutral">16.73% -> 16.73%</div><div style="color:#94a3b8;font-size:0.85em;margin-top:8px">无变化</div></div>
+</div>
+
+<!-- 二、策略说明 -->
+<h2>二、策略说明</h2>
+<div class="insight-box">
+<h3>原始策略逻辑</h3>
+<ul>
+    <li>根据沪深300指数的市场温度（冷/温/热）动态切换选股标准</li>
+    <li>冷市：低PB(<1) + 高现金流质量(>2) + 稳定ROE(>1.5%) + 增长(>-15%)，按ROA/PB排序</li>
+    <li>温市：低PB(<1) + 中现金流质量(>1) + ROE(>2%) + 正增长(>0%)，按ROA/PB排序</li>
+    <li>热市：高PB(>3) + 低现金流质量(>0.5) + ROE(>3%) + 高增长(>20%)，按ROA排序</li>
+    <li>月度调仓，等权5只，仓位95%</li>
+</ul>
+<h3>优化后新增逻辑</h3>
+<ul>
+    <li><strong>无新增逻辑</strong> — 所有优化方案均未通过审查</li>
+</ul>
+</div>
+
+<!-- 三、单项优化回测结果 -->
+<h2>三、单项优化回测结果</h2>
+<table>
+<thead><tr><th>优化方向</th><th>参数</th><th>夏普比率</th><th>夏普变化</th><th>总收益</th><th>最大回撤</th><th>结论</th></tr></thead>
+<tbody>
+<tr><td><span class="badge neutral-badge">基线</span>基线策略</td><td>-</td><td>0.9065</td><td>+0.0%</td><td>81.41%</td><td>-23.05%</td><td>-</td></tr>
+<tr><td><span class="badge ineffective-badge">微弱</span>波动率过滤</td><td>max_volatility=0.03</td><td>0.9253</td><td class="up">+2.1%</td><td>82.98%</td><td>-23.05%</td><td>改善<5%，放弃</td></tr>
+<tr><td><span class="badge ineffective-badge">无效</span>止损机制</td><td>stop_loss_pct=-0.15</td><td>0.9065</td><td>+0.0%</td><td>81.41%</td><td>-23.05%</td><td>未触发，放弃</td></tr>
+<tr><td><span class="badge negative-badge">负向</span>行业分散</td><td>max_same_industry=2</td><td>0.8676</td><td class="down">-4.3%</td><td>76.48%</td><td>-22.44%</td><td>负向，放弃</td></tr>
+<tr><td><span class="badge ineffective-badge">无效</span>冷市降仓</td><td>cold_position_ratio=0.80</td><td>0.9065</td><td>+0.0%</td><td>81.41%</td><td>-23.05%</td><td>未触发，放弃</td></tr>
+<tr><td><span class="badge negative-badge">负向</span>双周调仓</td><td>rebalance_freq=biweekly</td><td>0.7714</td><td class="down">-14.9%</td><td>63.95%</td><td>-22.64%</td><td>严重负向，放弃</td></tr>
+<tr><td><span class="badge ineffective-badge">微弱</span>换手率限制</td><td>max_replace=3</td><td>0.9127</td><td class="up">+0.7%</td><td>82.32%</td><td>-23.05%</td><td>改善<5%，放弃</td></tr>
+<tr><td><span class="badge ineffective-badge">无效</span>热市ROE提升</td><td>hot_min_roe=8.0</td><td>0.9065</td><td>+0.0%</td><td>81.41%</td><td>-23.05%</td><td>未触发，放弃</td></tr>
+<tr><td><span class="badge ineffective-badge">无效</span>冷市放宽PB</td><td>cold_max_pb=1.5</td><td>0.9065</td><td>+0.0%</td><td>81.41%</td><td>-23.05%</td><td>未触发，放弃</td></tr>
+<tr><td><span class="badge oof-badge">OOF</span>温市利润增速</td><td>warm_min_profit_yoy=5</td><td>0.9722</td><td class="up">+7.2%</td><td>89.03%</td><td>-17.53%</td><td>IS有效，OOF严重衰退</td></tr>
+<tr><td><span class="badge ineffective-badge">无效</span>热市PB上限</td><td>hot_max_pb=15</td><td>0.9065</td><td>+0.0%</td><td>81.41%</td><td>-23.05%</td><td>未触发，放弃</td></tr>
+</tbody>
+</table>
+
+<div class="chart-grid">
+    <div class="chart-box"><canvas id="chartSingleSharpe"></canvas></div>
+    <div class="chart-box"><canvas id="chartSingleReturn"></canvas></div>
+</div>
+<div class="chart-box full"><canvas id="chartSingleImprovement"></canvas></div>
+
+<!-- 四、硬逻辑与过度拟合审查 -->
+<h2>四、硬逻辑与过度拟合审查</h2>
+<h3>4.1 opt09 温市利润增速(yoy=5) — 样本内唯一有效优化</h3>
+<table>
+<thead><tr><th>检查维度</th><th>评估</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>逻辑因果链</td><td>提高增速阈值过滤伪均衡股</td><td>通过</td></tr>
+<tr><td>经济合理性</td><td>5%是真正增长企业的基本门槛</td><td>通过</td></tr>
+<tr><td>逻辑独立性</td><td>独立的筛选维度</td><td>通过</td></tr>
+<tr><td>极端场景稳健性</td><td>衰退期选股池可能过窄</td><td>中等</td></tr>
+<tr><td>可解释的交易行为</td><td>更偏向稳健增长股</td><td>通过</td></tr>
+</tbody>
+</table>
+
+<h3>4.2 三项过度拟合检测</h3>
+<div class="warn-box">
+<h3>样本外验证结果</h3>
+<ul>
+    <li>测试集(IS)夏普: <strong>0.9722</strong> (基线: 0.9065, 改进: +7.2%)</li>
+    <li>验证集(OOS)夏普: <strong>0.4909</strong> (基线: 0.6853, 改进: <strong class="down">-28.4%</strong>)</li>
+    <li>衰减比(OOS/IS): <strong class="down">-3.91</strong> — <strong>严重过度拟合！</strong></li>
+</ul>
+</div>
+
+<table>
+<thead><tr><th>检测项</th><th>数值</th><th>判定标准</th><th>结论</th></tr></thead>
+<tbody>
+<tr><td>样本外衰减比</td><td class="down">-3.91</td><td>>=0.5通过, <0.2不通过</td><td class="down"><strong>不通过</strong></td></tr>
+<tr><td>参数敏感度</td><td>0.074</td><td><0.3通过</td><td class="up">通过</td></tr>
+<tr><td>时间稳定性</td><td>0.60</td><td>>=0.7通过</td><td style="color:#fbbf24">有条件通过</td></tr>
+</tbody>
+</table>
+
+<h3>4.3 时间分段稳定性详情</h3>
+<table>
+<thead><tr><th>年份</th><th>优化夏普</th><th>基线夏普</th><th>改进</th><th>是否正改进</th></tr></thead>
+<tbody>
+<tr><td>2020</td><td>1.1979</td><td>1.0436</td><td class="up">+0.1543</td><td class="up">OK</td></tr>
+<tr><td>2021</td><td>1.1604</td><td>1.4283</td><td class="down">-0.2679</td><td class="down">FAIL</td></tr>
+<tr><td>2022</td><td>0.1151</td><td>0.2145</td><td class="down">-0.0994</td><td class="down">FAIL</td></tr>
+<tr><td>2023</td><td>0.9309</td><td>0.6508</td><td class="up">+0.2802</td><td class="up">OK</td></tr>
+<tr><td>2024</td><td>2.6023</td><td>1.6278</td><td class="up">+0.9745</td><td class="up">OK</td></tr>
+</tbody>
+</table>
+<p style="color:#94a3b8;margin-top:12px">一致性比率: 3/5 = 0.60 (仅2020、2023、2024年正改进，2021和2022年负改进)</p>
+
+<div class="chart-grid">
+    <div class="chart-box"><canvas id="chartOOSDecay"></canvas></div>
+    <div class="chart-box"><canvas id="chartTemporalStability"></canvas></div>
+</div>
+
+<h3>4.4 综合审查结论</h3>
+<div class="warn-box">
+<h3>结论: 不通过，放弃该优化</h3>
+<ul>
+    <li>硬逻辑评级: B (中等)</li>
+    <li>样本外衰减比: <strong>-3.91</strong> (<0.2，高度疑似过度拟合)</li>
+    <li>参数敏感度: 0.074 (<0.3，通过)</li>
+    <li>时间稳定性: 0.60 (<0.7，有条件通过)</li>
+    <li>虽然样本内夏普提升7.2%，但样本外反而下降28.4%，属于典型的过度拟合</li>
+</ul>
+</div>
+
+<!-- 五、核心发现 -->
+<h2>五、核心发现</h2>
+<div class="insight-box">
+<h3>1. 大部分优化未被触发</h3>
+<ul>
+    <li>止损(opt02)、冷市降仓(opt04)、热市ROE(opt07)、冷市放宽PB(opt08)、热市PB上限(opt10) 在测试集区间<strong>从未触发</strong></li>
+    <li>原因: 测试集区间中冷市和热市的调仓次数较少，温市占主导；热市的ROE门槛3%已足够严格</li>
+</ul>
+<h3>2. 波动率过滤效果微弱</h3>
+<ul>
+    <li>opt01波动率过滤(vol=0.03)仅提升夏普+2.1%，低于5%门槛</li>
+    <li>原因: 沪深300成分股多为大盘蓝筹，日波动率很少超过3%，过滤效果有限</li>
+</ul>
+<h3>3. 行业分散有害</h3>
+<ul>
+    <li>opt03行业分散(max=2)使夏普下降4.3%</li>
+    <li>原因: 限制了同一行业的多只优质股，而白马策略本身选股数量少(5只)，强制分散降低了选股质量</li>
+</ul>
+<h3>4. 双周调仓严重负向</h3>
+<ul>
+    <li>opt05双周调仓使夏普下降14.9%</li>
+    <li>原因: 更频繁的调仓增加了交易成本(佣金0.13%)，而选股信号是基于月度财务数据更新的</li>
+</ul>
+<h3>5. 温市利润增速提升是过度拟合</h3>
+<ul>
+    <li>opt09(warm_min_profit_yoy=5)在IS上提升7.2%，但OOS下降28.4%</li>
+    <li>原因: 参数5%在2020-2024期间恰好有效，但在2024-2026期间市场环境变化后失效</li>
+    <li>这说明对温度阈值参数的优化极易产生过度拟合</li>
+</ul>
+<h3>6. 策略本身已较优</h3>
+<ul>
+    <li>基线夏普0.9065已是一个不错的水平(年化16.7%,回撤-23%)</li>
+    <li>月度调仓+温度切换机制本身就包含了风控和择时功能</li>
+    <li>简单参数微调无法进一步提升，需要更深层的结构性改进</li>
+</ul>
+</div>
+
+<!-- 六、优化前后对比 -->
+<h2>六、优化前后对比</h2>
+<table>
+<thead><tr><th>指标</th><th>优化前(基线)</th><th>优化后</th><th>变化</th></tr></thead>
+<tbody>
+<tr><td>夏普比率</td><td>0.9065</td><td>0.9065</td><td>+0.0%</td></tr>
+<tr><td>总收益率</td><td>81.41%</td><td>81.41%</td><td>+0.0%</td></tr>
+<tr><td>最大回撤</td><td>-23.05%</td><td>-23.05%</td><td>+0.0%</td></tr>
+<tr><td>年化收益率</td><td>16.73%</td><td>16.73%</td><td>+0.0%</td></tr>
+</tbody>
+</table>
+<div class="insight-box">
+<h3>最终采纳的参数变更</h3>
+<ul><li><strong>无</strong> — 所有优化方案均未通过审查</li></ul>
+<h3>被放弃的优化及原因</h3>
+<ul>
+    <li>opt01(波动率过滤): 夏普提升仅+2.1%，低于5%门槛</li>
+    <li>opt02(止损): 未触发，无效</li>
+    <li>opt03(行业分散): 夏普下降-4.3%，负向</li>
+    <li>opt04(冷市降仓): 未触发，无效</li>
+    <li>opt05(双周调仓): 夏普下降-14.9%，严重负向</li>
+    <li>opt06(换手率限制): 夏普提升仅+0.7%，低于5%门槛</li>
+    <li>opt07(热市ROE提升): 未触发，无效</li>
+    <li>opt08(冷市放宽PB): 未触发，无效</li>
+    <li>opt09(温市利润增速): IS有效+7.2%但<strong>OOS下降-28.4%</strong>，高度过度拟合</li>
+    <li>opt10(热市PB上限): 未触发，无效</li>
+</ul>
+</div>
+
+<!-- 七、验证集检验 -->
+<h2>七、验证集检验 (2024-04-28 ~ 2026-04-28)</h2>
+<table>
+<thead><tr><th>指标</th><th>基线(IS)</th><th>基线(OOS)</th><th>opt09(IS)</th><th>opt09(OOS)</th></tr></thead>
+<tbody>
+<tr><td>夏普比率</td><td>0.9065</td><td>0.6853</td><td>0.9722</td><td>0.4909</td></tr>
+<tr><td>IS改进</td><td>-</td><td>-</td><td>+7.2%</td><td>-</td></tr>
+<tr><td>OOS改进</td><td>-</td><td>-</td><td>-</td><td class="down">-28.4%</td></tr>
+<tr><td>衰减比</td><td>-</td><td>-</td><td>-</td><td class="down">-3.91</td></tr>
+</tbody>
+</table>
+<div class="warn-box">
+<h3>验证集结论</h3>
+<p>opt09在验证集上不仅没有保持改进，反而使夏普比率大幅下降28.4%。衰减比为-3.91，远低于0.2的不通过阈值，确认该优化为高度过度拟合。</p>
+<p>因此，本轮优化<strong>不采纳任何参数变更</strong>，策略保持基线配置不变。</p>
+</div>
+
+<!-- 八、经验总结 -->
+<h2>八、经验总结</h2>
+<div class="insight-box">
+<ul>
+    <li><strong>温度参数优化极易过度拟合</strong>: 温市/冷市/热市的阈值参数与特定市场行情高度绑定，改变阈值本质上是在"拟合"历史数据</li>
+    <li><strong>条件未触发的优化无效</strong>: 止损、冷市降仓、热市阈值调整等优化在测试集区间从未触发，说明这些优化方向不适合当前策略的市场状态分布</li>
+    <li><strong>高频调仓有害</strong>: 双周调仓使夏普下降14.9%，说明月度调仓频率与基本面选股策略的时间尺度是匹配的</li>
+    <li><strong>选股数量少时不宜强制分散</strong>: 5只股票的组合中强制行业分散会降低选股质量</li>
+    <li><strong>沪深300成分股波动率普遍较低</strong>: 3%的日波动率阈值几乎没有过滤效果，需要更宽松的阈值才有意义</li>
+    <li><strong>策略本身已较优</strong>: 基线夏普0.9065表现不错，简单参数微调无法进一步提升，需要更深层的结构性改进才能突破</li>
+</ul>
+</div>
+
+</div>
+
+<script>
+Chart.defaults.color = '#94a3b8';
+const gridColor = 'rgba(148, 163, 184, 0.1)';
+
+const labels = ['baseline', 'opt01 vol', 'opt02 stop', 'opt03 ind', 'opt04 cold', 'opt05 freq', 'opt06 rep', 'opt07 roe', 'opt08 pb', 'opt09 yoy', 'opt10 pb_cap'];
+const sharpe = [0.9065, 0.9253, 0.9065, 0.8676, 0.9065, 0.7714, 0.9127, 0.9065, 0.9065, 0.9722, 0.9065];
+const returns = [81.41, 82.98, 81.41, 76.48, 81.41, 63.95, 82.32, 81.41, 81.41, 89.03, 81.41];
+const improvements = [0, 2.1, 0, -4.3, 0, -14.9, 0.7, 0, 0, 7.2, 0];
+const sharpeColors = sharpe.map(s => s >= 0.9065 * 1.05 ? 'rgba(52,211,153,0.7)' : s < 0.9065 ? 'rgba(248,113,113,0.5)' : 'rgba(148,163,184,0.4)');
+const improveColors = improvements.map(x => x >= 5 ? 'rgba(52,211,153,0.7)' : x < 0 ? 'rgba(248,113,113,0.5)' : 'rgba(148,163,184,0.4)');
+
+new Chart(document.getElementById('chartSingleSharpe'), {
+    type: 'bar',
+    data: {
+        labels: labels,
+        datasets: [
+            { label: '夏普比率', data: sharpe, backgroundColor: sharpeColors, borderWidth: 1 },
+            { label: '基线', data: Array(11).fill(0.9065), type: 'line', borderColor: '#fbbf24', borderDash: [5, 5], borderWidth: 2, pointRadius: 0, fill: false }
+        ]
+    },
+    options: {
+        responsive: true,
+        plugins: { title: { display: true, text: '单项优化 - 夏普比率' } },
+        scales: { y: { grid: { color: gridColor } }, x: { grid: { display: false }, ticks: { maxRotation: 45 } } }
+    }
+});
+
+new Chart(document.getElementById('chartSingleReturn'), {
+    type: 'bar',
+    data: {
+        labels: labels,
+        datasets: [
+            { label: '总收益率(%)', data: returns, backgroundColor: sharpeColors, borderWidth: 1 },
+            { label: '基线', data: Array(11).fill(81.41), type: 'line', borderColor: '#fbbf24', borderDash: [5, 5], borderWidth: 2, pointRadius: 0, fill: false }
+        ]
+    },
+    options: {
+        responsive: true,
+        plugins: { title: { display: true, text: '单项优化 - 总收益率' } },
+        scales: { y: { grid: { color: gridColor } }, x: { grid: { display: false }, ticks: { maxRotation: 45 } } }
+    }
+});
+
+new Chart(document.getElementById('chartSingleImprovement'), {
+    type: 'bar',
+    data: {
+        labels: labels,
+        datasets: [{ label: '夏普变化(%)', data: improvements, backgroundColor: improveColors, borderWidth: 1 }]
+    },
+    options: { indexAxis: 'y', responsive: true, plugins: { title: { display: true, text: '单项优化 - 夏普比率变化' } } }
+});
+
+// OOS衰减图
+new Chart(document.getElementById('chartOOSDecay'), {
+    type: 'bar',
+    data: {
+        labels: ['IS Improvement', 'OOS Improvement'],
+        datasets: [{ label: 'opt09(%)', data: [7.2, -28.4], backgroundColor: ['rgba(52,211,153,0.7)', 'rgba(248,113,113,0.7)'] }]
+    },
+    options: {
+        responsive: true,
+        plugins: { title: { display: true, text: 'opt09 样本内/外改进对比' } },
+        scales: { y: { grid: { color: gridColor } } }
+    }
+});
+
+// 时间稳定性图
+new Chart(document.getElementById('chartTemporalStability'), {
+    type: 'bar',
+    data: {
+        labels: ['2020', '2021', '2022', '2023', '2024'],
+        datasets: [
+            { label: '改进值', data: [0.154, -0.268, -0.099, 0.280, 0.974], backgroundColor: ['rgba(52,211,153,0.7)', 'rgba(248,113,113,0.5)', 'rgba(248,113,113,0.5)', 'rgba(52,211,153,0.7)', 'rgba(52,211,153,0.7)'] }
+        ]
+    },
+    options: {
+        responsive: true,
+        plugins: { title: { display: true, text: 'opt09 年度改进稳定性' } },
+        scales: { y: { grid: { color: gridColor } } }
+    }
+});
+</script>
+</body>
+</html>

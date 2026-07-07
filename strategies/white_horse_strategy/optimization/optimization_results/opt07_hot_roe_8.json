@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 1814076.8485374937,
+  "total_return_pct": 81.40768485374937,
+  "sharpe_ratio": 0.9065135461049232,
+  "max_drawdown_pct": -23.05029465927471,
+  "annual_return_pct": 16.733940507383128,
+  "trading_days": 970,
+  "fee": 0,
+  "turnover": 35029384.341040015,
+  "label": "opt07_hot_roe_8",
+  "extra_params": {
+    "hot_min_roe": 8.0
+  },
+  "timestamp": "2026-06-29T15:05:51.944936"
+}

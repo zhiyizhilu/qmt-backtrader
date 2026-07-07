@@ -1,0 +1,16 @@
+{
+  "initial_capital": 1000000,
+  "final_value": 1133263.5843294002,
+  "total_return_pct": 13.326358432940022,
+  "sharpe_ratio": 0.49086233239244176,
+  "max_drawdown_pct": -16.489043325559084,
+  "annual_return_pct": 6.730367976808926,
+  "trading_days": 484,
+  "fee": 0,
+  "turnover": 11202361.792000005,
+  "label": "opt09_oos",
+  "extra_params": {
+    "warm_min_profit_yoy": 5
+  },
+  "timestamp": "2026-06-29T16:31:41.812032"
+}

@@ -1,0 +1,99 @@
+{
+  "opt09_warm_profit_yoy_5": {
+    "logic_rating": "B",
+    "logic_check": {
+      "因果链": "通过",
+      "经济合理性": "通过",
+      "逻辑独立性": "通过",
+      "极端场景": "中等",
+      "可解释性": "通过"
+    },
+    "oos_test": {
+      "train_period": "2020-04-28 ~ 2024-04-28",
+      "valid_period": "2024-04-28 ~ 2026-04-28",
+      "in_sample_sharpe": 0.9722322603324537,
+      "out_sample_sharpe": 0.49086233239244176,
+      "baseline_is_sharpe": 0.9065135461049232,
+      "baseline_oos_sharpe": 0.6853174257060527,
+      "is_improvement_pct": 7.249611934637762,
+      "oos_improvement_pct": -28.374456276705985,
+      "decay_ratio": -3.91392760502618
+    },
+    "sensitivity": {
+      "base_sharpe": 1.6277777896139143,
+      "results": {
+        "yoy=3": {
+          "param_value": 3,
+          "sharpe_ratio": 0.9664049119499111
+        },
+        "yoy=4": {
+          "param_value": 4,
+          "sharpe_ratio": 0.9699151013313239
+        },
+        "yoy=6": {
+          "param_value": 6,
+          "sharpe_ratio": 0.951214037384478
+        },
+        "yoy=7": {
+          "param_value": 7,
+          "sharpe_ratio": 0.9525709577402809
+        },
+        "yoy=10": {
+          "param_value": 10,
+          "sharpe_ratio": 1.0234851049687903
+        }
+      },
+      "range": 0.07227106758431234,
+      "sensitivity_ratio": 0.07433518772520399
+    },
+    "temporal_stability": {
+      "yearly_results": [
+        {
+          "year": 2020,
+          "opt_sharpe": 1.19789209316795,
+          "base_sharpe": 1.043559125534523,
+          "improvement": 0.15433296763342708,
+          "is_positive": true
+        },
+        {
+          "year": 2021,
+          "opt_sharpe": 1.1604277581979967,
+          "base_sharpe": 1.4283080289227745,
+          "improvement": -0.2678802707247778,
+          "is_positive": false
+        },
+        {
+          "year": 2022,
+          "opt_sharpe": 0.11512893516245186,
+          "base_sharpe": 0.21454972207383607,
+          "improvement": -0.09942078691138422,
+          "is_positive": false
+        },
+        {
+          "year": 2023,
+          "opt_sharpe": 0.9309119441411632,
+          "base_sharpe": 0.6507558355470503,
+          "improvement": 0.2801561085941129,
+          "is_positive": true
+        },
+        {
+          "year": 2024,
+          "opt_sharpe": 2.6022645794346007,
+          "base_sharpe": 1.6277777896139143,
+          "improvement": 0.9744867898206864,
+          "is_positive": true
+        }
+      ],
+      "positive_years": 3,
+      "total_years": 5,
+      "consistency_ratio": 0.6
+    },
+    "conclusion": "FAIL: 不通过，放弃该优化",
+    "final_rating": {
+      "logic_rating": "B",
+      "decay_ratio": -3.91392760502618,
+      "sensitivity_ratio": 0.07433518772520399,
+      "consistency_ratio": 0.6
+    }
+  }
+}
