@@ -417,6 +417,14 @@ class SmartCacheManager:
                           else idx.get_available_market_years(symbol, period))
         if not available_years:
             available_years = self.disk_cache.list_yearly_files(namespace, symbol, period)
+        else:
+            # 关键修复：索引可能不完整/陈旧（例如只记录了 2020-2024，但磁盘上已有
+            # 2019/2025/2026）。若仅信任索引，这些“索引未记录但实际存在于磁盘”的年份会被
+            # 误判为缺失年份，进而在 QMT 离线时取数失败、导致磁盘已有完整数据被丢弃，
+            # 最终回测被截断到陈旧日期。因此始终将磁盘实际存在的年份并入可用年份集合。
+            disk_years = self.disk_cache.list_yearly_files(namespace, symbol, period)
+            if disk_years:
+                available_years = sorted(set(available_years) | set(disk_years))
 
         cached_years = set(available_years) & set(req_years)
         missing_years = set(req_years) - cached_years

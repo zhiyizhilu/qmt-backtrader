@@ -157,10 +157,25 @@ class StockLifecycleManager:
                         tencent_success += 1
                         tencent_fail -= 1
                     else:
-                        # 腾讯+akshare均失败 → 标记为退市但日期未知
-                        if symbol not in self._data:
+                        # 腾讯+akshare均失败
+                        # 注意: 无论是否已在缓存中都要刷新 update_time,
+                        # 否则已存在的失败条目时间戳永远不过期刷新,
+                        # 会导致每个回测都重复拉取这些查不到的退市股 (死循环)
+                        existing = self._data.get(symbol, {})
+                        old_list = existing.get('list_date')
+                        old_delist = existing.get('delist_date')
+                        # 若缓存中已有真实有效的上市/退市数据, 仅刷新时间戳, 不降级覆盖
+                        if old_list or (old_delist and old_delist != 'unknown'):
                             self._data[symbol] = {
-                                'list_date': None,
+                                'list_date': old_list,
+                                'delist_date': old_delist,
+                                'source': existing.get('source', 'qmt_none'),
+                                'update_time': datetime.now().strftime('%Y-%m-%d'),
+                            }
+                        else:
+                            # 确实查不到 → 标记为退市但日期未知
+                            self._data[symbol] = {
+                                'list_date': old_list,
                                 'delist_date': 'unknown',
                                 'source': 'qmt_none',
                                 'update_time': datetime.now().strftime('%Y-%m-%d'),

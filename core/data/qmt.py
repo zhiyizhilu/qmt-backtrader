@@ -68,6 +68,79 @@ class QMTDataProcessor(DataProcessor):
         except Exception:
             return False
 
+    def _guard_against_stale_data(self, symbol: str, start_date: str,
+                                  end_date: str, df: pd.DataFrame,
+                                  namespace: str) -> None:
+        """防止 QMT 离线/陈旧时返回的部分数据覆盖已有的完整磁盘缓存。
+
+        当 QMT 客户端关闭但 xtdata 仍可导入时，get_market_data_ex 可能只返回
+        本地陈旧的局部数据（截止日期远早于请求结束日期，例如仅到上次同步的
+        2024-12）。如果不加校验直接交给 smart_cache 缓存，就会把已下载的完整
+        数据（含 2025/2026）覆盖成残缺数据，导致后续回测结果被截断到 2024 年。
+
+        校验逻辑：若本次返回的数据截止日明显早于请求结束日，且磁盘中已存在
+        更完整的同标的缓存，则判定为「QMT 离线返回的陈旧数据」，主动抛异常，
+        让 smart_cache 回退使用磁盘上已有的完整缓存，而不是用残缺数据覆盖它。
+        """
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            return
+        if not isinstance(df.index, pd.DatetimeIndex):
+            return
+
+        req_end_ts = pd.Timestamp(end_date)
+        data_end = df.index.max()
+
+        # 返回数据截止日与请求结束日差距在容忍范围内（含周末/节假日/当日未收盘），视为正常
+        if data_end >= req_end_ts - pd.Timedelta(days=5):
+            return
+
+        # 返回数据明显早于请求结束日 → 检查磁盘是否已有更完整的缓存
+        try:
+            from core.cache import cache_manager as _cm
+            cached = _cm.disk_cache.get_yearly_range(
+                namespace, symbol,
+                list(range(pd.Timestamp(start_date).year, req_end_ts.year + 1)),
+                '1d',
+            )
+            if (cached is not None and isinstance(cached.index, pd.DatetimeIndex)
+                    and cached.index.max() > data_end):
+                raise RuntimeError(
+                    f"QMT返回数据陈旧(截止{data_end.date()})，磁盘已有更完整缓存"
+                    f"(截止{cached.index.max().date()})，疑似QMT未连接/离线，"
+                    f"放弃用残缺数据覆盖缓存: {symbol}"
+                )
+        except RuntimeError:
+            raise
+        except Exception:
+            # 磁盘检查异常不应影响正常流程
+            pass
+
+    def _load_from_disk_if_complete(self, symbol: str, start_date: str,
+                                    end_date: str, namespace: str) -> Optional[pd.DataFrame]:
+        """当磁盘缓存已完整覆盖请求区间时，直接返回磁盘数据（无需 QMT）。
+
+        用于实现「首次自动下载后，后续回测不依赖 QMT」：QMT 离线但缓存完整时，
+        直接复用本地缓存，避免任何 QMT 调用（含离线时可能返回的陈旧局部数据）。
+        缓存不完整时返回 None，交由上层走正常（可能失败的）QMT 获取流程。
+        """
+        from core.cache import cache_manager as _cm
+        try:
+            cached = _cm.disk_cache.get_yearly_range(
+                namespace, symbol,
+                list(range(pd.Timestamp(start_date).year, pd.Timestamp(end_date).year + 1)),
+                '1d',
+            )
+            if (cached is not None and isinstance(cached.index, pd.DatetimeIndex)
+                    and cached.index.min() <= pd.Timestamp(start_date)
+                    and cached.index.max() >= pd.Timestamp(end_date) - pd.Timedelta(days=5)):
+                return self.preprocess_data(
+                    cached[(cached.index >= pd.Timestamp(start_date))
+                           & (cached.index <= pd.Timestamp(end_date))]
+                )
+        except Exception:
+            pass
+        return None
+
     @smart_cache(cache_type='market', incremental=True)
     def get_data(self, symbol: str, start_date: str, end_date: str, period: str = "1d", **kwargs) -> pd.DataFrame:
         """从QMT获取后复权行情数据（带缓存）
@@ -82,6 +155,16 @@ class QMTDataProcessor(DataProcessor):
         """
         if not self.xtdata:
             raise RuntimeError("QMT (xtquant) 未安装或未连接")
+
+        # QMT 离线但本地缓存已完整覆盖请求区间 → 直接返回缓存，实现回测零 QMT 依赖
+        if not self.check_connection():
+            disk_df = self._load_from_disk_if_complete(symbol, start_date, end_date, 'QMTDataProcessor')
+            if disk_df is not None:
+                return disk_df
+            raise RuntimeError(
+                f"QMT未连接且本地缓存未完整覆盖请求区间，无法获取行情: "
+                f"{symbol} ({start_date}~{end_date})"
+            )
 
         start_time = start_date.replace('-', '')
         end_time = end_date.replace('-', '')
@@ -121,6 +204,9 @@ class QMTDataProcessor(DataProcessor):
 
         if df.empty:
             raise RuntimeError(f"QMT无数据: {symbol} ({start_date}~{end_date})")
+
+        # 离线/陈旧防护：避免残缺数据覆盖已有完整缓存
+        self._guard_against_stale_data(symbol, start_date, end_date, df, 'QMTDataProcessor')
 
         return self.preprocess_data(df)
 
@@ -1699,6 +1785,16 @@ class QMTDataProcessor(DataProcessor):
         if not self.xtdata:
             raise RuntimeError("QMT (xtquant) 未安装或未连接")
 
+        # QMT 离线但本地缓存已完整覆盖请求区间 → 直接返回缓存，实现回测零 QMT 依赖
+        if not self.check_connection():
+            disk_df = self._load_from_disk_if_complete(symbol, start_date, end_date, 'QMTDataProcessor_Raw')
+            if disk_df is not None:
+                return disk_df
+            raise RuntimeError(
+                f"QMT未连接且本地缓存未完整覆盖请求区间，无法获取不复权行情: "
+                f"{symbol} ({start_date}~{end_date})"
+            )
+
         start_time = start_date.replace('-', '')
         end_time = end_date.replace('-', '')
 
@@ -1735,6 +1831,9 @@ class QMTDataProcessor(DataProcessor):
 
         if df.empty:
             raise RuntimeError(f"QMT无不复权数据: {symbol} ({start_date}~{end_date})")
+
+        # 离线/陈旧防护：避免残缺数据覆盖已有完整缓存
+        self._guard_against_stale_data(symbol, start_date, end_date, df, 'QMTDataProcessor_Raw')
 
         return self.preprocess_data(df)
 
