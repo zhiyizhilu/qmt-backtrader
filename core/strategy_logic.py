@@ -306,6 +306,35 @@ class StrategyLogic:
         """
         self.log(f'成交回调: {trade}')
 
+    def get_state(self) -> dict:
+        """导出策略状态用于持久化
+
+        基类默认实现序列化通用字段（_today_buys, _current_trade_date）。
+        子类可 override 此方法，调用 super().get_state() 后追加特有字段。
+
+        Returns:
+            包含策略运行状态的字典
+        """
+        return {
+            'today_buys': dict(self._today_buys),
+            'current_trade_date': self._current_trade_date,
+        }
+
+    def set_state(self, state: dict):
+        """从持久化数据恢复策略状态
+
+        基类默认实现恢复通用字段。子类可 override 此方法，
+        调用 super().set_state(state) 后恢复特有字段。
+
+        注意：JSON 序列化会将 tuple/set 转为 list，子类 set_state
+        时需自行转回原类型。
+
+        Args:
+            state: get_state() 返回的字典
+        """
+        self._today_buys = dict(state.get('today_buys', {}))
+        self._current_trade_date = state.get('current_trade_date')
+
     def generate_signals(self):
         """生成交易信号 - 旧版接口，保持向后兼容
 
@@ -562,12 +591,15 @@ class StrategyLogic:
         if not isinstance(cached_df.index, pd.DatetimeIndex) or 'close' not in cached_df.columns:
             return []
 
-        # 截取到前一天的数据（与聚宽 get_price(end_date=yesterday) 对齐）
-        # 聚宽策略用 end_date=context.previous_date，即上一个交易日
-        # 本地回测引擎在当天09:30执行，当天收盘价不应参与MA20计算
-        # 使用 < current_date 来排除当天数据
+        # 截取数据的时间边界
+        # 收盘价交易策略(14:50)：包含当日数据 (<= current_date)，因为收盘时当日数据已可得
+        # 开盘价交易策略(9:30)：排除当日数据 (< current_date)，因为开盘时当日收盘价未知
+        include_today = getattr(self.params, 'include_today_data', True)
         ts = pd.Timestamp(current_date)
-        mask = cached_df.index < ts
+        if include_today:
+            mask = cached_df.index <= ts
+        else:
+            mask = cached_df.index < ts
         df_up_to_date = cached_df.loc[mask]
 
         if df_up_to_date.empty:

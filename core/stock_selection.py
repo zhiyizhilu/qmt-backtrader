@@ -82,8 +82,8 @@ class StockSelectionStrategy(StrategyLogic):
         """K线数据到达 - 执行选股调仓逻辑
 
         回测模式下日线 bar 时间戳为 00:00，直接执行调仓。
-        实盘/模拟盘模式下，只在临近收盘（默认14:50）执行调仓，
-        以确保使用接近收盘价的价格交易，与回测保持一致。
+        实盘/模拟盘模式下，只在开盘（默认9:30）执行调仓，
+        用前日收盘信号 + 当日开盘价成交，与回测保持一致。
         """
         current_date = self.get_current_date()
         if current_date is None:
@@ -96,7 +96,8 @@ class StockSelectionStrategy(StrategyLogic):
             minute = bar_datetime.minute
             # 回测模式：日线 bar 时间戳为 00:00，允许执行
             if hour != 0 or minute != 0:
-                # 实盘/模拟盘：只在指定时间（默认14:50）执行
+                # 实盘/模拟盘：在指定时间执行（默认14:50，收盘价交易策略）
+                # 子类可通过 trade_hour/trade_minute 参数覆盖为 9:30（开盘价交易策略）
                 trade_hour = getattr(self.params, 'trade_hour', 14)
                 trade_minute = getattr(self.params, 'trade_minute', 50)
                 if hour != trade_hour or minute != trade_minute:

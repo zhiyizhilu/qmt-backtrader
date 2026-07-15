@@ -9,6 +9,7 @@ import logging
 from api.qmt_api import QMTAPI
 from core.virtual_book import VirtualBook
 from core.reconciler import Reconciler, ReconcileResult
+from core.record_manager import RecordManager
 from strategies import get_strategy, get_strategy_default_kwargs
 from utils.logger import Logger
 
@@ -29,6 +30,7 @@ class StrategyInstanceManager:
         self._reconcile_thread: Optional[threading.Thread] = None
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._instance_meta: Dict[str, dict] = {}
+        self._record_managers: Dict[str, RecordManager] = {}
         self._heartbeat_interval: int = 60
         self._max_restart_attempts: int = 3
         self._restart_counts: Dict[str, int] = defaultdict(int)
@@ -86,10 +88,13 @@ class StrategyInstanceManager:
             is_sim = first_config.get('mode', 'sim') == 'sim'
             account_id = first_config.get('account_id')
             qmt_path = first_config.get('qmt_path', r'D:\qmt\userdata_mini')
+            trade_mode = first_config.get('trade_mode', 'miniqmt')
+            bridge_url = first_config.get('bridge_url', 'http://127.0.0.1:8888')
 
-            self.logger.info(f'初始化账户: {account_key} (模式={"模拟" if is_sim else "实盘"})')
+            self.logger.info(f'初始化账户: {account_key} (模式={"模拟" if is_sim else "实盘"}, 交易={trade_mode})')
 
-            api = QMTAPI(is_sim=is_sim, path=qmt_path, account_id=account_id)
+            api = QMTAPI(is_sim=is_sim, path=qmt_path, account_id=account_id,
+                         trade_mode=trade_mode, bridge_url=bridge_url)
             self._apis[account_key] = api
 
             actual_positions = self._query_positions(api)
@@ -101,20 +106,44 @@ class StrategyInstanceManager:
             )
 
             claimed_symbols = set()
+            persisted_states: Dict[str, dict] = {}
             for config in instances:
                 instance_id = config['instance_id']
                 initial_capital = config.get('initial_capital', 0)
+                cash_ratio = config.get('cash_ratio', 1.0)
 
                 book = VirtualBook(
                     strategy_id=instance_id,
-                    initial_capital=initial_capital
+                    initial_capital=initial_capital,
+                    cash_ratio=cash_ratio
                 )
+
+                # 创建 RecordManager 并尝试加载持久化状态
+                rm = RecordManager(instance_id)
+                self._record_managers[instance_id] = rm
+                persisted_state = rm.load_state()
+                state_loaded = False
+                if persisted_state:
+                    book.set_state(persisted_state.get('virtual_book', {}))
+                    persisted_states[instance_id] = persisted_state
+                    state_loaded = True
 
                 if config.get('claim_existing_positions', True):
                     book.initialize_from_account(
-                        actual_positions, actual_cash, claimed_symbols
+                        actual_positions, actual_cash, claimed_symbols,
+                        cash_ratio=cash_ratio
                     )
                     claimed_symbols.update(book._positions.keys())
+                else:
+                    # 不认领持仓的策略：若已加载持久化状态则跳过虚拟资金初始化
+                    if not state_loaded:
+                        # initial_capital 直接作为虚拟现金
+                        # 不受账户实际现金约束（模拟/虚拟簿记场景）
+                        if initial_capital > 0:
+                            book._cash = initial_capital
+                        elif cash_ratio < 1.0:
+                            book._cash = actual_cash * cash_ratio
+                        book._last_sync_time = time.time()
 
                 self._books[instance_id] = book
                 self.logger.info(
@@ -139,6 +168,13 @@ class StrategyInstanceManager:
                     virtual_book=book,
                     **kwargs
                 )
+                # 恢复策略逻辑状态（如 _last_trade_date 等防重复字段）
+                if instance_id in persisted_states:
+                    strategy = api._strategies.get(instance_id)
+                    if strategy:
+                        strategy.set_state(
+                            persisted_states[instance_id].get('strategy', {})
+                        )
                 self.logger.info(f'策略实例已创建: {instance_id} ({strategy_name})')
 
             books_for_account = [
@@ -154,6 +190,50 @@ class StrategyInstanceManager:
         self._start_reconcile_timer()
         self._register_all_instances()
         self._start_heartbeat()
+        self._register_trade_callbacks()
+
+    def _register_trade_callbacks(self):
+        """为每个账户的 QMTAPI 注册成交后状态保存回调"""
+        for account_key, api in self._apis.items():
+            def _make_callback():
+                # 闭包捕获 manager 引用，instance_id 由回调参数传入
+                def _callback(instance_id: str, trade_info):
+                    self._save_instance_state(instance_id, trade_info)
+                return _callback
+            api.set_on_trade_filled_callback(_make_callback())
+        self.logger.info('已为所有账户注册成交状态保存回调')
+
+    def _save_instance_state(self, instance_id: str, trade_info):
+        """保存指定实例的状态
+
+        Args:
+            instance_id: 策略实例ID
+            trade_info: 成交信息，None 时跳过成交记录追加
+        """
+        rm = self._record_managers.get(instance_id)
+        book = self._books.get(instance_id)
+        if not rm or not book:
+            return
+        # 查找策略实例（遍历所有 api 的 _strategies）
+        strategy = None
+        for api in self._apis.values():
+            strategy = api._strategies.get(instance_id)
+            if strategy:
+                break
+        strategy_state = strategy.get_state() if strategy else {}
+        rm.save_state(book.get_state(), strategy_state)
+        if trade_info is not None:
+            import datetime as _dt
+            rm.append_trade({
+                'time': _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'instance_id': instance_id,
+                'symbol': trade_info.symbol,
+                'direction': trade_info.direction,
+                'price': trade_info.price,
+                'volume': trade_info.volume,
+                'commission': trade_info.commission,
+                'order_id': trade_info.order_id,
+            })
 
     def stop_all(self):
         self._running = False
@@ -161,6 +241,9 @@ class StrategyInstanceManager:
             self._heartbeat_thread.join(timeout=10)
         if self._reconcile_thread and self._reconcile_thread.is_alive():
             self._reconcile_thread.join(timeout=10)
+        # 退出前保存所有实例状态
+        for instance_id in list(self._record_managers.keys()):
+            self._save_instance_state(instance_id, None)
         for account_key, api in self._apis.items():
             api.close()
             self.logger.info(f'策略已停止: {account_key}')
@@ -246,6 +329,7 @@ class StrategyInstanceManager:
         """校验所有 VirtualBook 之和不超过账户实际"""
         aggregated_positions: Dict[str, int] = {}
         aggregated_cash = 0.0
+        virtual_cash_instances = []
         for config in self._configs:
             account_id = config.get('account_id', 'default')
             mode = config.get('mode', 'sim')
@@ -257,6 +341,9 @@ class StrategyInstanceManager:
                 for symbol, volume in book._positions.items():
                     aggregated_positions[symbol] = aggregated_positions.get(symbol, 0) + volume
                 aggregated_cash += book._cash
+                # 跟踪哪些实例使用了虚拟资金（initial_capital > 0 且不认领持仓）
+                if config.get('initial_capital', 0) > 0 and not config.get('claim_existing_positions', False):
+                    virtual_cash_instances.append((config['instance_id'], book._cash))
 
         for symbol, agg_vol in aggregated_positions.items():
             actual_vol = actual_positions.get(symbol, 0)
@@ -269,13 +356,21 @@ class StrategyInstanceManager:
                     f'超过账户实际持仓({actual_vol})'
                 )
 
-        if aggregated_cash > actual_cash + 1.0:
+        # 现金校验：使用虚拟资金的实例不纳入合计
+        virtual_cash_total = sum(c for _, c in virtual_cash_instances)
+        non_virtual_cash = aggregated_cash - virtual_cash_total
+        if non_virtual_cash > actual_cash + 1.0:
             self.logger.error(
-                f'校验失败: 现金簿记合计={aggregated_cash:.2f} > 实际={actual_cash:.2f}'
+                f'校验失败: 现金簿记合计(非虚拟)={non_virtual_cash:.2f} > 实际={actual_cash:.2f}'
             )
             raise ValueError(
-                f'VirtualBook 校验失败: 现金簿记合计({aggregated_cash:.2f}) '
+                f'VirtualBook 校验失败: 现金簿记合计({non_virtual_cash:.2f}) '
                 f'超过账户实际现金({actual_cash:.2f})'
+            )
+        if virtual_cash_total > 0:
+            self.logger.info(
+                f'虚拟资金实例: {[(i, f"{c:.2f}") for i, c in virtual_cash_instances]}, '
+                f'合计={virtual_cash_total:.2f} (不参与账户现金校验)'
             )
 
         self.logger.info(f'账户 {account_key} VirtualBook 校验通过 ✅')

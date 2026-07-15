@@ -201,7 +201,25 @@ class QMTExecutor(StrategyExecutor):
             if self._data_adapter.is_limit_up(symbol):
                 self.logger.warning(f'买入拒绝-涨停: {symbol}')
                 return None
-        result = self.qmt_api.buy(symbol, price, volume)
+
+        # VirtualBook 交易前校验：检查可用现金
+        if self.virtual_book:
+            # ETF佣金0.02%，股票0.02%+印花税0.1%，取0.05%预留佣金+滑点
+            estimated_cost = price * volume * 1.0005
+            available_cash = self.virtual_book.get_cash()
+            # 扣减待确认买入订单占用资金
+            for order in self.virtual_book._pending_orders.values():
+                if order['action'] == 'buy':
+                    available_cash -= order['price'] * order['volume'] * 1.0005
+            if available_cash < estimated_cost:
+                self.logger.warning(
+                    f'买入拒绝-虚拟簿记资金不足: {symbol}, '
+                    f'需={estimated_cost:.2f}, 可用={available_cash:.2f}'
+                )
+                return None
+
+        strategy_name = self.virtual_book.strategy_id if self.virtual_book else ''
+        result = self.qmt_api.buy(symbol, price, volume, strategy_name=strategy_name)
         if result is None:
             self.logger.error(f'买入失败: {symbol}, 价格: {price}, 数量: {volume}')
         else:
@@ -221,7 +239,23 @@ class QMTExecutor(StrategyExecutor):
             if self._data_adapter.is_limit_down(symbol):
                 self.logger.warning(f'卖出拒绝-跌停: {symbol}')
                 return None
-        result = self.qmt_api.sell(symbol, price, volume)
+
+        # VirtualBook 交易前校验：检查可用持仓
+        if self.virtual_book:
+            available_vol = self.virtual_book.get_position_size(symbol)
+            # 扣减待确认卖出订单占用持仓
+            for order in self.virtual_book._pending_orders.values():
+                if order['action'] == 'sell' and order['symbol'] == symbol:
+                    available_vol -= order['volume']
+            if available_vol < volume:
+                self.logger.warning(
+                    f'卖出拒绝-虚拟簿记持仓不足: {symbol}, '
+                    f'需={volume}, 可用={available_vol}'
+                )
+                return None
+
+        strategy_name = self.virtual_book.strategy_id if self.virtual_book else ''
+        result = self.qmt_api.sell(symbol, price, volume, strategy_name=strategy_name)
         if result is None:
             self.logger.error(f'卖出失败: {symbol}, 价格: {price}, 数量: {volume}')
         else:

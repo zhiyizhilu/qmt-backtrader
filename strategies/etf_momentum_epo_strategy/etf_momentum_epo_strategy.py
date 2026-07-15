@@ -77,6 +77,25 @@ class ETFMomentumEPOStrategy(StrategyLogic):
         for symbol in self.etf_data:
             self.set_t_plus_1(symbol, False)
 
+    def get_state(self) -> dict:
+        state = super().get_state()
+        state['last_rebalance_month'] = (
+            list(self._last_rebalance_month)
+            if self._last_rebalance_month else None
+        )
+        state['last_top_n_set'] = (
+            list(self._last_top_n_set)
+            if self._last_top_n_set else None
+        )
+        return state
+
+    def set_state(self, state: dict):
+        super().set_state(state)
+        month = state.get('last_rebalance_month')
+        self._last_rebalance_month = tuple(month) if month else None
+        top_n = state.get('last_top_n_set')
+        self._last_top_n_set = set(top_n) if top_n else None
+
     def get_symbols(self):
         return list(self.etf_data.keys())
 

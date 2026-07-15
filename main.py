@@ -239,9 +239,40 @@ def run_real_trade(strategy_name='double_ma', path=r'D:\qmt\userdata_mini', acco
     logger.info("实盘交易完成")
 
 
+def _resolve_instances_config(config_path: str) -> str:
+    """解析实例配置文件路径
+
+    支持三种格式:
+    - 绝对路径: /path/to/config.json
+    - 相对路径: config/instances_sim_config.json
+    - 简名: sim → 自动查找 config/instances_sim_config.json → config/sim.json
+    """
+    if os.path.isfile(config_path):
+        return config_path
+
+    config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config')
+
+    # 尝试在 config/ 目录下查找
+    candidates = [
+        os.path.join(config_dir, config_path),
+        os.path.join(config_dir, f'instances_{config_path}_config.json'),
+        os.path.join(config_dir, f'{config_path}.json'),
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    raise FileNotFoundError(
+        f'找不到实例配置文件: {config_path}\n'
+        f'已查找: {config_path}, ' + ', '.join(candidates)
+    )
+
+
 def run_instances(config_path: str):
     """运行多策略实例模式"""
     import strategies
+
+    config_path = _resolve_instances_config(config_path)
 
     log_file = Logger.setup_global_file_handler('instances')
     logger = Logger.get_default_logger('instances')
@@ -261,14 +292,32 @@ def run_instances(config_path: str):
             f"初始资金={inst['initial_capital']}"
         )
 
+    import signal
+    import threading
+
+    shutdown_event = threading.Event()
+
+    def _sigint_handler(signum, frame):
+        if shutdown_event.is_set():
+            return
+        logger.info("收到停止信号 (Ctrl+C)")
+        shutdown_event.set()
+
+    signal.signal(signal.SIGINT, _sigint_handler)
+
     try:
         manager.start_all()
+        # 注册 atexit 兜底保存，防止异常退出未触发 stop_all
+        import atexit
+        def _atexit_save():
+            if manager._running:
+                logger.info("atexit 触发状态保存")
+                manager.stop_all()
+        atexit.register(_atexit_save)
         logger.info("所有策略实例已启动，按 Ctrl+C 停止")
-        while True:
-            import time
-            time.sleep(1)
-    except KeyboardInterrupt:
-        logger.info("收到停止信号")
+        shutdown_event.wait()
+    except Exception as e:
+        logger.error(f"运行异常: {e}")
     finally:
         manager.stop_all()
         logger.info("所有策略实例已停止")
