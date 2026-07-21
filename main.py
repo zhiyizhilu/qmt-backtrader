@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import time
 import logging
 from api.backtest_api import BacktestAPI
 from core.cache import cache_manager
@@ -294,16 +295,105 @@ def run_instances(config_path: str):
 
     import signal
     import threading
+    import ctypes
+    import sys
 
     shutdown_event = threading.Event()
 
+    # 启动宽限期：程序刚启动的这几秒内忽略 Ctrl+C。
+    # 原因：Windows 控制台会把 Ctrl+C 信号投递给同一控制台会话中新 attach 的进程，
+    # 若上一次运行被 Ctrl+C 中断后立刻重启，残留/竞态的 Ctrl+C 会直接杀死新进程，
+    # 表现为「一启动就收到停止信号自动退出」。宽限期内直接吞掉该信号。
+    START_GRACE_PERIOD = 3.0
+    _start_time = time.time()
+
+    # --- Windows 原生控制台处理器，优先于 xtquant C 层拦截 Ctrl+C ---
+    # 注意：SetConsoleCtrlHandler 的第2参数 bAdd 为 TRUE 才是「添加」处理器，
+    # 之前误传 FALSE 实际是「移除」，导致处理器从未注册，xtquant 注册的处理器
+    # 会吞掉 Ctrl+C 并返回 TRUE（不向上传递），主线程 shutdown_event.wait() 永远
+    # 阻塞，表现为 Ctrl+C 无法停止。现修正为 TRUE 注册，且因 LIFO 顺序，本处理器
+    # 先于 xtquant 被调用并返回 TRUE 拦截信号。
+    CTRL_C_EVENT = 0
+    CTRL_BREAK_EVENT = 1
+    _CTRL_NAMES = {
+        0: 'CTRL_C_EVENT', 1: 'CTRL_BREAK_EVENT', 2: 'CTRL_CLOSE_EVENT',
+        3: 'CTRL_LOGOFF_EVENT', 4: 'CTRL_SHUTDOWN_EVENT',
+    }
+
+    # 停止确认机制：防止外部环境（如被托管的终端在进程阻塞后自动发来的单次 Ctrl+C）
+    # 误杀长时间运行的服务。收到第一次 Ctrl+C 仅记录「待确认」，需在 STOP_CONFIRM_WINDOW
+    # 秒内再按一次才真正退出；单次误发信号不会终止程序。
+    STOP_CONFIRM_WINDOW = 5.0
+    _stop_pending = {'at': 0.0}
+
+    def _request_stop(ctrl_type, via):
+        """处理停止信号。返回 True 表示信号已被吞掉（不继续传递）。"""
+        elapsed = time.time() - _start_time
+        ctrl_name = _CTRL_NAMES.get(ctrl_type, f'UNKNOWN({ctrl_type})')
+        # 启动宽限期内：视为残留/竞态信号，直接吞掉，仅记录诊断
+        if elapsed < START_GRACE_PERIOD:
+            try:
+                logger.info(
+                    f"[诊断] 启动宽限期内收到 {ctrl_name}（{via}，启动后 {elapsed:.1f}s），已忽略"
+                )
+            except Exception:
+                pass
+            return True
+        now = time.time()
+        # 5 秒内的第二次信号 → 真正确认退出
+        if _stop_pending['at'] and (now - _stop_pending['at']) < STOP_CONFIRM_WINDOW:
+            shutdown_event.set()
+            try:
+                logger.info(f"收到停止信号确认 ({ctrl_name}，{via})，正在优雅退出...")
+            except Exception:
+                pass
+            return True
+        # 第一次信号 → 标记待确认，不退出（吞掉信号，避免误杀）
+        _stop_pending['at'] = now
+        try:
+            logger.info(
+                f"[诊断] 收到 {ctrl_name}（{via}，启动后 {elapsed:.1f}s）- "
+                f"若为误发可忽略；如需停止请再次按下 Ctrl+C "
+                f"（{STOP_CONFIRM_WINDOW:.0f}s 内有效）"
+            )
+        except Exception:
+            pass
+        return True
+
+    @ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
+    def _console_ctrl_handler(ctrl_type):
+        """Windows 控制台控制信号处理器
+
+        在 xtquant C 层处理器之前被操作系统调用，
+        拦截 Ctrl+C 并返回 TRUE 阻止信号继续传递；采用二次确认退出策略。
+        """
+        if ctrl_type in (CTRL_C_EVENT, CTRL_BREAK_EVENT):
+            return _request_stop(ctrl_type, 'console')
+        return False  # 其他信号不处理
+
+    kernel32 = ctypes.windll.kernel32
+    # 启动前刷新控制台输入缓冲区，丢弃上一次中断可能残留的 Ctrl+C 按键事件
+    try:
+        kernel32.FlushConsoleInputBuffer(kernel32.GetStdHandle(-10))  # STD_INPUT_HANDLE = -10
+    except Exception:
+        pass
+    # 第2参数 TRUE = 添加处理器（务必为 TRUE，否则处理器不会被注册）
+    if not kernel32.SetConsoleCtrlHandler(_console_ctrl_handler, True):
+        logger.warning("SetConsoleCtrlHandler 注册失败，Ctrl+C 可能无效")
+
+    # 同时保留 Python 层 SIGINT 处理器作为备份（非 Windows 场景 / 子线程触发）
     def _sigint_handler(signum, frame):
-        if shutdown_event.is_set():
-            return
-        logger.info("收到停止信号 (Ctrl+C)")
-        shutdown_event.set()
+        _request_stop(CTRL_C_EVENT, 'sigint')
 
     signal.signal(signal.SIGINT, _sigint_handler)
+
+    def _do_stop():
+        """在独立线程中执行优雅停止，避免 xttrader.stop() 等阻塞拖住主线程"""
+        try:
+            manager.stop_all()
+            logger.info("所有策略实例已停止")
+        except Exception as e:
+            logger.error(f"停止异常: {e}")
 
     try:
         manager.start_all()
@@ -314,13 +404,23 @@ def run_instances(config_path: str):
                 logger.info("atexit 触发状态保存")
                 manager.stop_all()
         atexit.register(_atexit_save)
-        logger.info("所有策略实例已启动，按 Ctrl+C 停止")
+        logger.info("所有策略实例已启动，连按两次 Ctrl+C 停止（单次 Ctrl+C 仅记录，不会退出）")
         shutdown_event.wait()
+    except KeyboardInterrupt:
+        logger.info("收到 KeyboardInterrupt，正在退出...")
     except Exception as e:
         logger.error(f"运行异常: {e}")
     finally:
-        manager.stop_all()
-        logger.info("所有策略实例已停止")
+        # 在守护线程中执行 stop_all，最多等待 30s；随后强制退出，
+        # 确保 xtdata 等 C++ 后台线程不会让进程卡住无法结束。
+        stop_done = threading.Event()
+        threading.Thread(target=lambda: (_do_stop(), stop_done.set()), daemon=True).start()
+        stop_done.wait(timeout=30)
+        try:
+            logging.shutdown()
+        except Exception:
+            pass
+        os._exit(0)
 
 
 def main():

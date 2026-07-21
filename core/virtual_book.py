@@ -253,16 +253,22 @@ class VirtualBook:
         用于 QMT 重启后恢复策略簿记，是 claim_existing_positions=false
         场景下恢复持仓和现金的唯一来源。
 
+        注意：pending_orders 在恢复时被清空，因为 QMT 重启后旧订单
+        已处理完毕（成交/撤销/过期），不再占用资金/持仓。
+
         Args:
             state: get_state() 返回的字典
         """
         self._positions = dict(state.get('positions', {}))
         self._cash = state.get('cash', self.initial_capital)
-        self._pending_orders = dict(state.get('pending_orders', {}))
+        # 清空 pending_orders：旧订单已失效，不清空会导致可用资金为负
+        old_pending = state.get('pending_orders', {})
+        self._pending_orders = {}
         self._last_sync_time = state.get('last_sync_time')
         self.logger.info(
             f'[{self.strategy_id}] 状态已恢复: '
             f'持仓={len(self._positions)}只, 现金={self._cash:.2f}'
+            + (f', 清除{len(old_pending)}条旧待确认订单' if old_pending else '')
         )
 
     def __repr__(self):

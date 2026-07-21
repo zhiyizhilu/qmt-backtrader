@@ -377,6 +377,10 @@ class BacktraderDataAdapter(MarketDataAdapter):
             return data_list[-period:] if len(data_list) >= period else data_list
         return data_list
 
+    def kline_has_today(self, symbol: str) -> bool:
+        """回测模式下K线序列末尾始终包含当日K线"""
+        return True
+
 
 class LiveDataAdapter(MarketDataAdapter):
     """实时数据适配器 - 实盘/模拟盘模式下使用"""
@@ -547,6 +551,33 @@ class QMTLiveDataAdapter(MarketDataAdapter):
         except Exception as e:
             self._logger.warning(f"下载K线数据失败 {symbol}: {e}")
         return []
+
+    def kline_has_today(self, symbol: str) -> bool:
+        """判断K线缓存中最后一条是否为当日K线
+
+        在09:30开盘时调用，此时QMT可能尚未生成当日K线，
+        需要据此调整价格索引，避免取到T-2而非T-1的收盘价。
+        """
+        prices = self._kline_cache.get(symbol)
+        if not prices:
+            return False
+
+        # 通过比较缓存数据量和重新获取来判断
+        # 更简单的方式：直接用xtdata检查当日K线是否存在
+        try:
+            from xtquant import xtdata
+            today = datetime.datetime.now().strftime('%Y%m%d')
+            # 获取最近2根K线，检查最后日期是否为今日
+            recent = xtdata.get_market_data_ex(
+                [], [symbol], period='1d',
+                start_time=today, end_time=today,
+                count=-1, dividend_type='back'
+            )
+            if symbol in recent and not recent[symbol].empty:
+                return True
+        except Exception:
+            pass
+        return False
 
     def get_current_date(self) -> Optional[datetime.date]:
         return self._current_date

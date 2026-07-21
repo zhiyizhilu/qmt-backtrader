@@ -24,6 +24,7 @@ class QMTTrader:
         self.xtaccount = xtaccount
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
         self.pending_orders = {}  # {order_id: {stock_code, direction, volume, submit_time, retry_count}}
+        self._on_retry_callback = None  # 撤单重下回调，由 QMTAPI 设置
 
     def buy(self, symbol: str, price: float, volume: int, strategy_name: str = '', order_remark: str = ''):
         """买入"""
@@ -374,7 +375,7 @@ class QMTTrader:
 
                 if new_order_id and new_order_id != -1 and new_order_id != 0:
                     self.logger.info(f"超时重下成功: {stock_code} {order_type_name} {remaining_volume}股 @ {new_price:.2f}")
-                    orders_to_retry.append((new_order_id, stock_code, direction, remaining_volume, order_type_name, strategy_name, retry_count + 1))
+                    orders_to_retry.append((new_order_id, stock_code, direction, remaining_volume, order_type_name, strategy_name, retry_count + 1, new_price))
                 else:
                     self.logger.error(f"超时重下失败: {stock_code} {order_type_name}")
             else:
@@ -383,13 +384,21 @@ class QMTTrader:
         for order_id in orders_to_remove:
             self.pending_orders.pop(order_id, None)
 
-        for new_order_id, stock_code, direction, volume, order_type_name, strategy_name, retry_count in orders_to_retry:
+        for new_order_id, stock_code, direction, volume, order_type_name, strategy_name, retry_count, retry_price in orders_to_retry:
             self.pending_orders[new_order_id] = {
                 'stock_code': stock_code, 'direction': direction,
                 'volume': volume, 'submit_time': time.time(),
                 'order_type_name': order_type_name, 'strategy_name': strategy_name,
                 'retry_count': retry_count,
             }
+            # 通知上层（QMTAPI）注册新订单到 order_router 和 VirtualBook
+            if self._on_retry_callback:
+                try:
+                    self._on_retry_callback(
+                        str(new_order_id), stock_code, direction, volume, retry_price, strategy_name
+                    )
+                except Exception as e:
+                    self.logger.error(f'重下回调异常: {e}')
 
 
 class QMTAPI(BaseAPI):
@@ -545,6 +554,8 @@ class QMTAPI(BaseAPI):
             self.logger.error(f"初始化QMT API失败: {e}")
 
         self.trader = QMTTrader(xttrader=self.xttrader, xtaccount=self.xtaccount)
+        # 设置撤单重下回调，确保新订单注册到 order_router 和 VirtualBook
+        self.trader._on_retry_callback = self._on_order_retry
 
     def _init_bridge_api(self):
         """初始化桥接模式 API - 通过 HTTP 调用大 QMT server"""
@@ -661,13 +672,24 @@ class QMTAPI(BaseAPI):
             # STOCK_BUY=23 (xtconstant.STOCK_BUY)，兼容 miniqmt 和 bridge 模式
             direction = 'buy' if getattr(qmt_trade, 'order_type', 0) == 23 else 'sell'
 
+            price = float(getattr(qmt_trade, 'traded_price', 0))
+            volume = int(getattr(qmt_trade, 'traded_volume', 0))
+            # 手续费：优先使用成交回报中的佣金；若缺失或为0，按成交金额万分之一兜底计算
+            raw_commission = float(
+                getattr(qmt_trade, 'commission', 0)
+                or getattr(qmt_trade, 'm_dCommission', 0)
+                or 0
+            )
+            amount = price * volume
+            commission = raw_commission if raw_commission > 0 else amount * 0.0001
             trade_info = TradeInfo(
                 trade_id=str(getattr(qmt_trade, 'traded_id', '')),
                 order_id=str(getattr(qmt_trade, 'order_id', '')),
                 symbol=getattr(qmt_trade, 'stock_code', ''),
                 direction=direction,
-                price=float(getattr(qmt_trade, 'traded_price', 0)),
-                volume=int(getattr(qmt_trade, 'traded_volume', 0)),
+                price=price,
+                volume=volume,
+                commission=commission,
             )
 
             order_id = trade_info.order_id
@@ -699,6 +721,37 @@ class QMTAPI(BaseAPI):
                 self.strategy.on_trade(trade_info)
         except Exception as e:
             self.logger.error(f'桥接成交回调失败: {e}')
+
+    def _on_order_retry(self, new_order_id: str, symbol: str, direction, volume: int, price: float, strategy_name: str):
+        """撤单重下回调 - 将新订单注册到 order_router 和 VirtualBook
+
+        QMTTrader 撤单重下后调用此方法，确保新订单号的成交回报
+        能正确路由到策略实例并更新 VirtualBook。
+
+        Args:
+            new_order_id: 新订单ID
+            symbol: 标的代码
+            direction: 交易方向 (xtconstant)
+            volume: 委托数量
+            price: 重下价格
+            strategy_name: 策略实例ID (来自 order_remark)
+        """
+        from xtquant import xtconstant
+        is_buy = (direction == xtconstant.STOCK_BUY)
+        instance_id = strategy_name  # strategy_name 实际存储的是 instance_id
+
+        # 注册到 order_router
+        if instance_id and self.order_router:
+            self.order_router.register_order(new_order_id, instance_id)
+            self.logger.info(f'重下订单注册: {new_order_id} → {instance_id}, {symbol} {"买入" if is_buy else "卖出"}')
+
+        # 更新 VirtualBook 待确认订单
+        if instance_id and instance_id in self._virtual_books:
+            book = self._virtual_books[instance_id]
+            if is_buy:
+                book.on_buy_submitted(symbol, price, volume, new_order_id)
+            else:
+                book.on_sell_submitted(symbol, price, volume, new_order_id)
 
     def _on_qmt_order_error(self, order_error):
         """处理委托失败回报 - 从待处理订单中移除并通知策略"""
