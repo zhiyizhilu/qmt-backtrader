@@ -20,6 +20,7 @@ class VirtualBook:
         self._cash: float = initial_capital
         self._pending_orders: Dict[str, dict] = {}
         self._last_sync_time: Optional[float] = None
+        self._is_virtual: bool = False
         self.logger = logging.getLogger(self.__class__.__module__ + '.' + self.__class__.__name__)
 
     def on_buy_submitted(self, symbol: str, price: float, volume: int, order_id: str):
@@ -221,7 +222,7 @@ class VirtualBook:
                     f'簿记={book_vol}, 实际={actual_vol}'
                 )
 
-        if abs(account_cash * self.cash_ratio - self._cash) > 1.0:
+        if not self._is_virtual and abs(account_cash * self.cash_ratio - self._cash) > 1.0:
             if not self.has_pending_orders():
                 old_cash = self._cash
                 self._cash = account_cash * self.cash_ratio

@@ -135,15 +135,13 @@ class StrategyInstanceManager:
                     )
                     claimed_symbols.update(book._positions.keys())
                 else:
-                    # 不认领持仓的策略：若已加载持久化状态则跳过虚拟资金初始化
-                    if not state_loaded:
-                        # initial_capital 直接作为虚拟现金
-                        # 不受账户实际现金约束（模拟/虚拟簿记场景）
-                        if initial_capital > 0:
-                            book._cash = initial_capital
-                        elif cash_ratio < 1.0:
-                            book._cash = actual_cash * cash_ratio
-                        book._last_sync_time = time.time()
+                    # 不认领持仓的策略：虚拟资金独立簿记，不受账户实际现金约束
+                    if initial_capital > 0:
+                        book._cash = initial_capital
+                        book._is_virtual = True
+                    elif cash_ratio < 1.0:
+                        book._cash = actual_cash * cash_ratio
+                    book._last_sync_time = time.time()
 
                 self._books[instance_id] = book
                 self.logger.info(
@@ -151,7 +149,12 @@ class StrategyInstanceManager:
                     f'持仓={len(book._positions)}只, 现金={book.get_cash():.2f}'
                 )
 
-            self._validate_books(account_key, actual_positions, actual_cash)
+            # 模拟盘（如国金模拟）账户状态可能异常（现金为负等），
+            # 不做账户一致性校验，避免误判退出；实盘仍校验。
+            if not is_sim:
+                self._validate_books(account_key, actual_positions, actual_cash)
+            else:
+                self.logger.info(f'模拟盘模式，跳过账户一致性校验: {account_key}')
 
             for config in instances:
                 instance_id = config['instance_id']
@@ -338,12 +341,13 @@ class StrategyInstanceManager:
                 continue
             book = self._books.get(config['instance_id'])
             if book:
+                # 虚拟资金实例独立簿记，不参与账户实际状态校验
+                if getattr(book, '_is_virtual', False):
+                    virtual_cash_instances.append((config['instance_id'], book._cash))
+                    continue
                 for symbol, volume in book._positions.items():
                     aggregated_positions[symbol] = aggregated_positions.get(symbol, 0) + volume
                 aggregated_cash += book._cash
-                # 跟踪哪些实例使用了虚拟资金（initial_capital > 0 且不认领持仓）
-                if config.get('initial_capital', 0) > 0 and not config.get('claim_existing_positions', False):
-                    virtual_cash_instances.append((config['instance_id'], book._cash))
 
         for symbol, agg_vol in aggregated_positions.items():
             actual_vol = actual_positions.get(symbol, 0)
@@ -359,7 +363,7 @@ class StrategyInstanceManager:
         # 现金校验：使用虚拟资金的实例不纳入合计
         virtual_cash_total = sum(c for _, c in virtual_cash_instances)
         non_virtual_cash = aggregated_cash - virtual_cash_total
-        if non_virtual_cash > actual_cash + 1.0:
+        if non_virtual_cash > 0 and non_virtual_cash > actual_cash + 1.0:
             self.logger.error(
                 f'校验失败: 现金簿记合计(非虚拟)={non_virtual_cash:.2f} > 实际={actual_cash:.2f}'
             )
